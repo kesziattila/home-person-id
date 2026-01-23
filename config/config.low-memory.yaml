@@ -1,0 +1,123 @@
+# Home Person Identification System Configuration
+# OPTIMIZED FOR: Low memory systems (laptops, older hardware, CPU-only)
+#
+# Key optimizations:
+# - Smallest models to reduce RAM usage
+# - Frame skipping to reduce CPU load
+# - Lower FPS for reduced processing
+#
+# Memory usage estimate: ~600MB for models
+# CPU usage: Reduced by ~50% with frame_skip: 2
+
+cameras:
+  - id: living_room
+    name: "Living Room"
+    rtsp_url: "rtsp://user:pass@192.168.1.100:554/stream1"  # CHANGE ME
+    fps: 3  # Reduced from 5 to lower CPU usage
+
+# Camera topology for handover
+camera_topology:
+  overlaps: []
+
+# Polygon zones
+zones: []
+
+# Motion detection
+motion:
+  enabled: true
+  history: 500
+  var_threshold: 50
+  min_area_ratio: 0.01
+  cooldown_sec: 5
+
+# Person detection
+detection:
+  model: "yolov8n.pt"           # Smallest YOLO model
+  confidence_threshold: 0.5
+  nms_iou_threshold: 0.4
+  frame_skip: 2                 # Only detect every 2nd frame (saves ~50% CPU)
+  num_threads: 4                # Limit threads to prevent CPU saturation
+
+# Single-camera tracking
+tracking:
+  track_thresh: 0.5
+  track_buffer: 60
+  match_thresh: 0.3
+  stationary_timeout: 0
+
+# Cross-camera Re-ID
+reid:
+  enabled: true                 # Set to false to save ~300MB more
+  model: "osnet_x0_25"          # Smallest model
+  similarity_threshold: 0.65
+  max_reappear_time_sec: 3600
+  gallery_size: 10
+  min_consecutive_matches: 3
+  min_crop_height: 100
+  min_visibility: 0.5
+
+# Face recognition
+face_recognition:
+  enabled: true
+  model: "buffalo_sc"           # Smallest model (saves ~600MB vs buffalo_l)
+  similarity_threshold: 0.6
+  min_face_size: 60
+  detection_interval: 20        # Check faces less frequently (saves CPU)
+  reid_confirmation_interval: 60
+
+# MQTT
+mqtt:
+  enabled: false
+  broker: "localhost"
+  port: 1883
+  topic_prefix: "home/person"
+
+# Database
+database:
+  path: "data/database.db"
+  event_retention_days: 30
+  archive_tracks_after_hours: 24
+
+# Snapshots
+snapshots:
+  enabled: true
+  path: "data/snapshots"
+  save_on_new_track: true
+  save_on_identification: true
+  save_unknown_only: false
+
+# Logging
+logging:
+  level: "INFO"
+  file: "data/app.log"
+
+# =============================================================================
+# LOW MEMORY NOTES
+# =============================================================================
+#
+# This config is optimized for systems with limited RAM/CPU:
+#   - Laptops without GPU
+#   - Raspberry Pi 4 (may still be slow)
+#   - Older desktops
+#
+# Tuning options:
+#
+# 1. Reduce CPU further:
+#    detection:
+#      frame_skip: 3           # Detect every 3rd frame
+#    face_recognition:
+#      detection_interval: 30  # Check faces every 30 frames
+#
+# 2. Reduce memory further (disable Re-ID):
+#    reid:
+#      enabled: false          # Saves ~300MB, disables cross-camera tracking
+#
+# 3. Minimal config (face recognition only):
+#    reid:
+#      enabled: false
+#    detection:
+#      frame_skip: 3
+#    cameras:
+#      - fps: 2
+#
+# =============================================================================

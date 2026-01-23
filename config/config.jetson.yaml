@@ -1,0 +1,139 @@
+# Home Person Identification System Configuration
+# OPTIMIZED FOR: NVIDIA Jetson Orin Nano 8GB
+#
+# Key optimizations:
+# - Uses GPU-accelerated inference (CUDA/TensorRT)
+# - Smaller models to fit in 8GB unified memory
+# - Balanced for performance and accuracy
+#
+# Memory usage estimate: ~600MB for models, leaving ~4-5GB free
+
+cameras:
+  - id: ground_floor
+    name: "Front Door"
+    rtsp_url: "rtsp://user:pass@192.168.1.100:554/stream1"  # CHANGE ME
+    fps: 5  # Jetson can handle higher FPS
+
+  - id: hallway
+    name: "Hallway"
+    rtsp_url: "rtsp://user:pass@192.168.1.101:554/stream1"  # CHANGE ME
+    fps: 5
+
+  - id: living_room
+    name: "Living Room"
+    rtsp_url: "rtsp://user:pass@192.168.1.102:554/stream1"  # CHANGE ME
+    fps: 5
+    exclusion_zones:
+      - x1: 0.92
+        y1: 0.0
+        x2: 1.0
+        y2: 0.6
+
+# Camera topology for handover
+camera_topology:
+  overlaps: []
+
+# Polygon zones (configure with: python -m src.cli draw-zones --camera <id>)
+zones: []
+
+# Motion detection
+motion:
+  enabled: true
+  history: 500
+  var_threshold: 50
+  min_area_ratio: 0.01
+  cooldown_sec: 5
+
+# Person detection - YOLO
+# For TensorRT acceleration, export model first:
+#   yolo export model=yolov8n.pt format=engine device=0 half=True
+# Then use: model: "yolov8n.engine"
+detection:
+  model: "yolov8n.pt"           # Or "yolov8n.engine" for TensorRT (2-3x faster)
+  confidence_threshold: 0.5
+  nms_iou_threshold: 0.4
+  frame_skip: 1                 # No need to skip on GPU
+  num_threads: 0                # Auto (GPU handles it)
+
+# Single-camera tracking
+tracking:
+  track_thresh: 0.5
+  track_buffer: 60
+  match_thresh: 0.3
+  stationary_timeout: 0
+
+# Cross-camera Re-ID
+# Models (smallest to largest): osnet_x0_25, osnet_x0_5, osnet_x0_75, osnet_x1_0
+reid:
+  enabled: true                 # Set to false to save ~300MB
+  model: "osnet_x0_25"          # Smallest model, saves memory (~150MB vs ~350MB)
+  similarity_threshold: 0.65
+  max_reappear_time_sec: 3600
+  gallery_size: 10
+  min_consecutive_matches: 3
+  min_crop_height: 100
+  min_visibility: 0.5
+
+# Face recognition - InsightFace
+# Models: buffalo_sc (smallest), buffalo_s (small), buffalo_l (large/default)
+face_recognition:
+  enabled: true
+  model: "buffalo_sc"           # Smallest model, saves ~600MB vs buffalo_l
+  similarity_threshold: 0.6
+  min_face_size: 60             # Slightly larger for smaller model
+  detection_interval: 10
+  reid_confirmation_interval: 30
+
+# MQTT (Home Assistant)
+mqtt:
+  enabled: false
+  broker: "192.168.1.50"
+  port: 1883
+  username: ""  # Optional
+  password: ""  # Optional
+  topic_prefix: "home/person"
+
+# Database
+database:
+  path: "data/database.db"
+  event_retention_days: 30
+  archive_tracks_after_hours: 24
+
+# Snapshots
+snapshots:
+  enabled: true
+  path: "data/snapshots"
+  save_on_new_track: true
+  save_on_identification: true
+  save_unknown_only: false
+
+# Logging
+logging:
+  level: "INFO"
+  file: "data/app.log"
+
+# =============================================================================
+# JETSON PERFORMANCE NOTES
+# =============================================================================
+#
+# Expected performance on Jetson Orin Nano 8GB:
+#   - YOLO (yolov8n): ~30-50 FPS per camera
+#   - Face recognition: ~10-20 FPS
+#   - Multi-camera: 2-4 cameras at 5 FPS easily
+#
+# Memory usage with this config:
+#   - YOLO yolov8n: ~300MB
+#   - InsightFace buffalo_sc: ~150MB
+#   - Re-ID osnet_x0_25: ~150MB
+#   - Total: ~600MB (leaves ~4-5GB free)
+#
+# For maximum performance, use TensorRT:
+#   1. Export YOLO: yolo export model=yolov8n.pt format=engine device=0 half=True
+#   2. Update config: model: "yolov8n.engine"
+#
+# For minimum memory (disable Re-ID):
+#   reid:
+#     enabled: false
+#   This saves ~300MB but disables cross-camera tracking.
+#
+# =============================================================================

@@ -1,0 +1,267 @@
+# Home Person Identification System Configuration
+# COMPLETE REFERENCE: All available configuration parameters
+#
+# Copy this file to config.yaml and customize for your setup.
+# See also: config.jetson.yaml, config.low-memory.yaml for optimized presets.
+
+# =============================================================================
+# CAMERAS
+# =============================================================================
+# List of cameras to monitor. Each camera requires:
+#   - id: Unique identifier (used in zones, topology, CLI commands)
+#   - name: Human-readable name (displayed in UI)
+#   - rtsp_url: RTSP stream URL
+#   - fps: Target frames per second (optional, default: 5)
+#   - exclusion_zones: Areas to ignore detections (optional)
+
+cameras:
+  - id: front_door
+    name: "Front Door"
+    rtsp_url: "rtsp://user:pass@192.168.1.100:554/stream1"  # CHANGE ME
+    fps: 5
+
+  - id: hallway
+    name: "Hallway"
+    rtsp_url: "rtsp://user:pass@192.168.1.101:554/stream1"  # CHANGE ME
+    fps: 5
+
+  - id: living_room
+    name: "Living Room"
+    rtsp_url: "rtsp://user:pass@192.168.1.102:554/stream1"  # CHANGE ME
+    fps: 5
+    # Exclusion zones: rectangles where detections are ignored
+    # Useful for: TVs showing people, mirrors, windows with reflections
+    # Coordinates are normalized 0-1 (x1, y1 = top-left, x2, y2 = bottom-right)
+    exclusion_zones:
+      - x1: 0.92
+        y1: 0.0
+        x2: 1.0
+        y2: 0.6
+
+# =============================================================================
+# CAMERA TOPOLOGY (Legacy - consider using zones instead)
+# =============================================================================
+# Defines which cameras have overlapping views for track handover.
+# This is the older rectangular exit/entry zone approach.
+# For polygon-based zones, use the "zones" section below instead.
+
+camera_topology:
+  overlaps:
+    # Example: front_door camera's right edge overlaps with hallway's left edge
+    # - cameras: ["front_door", "hallway"]
+    #   cam1_exit_zone: [0.8, 0.0, 1.0, 1.0]   # Right 20% of front_door
+    #   cam2_entry_zone: [0.0, 0.0, 0.2, 1.0]  # Left 20% of hallway
+    #   max_handover_sec: 3.0                   # Max time for person to appear
+    []
+
+# =============================================================================
+# POLYGON ZONES (Recommended for handover)
+# =============================================================================
+# Define room/area zones visible on one or more cameras.
+# Handover occurs when a person leaves one camera's view of a zone
+# and appears in another camera's view of the same zone.
+#
+# Configure interactively: python -m src.cli draw-zones --camera <id>
+
+zones:
+  # Example: hallway zone visible on two cameras
+  # - name: "hallway"
+  #   cameras:
+  #     front_door:
+  #       # Polygon points (normalized 0-1 coordinates)
+  #       polygon: [[0.7, 0.3], [1.0, 0.3], [1.0, 1.0], [0.7, 1.0]]
+  #     hallway:
+  #       polygon: [[0.0, 0.2], [0.4, 0.2], [0.4, 1.0], [0.0, 1.0]]
+  #   max_handover_sec: 5.0
+  []
+
+# =============================================================================
+# MOTION DETECTION
+# =============================================================================
+# Motion detection reduces CPU usage by only running person detection
+# when motion is detected. Disable for always-on detection.
+
+motion:
+  enabled: true
+  # Number of frames for background model history
+  history: 500
+  # Variance threshold for background subtraction (higher = less sensitive)
+  var_threshold: 50
+  # Minimum motion area as ratio of frame size (0.01 = 1%)
+  min_area_ratio: 0.01
+  # Cooldown after motion stops before pausing detection (seconds)
+  cooldown_sec: 5.0
+
+# =============================================================================
+# PERSON DETECTION (YOLO)
+# =============================================================================
+# YOLO model for detecting people in frames.
+
+detection:
+  # Model file (downloaded automatically on first run)
+  # Options: yolov8n.pt (nano), yolov8s.pt (small), yolov8m.pt (medium), yolov8l.pt (large)
+  # Or TensorRT: yolov8n.engine (export first with: yolo export model=yolov8n.pt format=engine)
+  # Smaller = faster but less accurate, larger = more accurate but slower
+  model: "yolov8n.pt"
+
+  # Minimum confidence for detections (0.0 - 1.0)
+  # Higher = fewer false positives, lower = catch more people
+  confidence_threshold: 0.5
+
+  # Non-Maximum Suppression IoU threshold
+  # Lower = fewer overlapping boxes, higher = allow more overlap
+  nms_iou_threshold: 0.4
+
+  # Only run detection every N frames (1 = every frame)
+  # Higher values reduce CPU usage but may miss fast-moving objects
+  # Recommended: 1 (GPU), 2-3 (CPU)
+  frame_skip: 1
+
+  # CPU threads for inference (0 = auto)
+  # Set to limit CPU usage on multi-core systems
+  num_threads: 0
+
+# =============================================================================
+# SINGLE-CAMERA TRACKING (ByteTrack)
+# =============================================================================
+# Tracks individuals within a single camera view.
+
+tracking:
+  # Detection confidence threshold for new tracks (deprecated, use detection.confidence_threshold)
+  track_thresh: 0.5
+
+  # Frames to keep track alive without detection
+  # Higher = more tolerant of brief occlusions
+  track_buffer: 30
+
+  # IoU threshold for matching detections to tracks
+  # Lower = stricter matching, higher = more lenient
+  match_thresh: 0.3
+
+  # Seconds before removing stationary track (0 = never remove)
+  # Useful for removing people who left but weren't detected leaving
+  stationary_timeout: 60.0
+
+# =============================================================================
+# CROSS-CAMERA RE-IDENTIFICATION
+# =============================================================================
+# Re-ID matches people across different cameras using appearance features.
+# Uses OSNet models trained for person re-identification.
+
+reid:
+  # Enable/disable Re-ID (disable to save ~300MB memory)
+  enabled: true
+
+  # Model (smallest to largest): osnet_x0_25, osnet_x0_5, osnet_x0_75, osnet_x1_0
+  # Smaller = faster and less memory, larger = more accurate
+  model: "osnet_x1_0"
+
+  # Cosine similarity threshold for matching (0.0 - 1.0)
+  # Higher = stricter matching, lower = more matches (but more false positives)
+  similarity_threshold: 0.65
+
+  # Maximum time (seconds) to consider re-appearance of same person
+  max_reappear_time_sec: 300.0
+
+  # Number of feature embeddings to store per person
+  gallery_size: 10
+
+  # Consecutive matches required before confirming identity
+  min_consecutive_matches: 3
+
+  # Minimum crop height (pixels) for Re-ID
+  # Smaller crops have less detail for matching
+  min_crop_height: 100
+
+  # Minimum visibility ratio (0.0 - 1.0) for Re-ID
+  # Skips partially occluded detections
+  min_visibility: 0.5
+
+# =============================================================================
+# FACE RECOGNITION (InsightFace)
+# =============================================================================
+# Identifies known people by their face.
+# Register faces using: python -m src.cli register-face --name "John"
+
+face_recognition:
+  # Enable/disable face recognition
+  enabled: true
+
+  # Model: buffalo_sc (smallest), buffalo_s (small), buffalo_l (large/default)
+  # buffalo_sc: ~150MB, buffalo_l: ~750MB
+  model: "buffalo_l"
+
+  # Cosine similarity threshold for face matching (0.0 - 1.0)
+  similarity_threshold: 0.6
+
+  # Minimum face size (pixels) for detection
+  # Smaller = detect faces further away, but less accurate
+  min_face_size: 80
+
+  # Run face detection every N frames (1 = every frame)
+  detection_interval: 10
+
+  # Interval to re-check Re-ID identified tracks with face recognition
+  # Confirms Re-ID matches with higher-confidence face recognition
+  reid_confirmation_interval: 30
+
+# =============================================================================
+# MQTT (Home Assistant Integration)
+# =============================================================================
+# Publish person detection events to MQTT for Home Assistant.
+
+mqtt:
+  enabled: false
+  broker: "192.168.1.50"
+  port: 1883
+  username: ""   # Optional, omit if no auth
+  password: ""   # Optional, omit if no auth
+  # Topic prefix for all messages
+  # Events published to: {topic_prefix}/camera/{camera_id}/person
+  topic_prefix: "home/person"
+
+# =============================================================================
+# DATABASE
+# =============================================================================
+# SQLite database for storing events and track history.
+
+database:
+  # Database file path (relative to project root)
+  path: "data/database.db"
+
+  # Days to keep event history (older events are deleted)
+  event_retention_days: 30
+
+  # Hours before archiving inactive tracks
+  archive_tracks_after_hours: 24
+
+# =============================================================================
+# SNAPSHOTS
+# =============================================================================
+# Save images when people are detected/identified.
+
+snapshots:
+  enabled: true
+
+  # Directory for snapshot images
+  path: "data/snapshots"
+
+  # Save snapshot when new track is created
+  save_on_new_track: true
+
+  # Save snapshot when person is identified (face or Re-ID)
+  save_on_identification: true
+
+  # Only save snapshots of unknown (unidentified) people
+  save_unknown_only: false
+
+# =============================================================================
+# LOGGING
+# =============================================================================
+
+logging:
+  # Log level: DEBUG, INFO, WARNING, ERROR
+  level: "INFO"
+
+  # Log file path (optional, omit for console only)
+  file: "data/app.log"

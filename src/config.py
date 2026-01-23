@@ -1,0 +1,272 @@
+"""Configuration loader for Home Person ID system."""
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Optional
+
+import yaml
+
+
+@dataclass
+class ExclusionZone:
+    """Exclusion zone where detections should be ignored."""
+
+    x1: float  # Normalized 0-1
+    y1: float
+    x2: float
+    y2: float
+
+
+@dataclass
+class CameraConfig:
+    """Configuration for a single camera."""
+
+    id: str
+    name: str
+    rtsp_url: str
+    fps: int = 5
+    exclusion_zones: list[ExclusionZone] = field(default_factory=list)
+
+
+@dataclass
+class CameraOverlap:
+    """Configuration for camera overlap zones."""
+
+    cameras: list[str]
+    cam1_exit_zone: list[float]  # [x1, y1, x2, y2] normalized
+    cam2_entry_zone: list[float]
+    max_handover_sec: float = 3.0
+
+
+@dataclass
+class ZonePolygon:
+    """Polygon definition for a zone on a specific camera."""
+
+    polygon: list[list[float]]  # [[x1,y1], [x2,y2], ...] normalized 0-1
+
+
+@dataclass
+class ZoneConfig:
+    """A room/area zone visible on one or more cameras."""
+
+    name: str
+    cameras: dict[str, ZonePolygon]  # camera_id -> polygon
+    max_handover_sec: float = 5.0
+
+
+@dataclass
+class ZonesConfig:
+    """All zones configuration."""
+
+    zones: list[ZoneConfig] = field(default_factory=list)
+
+
+@dataclass
+class CameraTopologyConfig:
+    """Camera topology configuration."""
+
+    overlaps: list[CameraOverlap] = field(default_factory=list)
+
+
+@dataclass
+class MotionConfig:
+    """Motion detection configuration."""
+
+    enabled: bool = True
+    history: int = 500
+    var_threshold: int = 50
+    min_area_ratio: float = 0.01
+    cooldown_sec: float = 5.0
+
+
+@dataclass
+class DetectionConfig:
+    """Person detection configuration."""
+
+    # YOLO model to use (e.g., yolov8n.pt, yolov8s.pt, yolo11n.pt, yolo11s.pt)
+    # Smaller models are faster: yolov8n (fastest) < yolov8s < yolov8m < yolov8l
+    model: str = "yolov8n.pt"
+    # Minimum confidence for detections
+    confidence_threshold: float = 0.5
+    # NMS IoU threshold (lower = fewer overlapping boxes)
+    nms_iou_threshold: float = 0.4
+    # Only run detection every N frames (1 = every frame, 2 = every other frame)
+    # Higher values reduce CPU usage but may miss fast-moving objects
+    frame_skip: int = 1
+    # Number of CPU threads for inference (0 = auto)
+    num_threads: int = 0
+
+
+@dataclass
+class TrackingConfig:
+    """Single-camera tracking configuration."""
+
+    track_thresh: float = 0.5  # Deprecated: use detection.confidence_threshold
+    track_buffer: int = 30
+    match_thresh: float = 0.3
+    # Seconds before removing stationary track (0 = no timeout, keep forever)
+    stationary_timeout: float = 60.0
+
+
+@dataclass
+class ReIDConfig:
+    """Cross-camera Re-ID configuration."""
+
+    enabled: bool = True  # Set to False to disable Re-ID and save memory
+    # Models: osnet_x1_0 (best), osnet_x0_75, osnet_x0_5, osnet_x0_25 (smallest)
+    model: str = "osnet_x1_0"
+    similarity_threshold: float = 0.65
+    max_reappear_time_sec: float = 300.0
+    gallery_size: int = 10
+    min_consecutive_matches: int = 3
+    min_crop_height: int = 100
+    min_visibility: float = 0.5
+
+
+@dataclass
+class FaceRecognitionConfig:
+    """Face recognition configuration."""
+
+    enabled: bool = True
+    model: str = "buffalo_l"
+    similarity_threshold: float = 0.6
+    min_face_size: int = 80
+    detection_interval: int = 10
+    # Interval for re-checking Re-ID identified tracks with face recognition
+    # (to confirm identity with primary method). Set higher than detection_interval.
+    reid_confirmation_interval: int = 30
+
+
+@dataclass
+class MQTTConfig:
+    """MQTT configuration for Home Assistant integration."""
+
+    enabled: bool = True
+    broker: str = "localhost"
+    port: int = 1883
+    username: Optional[str] = None
+    password: Optional[str] = None
+    topic_prefix: str = "home/person"
+
+
+@dataclass
+class DatabaseConfig:
+    """Database configuration."""
+
+    path: str = "data/database.db"
+    event_retention_days: int = 30
+    archive_tracks_after_hours: int = 24
+
+
+@dataclass
+class SnapshotConfig:
+    """Snapshot configuration."""
+
+    enabled: bool = True
+    path: str = "data/snapshots"
+    save_on_new_track: bool = True
+    save_on_identification: bool = True
+    save_unknown_only: bool = False
+
+
+@dataclass
+class LoggingConfig:
+    """Logging configuration."""
+
+    level: str = "INFO"
+    file: Optional[str] = None
+
+
+@dataclass
+class Config:
+    """Main configuration class."""
+
+    cameras: list[CameraConfig] = field(default_factory=list)
+    camera_topology: CameraTopologyConfig = field(default_factory=CameraTopologyConfig)
+    zones: ZonesConfig = field(default_factory=ZonesConfig)
+    motion: MotionConfig = field(default_factory=MotionConfig)
+    detection: DetectionConfig = field(default_factory=DetectionConfig)
+    tracking: TrackingConfig = field(default_factory=TrackingConfig)
+    reid: ReIDConfig = field(default_factory=ReIDConfig)
+    face_recognition: FaceRecognitionConfig = field(default_factory=FaceRecognitionConfig)
+    mqtt: MQTTConfig = field(default_factory=MQTTConfig)
+    database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    snapshots: SnapshotConfig = field(default_factory=SnapshotConfig)
+    logging: LoggingConfig = field(default_factory=LoggingConfig)
+
+    def get_camera(self, camera_id: str) -> Optional[CameraConfig]:
+        """Get camera configuration by ID."""
+        for camera in self.cameras:
+            if camera.id == camera_id:
+                return camera
+        return None
+
+
+def load_config(config_path: str | Path) -> Config:
+    """Load configuration from YAML file."""
+    config_path = Path(config_path)
+
+    if not config_path.exists():
+        raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+    with open(config_path) as f:
+        data = yaml.safe_load(f)
+
+    # Parse cameras
+    cameras = []
+    for cam_data in data.get("cameras", []):
+        # Parse exclusion zones if present
+        zones_data = cam_data.pop("exclusion_zones", [])
+        exclusion_zones = []
+        for zone in zones_data:
+            exclusion_zones.append(ExclusionZone(**zone))
+        cameras.append(CameraConfig(**cam_data, exclusion_zones=exclusion_zones))
+
+    # Parse camera topology
+    topology_data = data.get("camera_topology", {})
+    overlaps = []
+    for overlap_data in topology_data.get("overlaps", []):
+        overlaps.append(CameraOverlap(**overlap_data))
+    camera_topology = CameraTopologyConfig(overlaps=overlaps)
+
+    # Parse zones configuration
+    zones_data = data.get("zones", [])
+    zone_configs = []
+    for zone_data in zones_data:
+        cameras_dict = {}
+        for camera_id, camera_zone_data in zone_data.get("cameras", {}).items():
+            cameras_dict[camera_id] = ZonePolygon(polygon=camera_zone_data.get("polygon", []))
+        zone_configs.append(
+            ZoneConfig(
+                name=zone_data.get("name", ""),
+                cameras=cameras_dict,
+                max_handover_sec=zone_data.get("max_handover_sec", 5.0),
+            )
+        )
+    zones_config = ZonesConfig(zones=zone_configs)
+
+    # Parse other configs
+    motion = MotionConfig(**data.get("motion", {}))
+    detection = DetectionConfig(**data.get("detection", {}))
+    tracking = TrackingConfig(**data.get("tracking", {}))
+    reid = ReIDConfig(**data.get("reid", {}))
+    face_recognition = FaceRecognitionConfig(**data.get("face_recognition", {}))
+    mqtt = MQTTConfig(**data.get("mqtt", {}))
+    database = DatabaseConfig(**data.get("database", {}))
+    snapshots = SnapshotConfig(**data.get("snapshots", {}))
+    logging_config = LoggingConfig(**data.get("logging", {}))
+
+    return Config(
+        cameras=cameras,
+        camera_topology=camera_topology,
+        zones=zones_config,
+        motion=motion,
+        detection=detection,
+        tracking=tracking,
+        reid=reid,
+        face_recognition=face_recognition,
+        mqtt=mqtt,
+        database=database,
+        snapshots=snapshots,
+        logging=logging_config,
+    )
