@@ -121,6 +121,8 @@ class ReIDConfig:
     min_consecutive_matches: int = 3
     min_crop_height: int = 100
     min_visibility: float = 0.5
+    # Path for temporary crop storage (reduces memory usage)
+    crop_cache_path: str = "data/cache/reid_crops"
 
 
 @dataclass

@@ -15,7 +15,7 @@ from src.config import Config, CameraConfig
 from src.detection.motion_detector import MotionDetector
 from src.detection.person_detector import PersonDetector, DetectionResult
 from src.recognition.face_recognizer import FaceRecognizer
-from src.recognition.reid_extractor import ReIDExtractor
+from src.recognition.reid_extractor import ReIDExtractor, is_grayscale_image
 from src.recognition.reid_gallery import ReIDGalleryManager
 from src.tracking.byte_tracker import ByteTracker
 from src.tracking.zone_manager import ZoneManager
@@ -61,6 +61,7 @@ class IdentificationManager:
                 similarity_threshold=config.reid.similarity_threshold,
                 max_reappear_time_sec=config.reid.max_reappear_time_sec,
                 max_embeddings_per_person=config.reid.gallery_size,
+                crop_cache_path=config.reid.crop_cache_path,
             )
 
         # Track identity state (keyed by track_id - can be local or global)
@@ -100,14 +101,18 @@ class IdentificationManager:
         """Clean up identity state when track is removed."""
         self._identities.pop(track_id, None)
 
-    def try_reid_match(self, track_id: str, crop: np.ndarray, num_persons: int) -> bool:
+    def try_reid_match(self, track_id: str, crop: np.ndarray, num_persons: int) -> Optional[np.ndarray]:
         """Try to match a new track against Re-ID gallery.
 
         Returns:
-            True if matched
+            Gallery crop if matched, None otherwise
         """
         if not self.reid_gallery_manager or crop.size == 0:
-            return False
+            return None
+
+        # Skip Re-ID matching for grayscale/IR images
+        if is_grayscale_image(crop):
+            return None
 
         match_result = self.reid_gallery_manager.match_new_track(crop, num_persons)
         identity = self.get_identity(track_id)
@@ -120,9 +125,9 @@ class IdentificationManager:
             identity.confidence = match_result.score
             identity.is_reid_identified = True
             identity.is_face_identified = False
-            return True
+            return match_result.gallery_crop  # Return the best matching gallery crop
 
-        return False
+        return None
 
     def try_face_recognition(self, track_id: str, person_crop: np.ndarray,
                              local_track_id: int, num_persons: int) -> bool:
@@ -187,6 +192,9 @@ class IdentificationManager:
             return
         identity = self._identities.get(track_id)
         if identity and identity.is_face_identified and crop.size > 0:
+            # Skip Re-ID embedding update for grayscale/IR images
+            if is_grayscale_image(crop):
+                return
             self.reid_gallery_manager.update_track_embedding(
                 local_track_id, crop, identity.person_name, num_persons
             )
@@ -486,6 +494,7 @@ class MatchEvent:
     camera_id: str
     bbox: tuple[float, float, float, float]
     crop: np.ndarray
+    gallery_crop: Optional[np.ndarray] = None  # Original crop that created the best matching embedding
 
 
 @dataclass
@@ -658,7 +667,8 @@ class CameraProcessor:
             should_try_reid = is_new_track or (self._frame_counter % self.id_manager.reid_confirm_interval == 0)
 
             if should_try_reid and not self.id_manager.is_identified(track_key):
-                if self.id_manager.try_reid_match(track_key, crop, num_persons):
+                gallery_crop = self.id_manager.try_reid_match(track_key, crop, num_persons)
+                if gallery_crop is not None:
                     identity = self.id_manager.get_identity(track_key)
                     if log_callback:
                         log_callback(f"[RE-ID] {identity.person_name} ({track_key}) score={identity.confidence:.2f} on {self.camera_id}")
@@ -670,6 +680,7 @@ class CameraProcessor:
                         camera_id=self.camera_id,
                         bbox=local_track.bbox,
                         crop=crop.copy(),
+                        gallery_crop=gallery_crop,
                     ))
 
             # Face recognition (periodic, per-camera frame counter)
@@ -840,7 +851,16 @@ class SnapshotSaver:
 
         # Add label to crop
         label = f"{match_event.person_name} ({match_type.upper()}:{match_event.confidence:.2f})"
-        crop_labeled = self._draw_label_on_image(crop_resized, label)
+        crop_labeled = self._draw_label_on_image(crop_resized, "CURRENT")
+
+        # For Re-ID matches, include the gallery crop (original image that created best embedding)
+        gallery_labeled = None
+        if match_type == "reid" and match_event.gallery_crop is not None:
+            gallery_crop = match_event.gallery_crop
+            gh, gw = gallery_crop.shape[:2]
+            gscale = target_crop_h / gh if gh > 0 else 1
+            gallery_resized = cv2.resize(gallery_crop, (int(gw * gscale), target_crop_h))
+            gallery_labeled = self._draw_label_on_image(gallery_resized, "GALLERY (best match)")
 
         # Draw bbox on frame copy
         frame_copy = frame.copy()
@@ -856,11 +876,21 @@ class SnapshotSaver:
         frame_scale = target_frame_h / frame_h
         frame_resized = cv2.resize(frame_copy, (int(frame_w * frame_scale), target_frame_h))
 
-        # Combine side by side
-        combined = np.hstack([crop_labeled, frame_resized])
+        # Combine side by side: [gallery_crop | current_crop | frame]
+        if gallery_labeled is not None:
+            # Ensure same height
+            if gallery_labeled.shape[0] != crop_labeled.shape[0]:
+                gallery_labeled = cv2.resize(
+                    gallery_labeled,
+                    (int(gallery_labeled.shape[1] * crop_labeled.shape[0] / gallery_labeled.shape[0]),
+                     crop_labeled.shape[0])
+                )
+            combined = np.hstack([gallery_labeled, crop_labeled, frame_resized])
+        else:
+            combined = np.hstack([crop_labeled, frame_resized])
 
         # Add camera label
-        camera_label = f"Camera: {match_event.camera_id} | {timestamp}"
+        camera_label = f"{label} | Camera: {match_event.camera_id} | {timestamp}"
         combined = self._draw_label_on_image(combined, camera_label, "bottom")
 
         # Save

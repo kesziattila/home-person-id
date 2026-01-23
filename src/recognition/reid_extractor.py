@@ -8,11 +8,38 @@ import logging
 from dataclasses import dataclass, field
 from typing import Optional
 
+import cv2
 import numpy as np
 
 from src.config import ReIDConfig
 
 logger = logging.getLogger(__name__)
+
+
+def is_grayscale_image(image: np.ndarray, saturation_threshold: float = 15.0) -> bool:
+    """Check if an image is grayscale/IR (black and white).
+
+    IR cameras typically output images with very low color saturation.
+    This function detects such images to avoid using them for Re-ID,
+    as appearance features are unreliable without color information.
+
+    Args:
+        image: BGR image
+        saturation_threshold: Mean saturation below this is considered grayscale
+
+    Returns:
+        True if image appears to be grayscale/IR
+    """
+    if image is None or image.size == 0:
+        return True
+
+    # Convert to HSV and check saturation channel
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    saturation = hsv[:, :, 1]
+    mean_saturation = np.mean(saturation)
+
+    # Low saturation means grayscale/IR image
+    return mean_saturation < saturation_threshold
 
 
 @dataclass
@@ -240,12 +267,18 @@ class ReIDExtractor:
         """
         self._initialize()
 
-        import cv2
         import torch
 
         # Check minimum crop size
         h, w = crop.shape[:2]
         if h < self.config.min_crop_height or w < 30:
+            if return_quality:
+                return np.zeros(512, dtype=np.float32), 0.0
+            return np.zeros(512, dtype=np.float32)
+
+        # Skip grayscale/IR images - Re-ID relies on color features
+        if is_grayscale_image(crop):
+            logger.debug("Skipping Re-ID extraction for grayscale/IR image")
             if return_quality:
                 return np.zeros(512, dtype=np.float32), 0.0
             return np.zeros(512, dtype=np.float32)
@@ -304,6 +337,11 @@ class ReIDExtractor:
         for i, crop in enumerate(crops):
             h, w = crop.shape[:2]
             if h < self.config.min_crop_height or w < 30:
+                results.append((np.zeros(512, dtype=np.float32), 0.0))
+                continue
+
+            # Skip grayscale/IR images
+            if is_grayscale_image(crop):
                 results.append((np.zeros(512, dtype=np.float32), 0.0))
                 continue
 

@@ -24,41 +24,109 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class EmbeddingWithCrop:
+    """An embedding stored with its source crop image path."""
+    embedding: np.ndarray
+    crop_path: Optional[str] = None  # Path to crop file on disk (not in memory)
+    timestamp: float = field(default_factory=time.time)
+
+    def load_crop(self) -> Optional[np.ndarray]:
+        """Load crop image from disk."""
+        if self.crop_path and Path(self.crop_path).exists():
+            return cv2.imread(self.crop_path)
+        return None
+
+    def delete_crop_file(self):
+        """Delete the crop file from disk."""
+        if self.crop_path:
+            try:
+                Path(self.crop_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+@dataclass
 class GalleryEntry:
     """Entry in the Re-ID gallery for a known person."""
 
     person_name: str
-    embeddings: list[np.ndarray] = field(default_factory=list)
-    crop: Optional[np.ndarray] = None  # Latest crop for debug images
+    entries: list[EmbeddingWithCrop] = field(default_factory=list)
     last_seen: float = field(default_factory=time.time)
     max_embeddings: int = 10
+    crop_cache_path: Optional[str] = None  # Base path for crop storage
+
+    def _save_crop_to_disk(self, crop: np.ndarray) -> Optional[str]:
+        """Save crop to disk and return the file path."""
+        if self.crop_cache_path is None or crop is None:
+            return None
+
+        cache_dir = Path(self.crop_cache_path)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        # Generate unique filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        safe_name = self.person_name.replace(" ", "_").replace("/", "-")
+        filename = f"{safe_name}_{timestamp}.jpg"
+        filepath = cache_dir / filename
+
+        cv2.imwrite(str(filepath), crop)
+        return str(filepath)
 
     def add_embedding(self, embedding: np.ndarray, crop: Optional[np.ndarray] = None):
         """Add an embedding to the gallery entry."""
-        self.embeddings.append(embedding)
-        if crop is not None:
-            self.crop = crop.copy()
+        # Save crop to disk instead of memory
+        crop_path = self._save_crop_to_disk(crop) if crop is not None else None
+
+        self.entries.append(EmbeddingWithCrop(
+            embedding=embedding,
+            crop_path=crop_path,
+        ))
         self.last_seen = time.time()
 
-        # Keep only the most recent embeddings
-        if len(self.embeddings) > self.max_embeddings:
-            self.embeddings = self.embeddings[-self.max_embeddings:]
+        # Keep only the most recent entries, delete old crop files
+        if len(self.entries) > self.max_embeddings:
+            old_entries = self.entries[:-self.max_embeddings]
+            for old_entry in old_entries:
+                old_entry.delete_crop_file()
+            self.entries = self.entries[-self.max_embeddings:]
 
-    def match(self, query_embedding: np.ndarray) -> float:
+    def match(self, query_embedding: np.ndarray) -> tuple[float, Optional[np.ndarray]]:
         """Match a query embedding against all gallery embeddings.
 
-        Returns the maximum similarity score.
+        Returns:
+            Tuple of (max_similarity_score, best_matching_crop loaded from disk)
         """
-        if not self.embeddings:
-            return 0.0
+        if not self.entries:
+            return 0.0, None
 
         max_score = 0.0
-        for emb in self.embeddings:
-            score = cosine_similarity(query_embedding, emb)
+        best_entry = None
+        for entry in self.entries:
+            score = cosine_similarity(query_embedding, entry.embedding)
             if score > max_score:
                 max_score = score
+                best_entry = entry
 
-        return max_score
+        # Load crop from disk only for the best match
+        best_crop = best_entry.load_crop() if best_entry else None
+        return max_score, best_crop
+
+    def cleanup_crop_files(self):
+        """Delete all crop files for this entry."""
+        for entry in self.entries:
+            entry.delete_crop_file()
+
+    @property
+    def embeddings(self) -> list[np.ndarray]:
+        """Get list of embeddings (for backward compatibility)."""
+        return [e.embedding for e in self.entries]
+
+    @property
+    def crop(self) -> Optional[np.ndarray]:
+        """Get the latest crop (for backward compatibility)."""
+        if self.entries:
+            return self.entries[-1].load_crop()
+        return None
 
 
 @dataclass
@@ -90,6 +158,7 @@ class ReIDGalleryManager:
         similarity_threshold: float = 0.65,
         max_reappear_time_sec: float = 300.0,
         max_embeddings_per_person: int = 10,
+        crop_cache_path: Optional[str] = None,
         debug_saver: Optional['DebugImageSaver'] = None,
     ):
         """Initialize the gallery manager.
@@ -99,13 +168,19 @@ class ReIDGalleryManager:
             similarity_threshold: Minimum similarity for a match
             max_reappear_time_sec: Time before gallery entries expire
             max_embeddings_per_person: Maximum embeddings to store per person
+            crop_cache_path: Path for storing crop images on disk (reduces memory)
             debug_saver: Optional debug image saver
         """
         self.reid_extractor = reid_extractor
         self.similarity_threshold = similarity_threshold
         self.max_reappear_time_sec = max_reappear_time_sec
         self.max_embeddings_per_person = max_embeddings_per_person
+        self.crop_cache_path = crop_cache_path
         self.debug_saver = debug_saver
+
+        # Create crop cache directory if specified
+        if self.crop_cache_path:
+            Path(self.crop_cache_path).mkdir(parents=True, exist_ok=True)
 
         # Gallery keyed by person name
         self._gallery: dict[str, GalleryEntry] = {}
@@ -125,7 +200,7 @@ class ReIDGalleryManager:
         return list(self._gallery.keys())
 
     def cleanup_expired(self) -> list[str]:
-        """Remove expired gallery entries.
+        """Remove expired gallery entries and their crop files.
 
         Returns:
             List of expired person names
@@ -137,6 +212,8 @@ class ReIDGalleryManager:
         ]
 
         for name in expired:
+            # Clean up crop files before removing entry
+            self._gallery[name].cleanup_crop_files()
             del self._gallery[name]
             logger.info(f"Re-ID gallery expired: {name}")
 
@@ -222,6 +299,7 @@ class ReIDGalleryManager:
             self._gallery[person_name] = GalleryEntry(
                 person_name=person_name,
                 max_embeddings=self.max_embeddings_per_person,
+                crop_cache_path=self.crop_cache_path,
             )
 
         entry = self._gallery[person_name]
@@ -275,19 +353,19 @@ class ReIDGalleryManager:
         best_crop = None
 
         for person_name, entry in self._gallery.items():
-            score = entry.match(embedding)
+            score, crop = entry.match(embedding)
             if score > best_score:
                 best_score = score
                 if score > self.similarity_threshold:
                     best_name = person_name
-                    best_crop = entry.crop
+                    best_crop = crop  # Crop from the best matching embedding
 
         result.score = best_score
 
         if best_name:
             result.person_name = best_name
             result.matched = True
-            result.gallery_crop = best_crop
+            result.gallery_crop = best_crop  # This is now the actual best matching crop
 
             # Update gallery timestamp (DON'T remove - person might leave and return)
             self._gallery[best_name].last_seen = time.time()
@@ -328,7 +406,7 @@ class ReIDGalleryManager:
 
         best_score = 0.0
         for entry in self._gallery.values():
-            score = entry.match(embedding)
+            score, _ = entry.match(embedding)
             if score > best_score:
                 best_score = score
 

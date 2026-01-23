@@ -177,6 +177,9 @@ reid:
   # Skips partially occluded detections
   min_visibility: 0.5
 
+  # Path for temporary crop storage (saves memory by storing on disk)
+  crop_cache_path: "data/cache/reid_crops"
+
 # =============================================================================
 # FACE RECOGNITION (InsightFace)
 # =============================================================================
