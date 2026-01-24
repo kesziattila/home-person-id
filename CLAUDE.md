@@ -103,6 +103,7 @@
 - Provide sensible defaults
 - Document all config options in sample config file
 - Support both file-based config and programmatic config
+- **When adding a new config parameter**: Always add it to `config/config.sample.yaml` with a descriptive comment
 
 ### Paths
 - Use configurable paths for all file storage (cache, snapshots, models)
