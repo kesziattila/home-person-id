@@ -12,7 +12,7 @@ Can be used in both preview mode (no database) and production mode (with databas
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Optional, Callable
+from typing import TYPE_CHECKING, Optional, Callable
 
 import numpy as np
 
@@ -20,6 +20,9 @@ from src.config import Config, FaceRecognitionConfig, ReIDConfig
 from src.recognition.face_recognizer import FaceRecognizer
 from src.recognition.reid_extractor import ReIDExtractor, is_grayscale_image
 from src.recognition.reid_gallery import ReIDGalleryManager, DebugImageSaver
+
+if TYPE_CHECKING:
+    from src.database.repository import Repository
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +81,7 @@ class IdentificationManager:
         self,
         config: Config,
         face_gallery: Optional[list[tuple[int, str, np.ndarray]]] = None,
-        repository: Optional[object] = None,  # Repository type
+        repository: Optional["Repository"] = None,
         enable_debug_images: bool = False,
     ):
         """Initialize identification manager.

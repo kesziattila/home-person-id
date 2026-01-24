@@ -88,11 +88,17 @@ class FaceRecognizer:
                 "Install with: pip install insightface"
             )
 
-    def detect_faces(self, frame: np.ndarray) -> FaceDetectionResult:
+    def detect_faces(
+        self,
+        frame: np.ndarray,
+        min_face_size: Optional[int] = None,
+    ) -> FaceDetectionResult:
         """Detect faces in a frame.
 
         Args:
             frame: BGR image
+            min_face_size: Optional override for minimum face size filter.
+                          If None, uses config.min_face_size.
 
         Returns:
             FaceDetectionResult with detected faces
@@ -101,6 +107,9 @@ class FaceRecognizer:
 
         faces_data = self._app.get(frame)
 
+        # Use provided min_face_size or fall back to config
+        effective_min_size = min_face_size if min_face_size is not None else self.config.min_face_size
+
         faces = []
         for face_data in faces_data:
             bbox = face_data.bbox.astype(float)
@@ -108,7 +117,7 @@ class FaceRecognizer:
             # Check minimum face size
             width = bbox[2] - bbox[0]
             height = bbox[3] - bbox[1]
-            if min(width, height) < self.config.min_face_size:
+            if min(width, height) < effective_min_size:
                 continue
 
             face = Face(

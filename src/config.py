@@ -133,6 +133,9 @@ class FaceRecognitionConfig:
     model: str = "buffalo_l"
     similarity_threshold: float = 0.6
     min_face_size: int = 80
+    # Minimum face size for multi-face detection (used to filter Re-ID crops).
+    # Lower than min_face_size because we only need to detect presence, not quality.
+    multi_face_min_size: int = 20
     detection_interval: int = 10
     # Interval for re-checking Re-ID identified tracks with face recognition
     # (to confirm identity with primary method). Set higher than detection_interval.

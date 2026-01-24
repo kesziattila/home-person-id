@@ -12,13 +12,16 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 from datetime import datetime
 
 import cv2
 import numpy as np
 
 from src.recognition.reid_extractor import ReIDExtractor, cosine_similarity, is_grayscale_image
+
+if TYPE_CHECKING:
+    from src.recognition.face_recognizer import FaceRecognizer
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +162,7 @@ class ReIDGalleryManager:
         max_reappear_time_sec: float = 300.0,
         max_embeddings_per_person: int = 10,
         crop_cache_path: Optional[str] = None,
-        face_recognizer: Optional[object] = None,
+        face_recognizer: Optional["FaceRecognizer"] = None,
         debug_saver: Optional['DebugImageSaver'] = None,
     ):
         """Initialize the gallery manager.
@@ -225,6 +228,9 @@ class ReIDGalleryManager:
     def _has_multiple_faces(self, crop: np.ndarray) -> bool:
         """Check if a crop contains multiple faces (multiple people).
 
+        Uses lower min_face_size (from config.multi_face_min_size) because we only
+        need to detect presence of faces, not quality for recognition.
+
         Returns:
             True if 2+ faces detected
         """
@@ -232,7 +238,11 @@ class ReIDGalleryManager:
             return False
 
         try:
-            face_result = self.face_recognizer.detect_faces(crop)
+            # Use lower min_face_size for multi-face detection
+            # Gallery crops often have small faces that would be filtered
+            # by the normal recognition threshold
+            min_size = self.face_recognizer.config.multi_face_min_size
+            face_result = self.face_recognizer.detect_faces(crop, min_face_size=min_size)
             return len(face_result.faces) > 1
         except Exception:
             return False

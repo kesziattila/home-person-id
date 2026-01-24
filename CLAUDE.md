@@ -30,6 +30,12 @@
 
 ## Performance & Memory
 
+### Avoid Mutating Shared State
+- Don't temporarily modify config objects and restore them (not thread-safe, error-prone)
+- Instead, pass parameters to methods that need different behavior
+- Example: `detect_faces(crop, min_face_size=20)` instead of modifying `config.min_face_size`
+- Keep different thresholds as separate config options (e.g., `min_face_size` vs `multi_face_min_size`)
+
 ### Lazy Loading for ML Models
 - Initialize ML models (face recognizer, Re-ID extractor) only when first accessed
 - Use `@property` with private backing field pattern:
@@ -58,6 +64,9 @@
 ### Data Quality Filters
 - **Skip grayscale/IR images**: Use HSV saturation check (`mean_saturation < 15.0`)
 - **Skip multi-person crops**: Check `len(face_result.faces) > 1` before storing Re-ID embeddings
+  - Use `config.multi_face_min_size` (default 20px) for detection, lower than `min_face_size` (80px)
+  - Pass threshold as parameter: `detect_faces(crop, min_face_size=config.multi_face_min_size)`
+  - Gallery crops often have small faces that would be filtered by recognition threshold
 - **Skip low visibility**: Check quality score against `min_visibility` threshold
 - **Single person in frame**: Only extract Re-ID when `num_persons_in_frame == 1`
 
@@ -153,6 +162,25 @@ ReIDGalleryManager
 2. Track → Face recognition → Identity (if face matched)
 3. Track → Re-ID embedding → Gallery update (if face-identified)
 4. New track → Re-ID match → Identity transfer (cross-camera)
+
+---
+
+---
+
+## Testing Guidelines
+
+### Bug Reports with Sample Images
+When user reports a bug with a sample image:
+1. **Create a test file** to reproduce the issue (don't use inline Python in Bash)
+2. **Use live code** - import actual classes from src/ to test real behavior
+3. **Save debug artifacts** to `data/debug/` for manual inspection
+4. **Test multiple configurations** (e.g., different threshold values) to diagnose root cause
+5. **Document findings** in test docstrings for future reference
+
+### Test File Location
+- Tests go in `tests/` directory
+- Use pytest fixtures for shared setup
+- Name tests descriptively: `test_<what>_<expected_behavior>`
 
 ---
 
