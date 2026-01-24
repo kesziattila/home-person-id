@@ -18,7 +18,7 @@ from datetime import datetime
 import cv2
 import numpy as np
 
-from src.recognition.reid_extractor import ReIDExtractor, cosine_similarity
+from src.recognition.reid_extractor import ReIDExtractor, cosine_similarity, is_grayscale_image
 
 logger = logging.getLogger(__name__)
 
@@ -159,6 +159,7 @@ class ReIDGalleryManager:
         max_reappear_time_sec: float = 300.0,
         max_embeddings_per_person: int = 10,
         crop_cache_path: Optional[str] = None,
+        face_recognizer: Optional[object] = None,
         debug_saver: Optional['DebugImageSaver'] = None,
     ):
         """Initialize the gallery manager.
@@ -169,6 +170,7 @@ class ReIDGalleryManager:
             max_reappear_time_sec: Time before gallery entries expire
             max_embeddings_per_person: Maximum embeddings to store per person
             crop_cache_path: Path for storing crop images on disk (reduces memory)
+            face_recognizer: Optional face recognizer for multi-face detection
             debug_saver: Optional debug image saver
         """
         self.reid_extractor = reid_extractor
@@ -176,6 +178,7 @@ class ReIDGalleryManager:
         self.max_reappear_time_sec = max_reappear_time_sec
         self.max_embeddings_per_person = max_embeddings_per_person
         self.crop_cache_path = crop_cache_path
+        self.face_recognizer = face_recognizer
         self.debug_saver = debug_saver
 
         # Create crop cache directory if specified
@@ -219,6 +222,21 @@ class ReIDGalleryManager:
 
         return expired
 
+    def _has_multiple_faces(self, crop: np.ndarray) -> bool:
+        """Check if a crop contains multiple faces (multiple people).
+
+        Returns:
+            True if 2+ faces detected
+        """
+        if self.face_recognizer is None or crop.size == 0:
+            return False
+
+        try:
+            face_result = self.face_recognizer.detect_faces(crop)
+            return len(face_result.faces) > 1
+        except Exception:
+            return False
+
     def update_track_embedding(
         self,
         track_id: int,
@@ -229,6 +247,7 @@ class ReIDGalleryManager:
         """Update Re-ID embedding for an active track.
 
         Should be called periodically for face-identified tracks.
+        Automatically skips grayscale/IR images and crops with multiple faces.
 
         Args:
             track_id: Track ID
@@ -239,8 +258,16 @@ class ReIDGalleryManager:
         Returns:
             True if embedding was updated
         """
-        # Skip when multiple persons to avoid confusion
+        # Skip when multiple persons in frame to avoid confusion
         if num_persons_in_frame > 1:
+            return False
+
+        # Skip grayscale/IR images - Re-ID relies on color features
+        if is_grayscale_image(crop):
+            return False
+
+        # Skip if crop contains multiple faces (multiple people in bounding box)
+        if self._has_multiple_faces(crop):
             return False
 
         embedding, quality = self.reid_extractor.extract(crop, return_quality=True)

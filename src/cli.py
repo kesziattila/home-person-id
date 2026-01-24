@@ -491,7 +491,12 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
 
     click.echo(f"Preview: {cam_config.name} - Press 'q' to quit")
 
+    # Create resizable window (keeps full resolution, window handles scaling)
+    window_name = "Preview"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
     with RTSPClient(camera, cam_config.rtsp_url, target_fps=cam_config.fps) as client:
+        window_size_set = False
         while True:
             frame_data = client.get_frame(timeout=2.0)
             if frame_data is None:
@@ -540,11 +545,12 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
             draw_status_bar(display, status)
             draw_motion_indicator(display, result.has_motion)
 
-            # Scale and show
-            if scale != 1.0:
-                display = cv2.resize(display, (int(frame_w * scale), int(frame_h * scale)))
+            # Set initial window size (once), but keep full resolution image
+            if not window_size_set:
+                cv2.resizeWindow(window_name, int(frame_w * scale), int(frame_h * scale))
+                window_size_set = True
 
-            cv2.imshow("Preview", display)
+            cv2.imshow(window_name, display)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
@@ -990,6 +996,10 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
 
     handover_log = []
 
+    # Create resizable window
+    window_name = "Multi-Camera Preview"
+    cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+
     # Main processing loop
     try:
         while running:
@@ -1136,7 +1146,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
                 cv2.putText(grid, status, (10, grid.shape[0] - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 
-                cv2.imshow("Multi-Camera Preview", grid)
+                cv2.imshow(window_name, grid)
 
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 running = False
