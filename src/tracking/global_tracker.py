@@ -17,6 +17,7 @@ import numpy as np
 
 from src.config import CameraTopologyConfig, ReIDConfig, ZonesConfig
 from src.database.repository import Repository
+from src.detection.person_detector import compute_iou
 from src.recognition.identity_linker import IdentityLinker
 from src.tracking.track import GlobalTrack, LocalTrack, TrackState
 from src.tracking.zone_manager import ZoneManager
@@ -149,6 +150,38 @@ class GlobalTrackManager:
         self._next_track_id += 1
         return track_id
 
+    def _find_overlapping_track_ids(
+        self,
+        local_tracks: list[LocalTrack],
+        iou_threshold: float,
+    ) -> set[int]:
+        """Find track IDs that have overlapping bounding boxes with other tracks.
+
+        Args:
+            local_tracks: List of local tracks
+            iou_threshold: IoU threshold above which tracks are considered overlapping
+
+        Returns:
+            Set of track IDs that have significant overlap with at least one other track
+        """
+        if iou_threshold <= 0 or len(local_tracks) < 2:
+            return set()
+
+        overlapping_ids = set()
+
+        for i, track1 in enumerate(local_tracks):
+            for track2 in local_tracks[i + 1:]:
+                iou = compute_iou(track1.bbox, track2.bbox)
+                if iou > iou_threshold:
+                    overlapping_ids.add(track1.track_id)
+                    overlapping_ids.add(track2.track_id)
+                    logger.debug(
+                        f"Overlapping tracks: {track1.track_id} and {track2.track_id} "
+                        f"(IoU={iou:.3f})"
+                    )
+
+        return overlapping_ids
+
     def process_local_tracks(
         self,
         camera_id: str,
@@ -185,6 +218,11 @@ class GlobalTrackManager:
 
         # Clean up expired pending handovers
         self._cleanup_pending_handovers(current_time)
+
+        # Find tracks with overlapping bounding boxes (skip Re-ID for these)
+        overlapping_track_ids = self._find_overlapping_track_ids(
+            local_tracks, self.reid_config.skip_overlapping_iou
+        )
 
         # Process new local tracks
         for local_track_id in new_track_ids:
@@ -234,7 +272,10 @@ class GlobalTrackManager:
                 else:
                     # Create new global track
                     global_track_id = self._create_global_track(
-                        camera_id, local_track, frame
+                        camera_id,
+                        local_track,
+                        frame,
+                        has_overlapping_bbox=local_track.track_id in overlapping_track_ids,
                     )
                     result.new_global_tracks.append(global_track_id)
 
@@ -256,11 +297,14 @@ class GlobalTrackManager:
 
             # Process for identification
             if local_track.last_crop is not None:
+                # Skip Re-ID if this track overlaps with another (num_persons > 1)
+                num_persons = 2 if local_track.track_id in overlapping_track_ids else 1
                 self.identity_linker.process_track(
                     global_track_id,
                     frame,
                     local_track.last_crop,
                     local_track.bbox,
+                    num_persons_in_frame=num_persons,
                 )
 
         # Process lost local tracks
@@ -292,7 +336,11 @@ class GlobalTrackManager:
         self._local_to_global[(camera_id, local_track_id)] = global_track_id
 
     def _create_global_track(
-        self, camera_id: str, local_track: LocalTrack, frame: np.ndarray
+        self,
+        camera_id: str,
+        local_track: LocalTrack,
+        frame: np.ndarray,
+        has_overlapping_bbox: bool = False,
     ) -> str:
         """Create a new global track.
 
@@ -300,6 +348,7 @@ class GlobalTrackManager:
             camera_id: Camera where track was created
             local_track: Local track from ByteTrack
             frame: Current frame
+            has_overlapping_bbox: Whether this track overlaps with another
 
         Returns:
             New global track ID
@@ -322,13 +371,15 @@ class GlobalTrackManager:
         # Register with identity linker
         self.identity_linker.register_track(global_track_id)
 
-        # Initial Re-ID extraction
+        # Initial Re-ID extraction (skip if overlapping with another track)
         if local_track.last_crop is not None:
+            num_persons = 2 if has_overlapping_bbox else 1
             self.identity_linker.process_track(
                 global_track_id,
                 frame,
                 local_track.last_crop,
                 local_track.bbox,
+                num_persons_in_frame=num_persons,
             )
 
         # Save to database

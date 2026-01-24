@@ -32,12 +32,12 @@ class TestMultiFaceDetection:
         despite containing 2 people. It documents that the default min_face_size=80
         is too large to detect the small faces in the crop.
 
-        Bug: data/snapshots/reid_matches/20260124_083148_Judit_reid_0.91.jpg
+        Bug: tests/test-images/sensitive/20260124_083148_Judit_reid_0.91.jpg
         shows 2 people in the gallery crop but wasn't filtered because faces
         were too small (23x32, 25x33 pixels) for min_face_size=80.
         """
         # Load the problematic snapshot image
-        snapshot_path = Path("data/snapshots/reid_matches/20260124_083148_Judit_reid_0.91.jpg")
+        snapshot_path = Path("tests/test-images/sensitive/20260124_083148_Judit_reid_0.91.jpg")
 
         if not snapshot_path.exists():
             pytest.skip(f"Test image not found: {snapshot_path}")
@@ -75,7 +75,7 @@ class TestMultiFaceDetection:
 
     def test_multi_face_detection_with_lower_min_size(self, face_recognizer):
         """Test if lowering min_face_size allows detecting both faces."""
-        snapshot_path = Path("data/snapshots/reid_matches/20260124_083148_Judit_reid_0.91.jpg")
+        snapshot_path = Path("tests/test-images/sensitive/20260124_083148_Judit_reid_0.91.jpg")
 
         if not snapshot_path.exists():
             pytest.skip(f"Test image not found: {snapshot_path}")
@@ -124,7 +124,7 @@ class TestReIDGalleryMultiFaceFilter:
             face_recognizer=face_recognizer,
         )
 
-        snapshot_path = Path("data/snapshots/reid_matches/20260124_083148_Judit_reid_0.91.jpg")
+        snapshot_path = Path("tests/test-images/sensitive/20260124_083148_Judit_reid_0.91.jpg")
 
         if not snapshot_path.exists():
             pytest.skip(f"Test image not found: {snapshot_path}")
@@ -214,7 +214,7 @@ if __name__ == "__main__":
     print("Multi-face detection test")
     print("=" * 60)
 
-    snapshot_path = Path("data/snapshots/reid_matches/20260124_083148_Judit_reid_0.91.jpg")
+    snapshot_path = Path("tests/test-images/sensitive/20260124_083148_Judit_reid_0.91.jpg")
     if not snapshot_path.exists():
         print(f"Test image not found: {snapshot_path}")
         exit(1)

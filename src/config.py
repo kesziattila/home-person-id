@@ -123,6 +123,10 @@ class ReIDConfig:
     min_visibility: float = 0.5
     # Path for temporary crop storage (reduces memory usage)
     crop_cache_path: str = "data/cache/reid_crops"
+    # Skip Re-ID for detections with overlapping bounding boxes (IoU > threshold).
+    # Helps avoid storing embeddings when people are close together (e.g., parent+child).
+    # Set to 0.0 to disable. Recommended: 0.15
+    skip_overlapping_iou: float = 0.15
 
 
 @dataclass

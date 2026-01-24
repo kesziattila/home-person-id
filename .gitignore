@@ -91,3 +91,4 @@ htmlcov/
 .ruff_cache/
 /local/
 /.claude/
+/tests/test-images/sensitive/
