@@ -41,19 +41,28 @@ source venv/bin/activate
 **Do NOT use standard `pip install torch`** - it installs x86 version. Jetson uses ARM architecture and needs NVIDIA's pre-built wheels:
 
 ```bash
-# Install them based on your JetPack and CUDA version
+# Install PyTorch based on your JetPack and CUDA version
 # Example for JetPack 6.x and CUDA 12.6:
-> pip install torch torchvision --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
+pip install torch torchvision --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
 ```
 
 ### 4. Install ONNX Runtime for Jetson
 
-```bash
-# Download from NVIDIA (not pip):
-# https://elinux.org/Jetson_Zoo#ONNX_Runtime
+**IMPORTANT:** onnxruntime-gpu 1.23.0 requires numpy<2.0. Install numpy first:
 
-# Example for JetPack 5.x:
-pip install onnxruntime_gpu-1.16.0-cp310-cp310-linux_aarch64.whl
+```bash
+# Force numpy<2.0 (required for onnxruntime-gpu compatibility)
+pip install "numpy<2.0,>=1.24"
+
+# Install ONNX Runtime GPU from NVIDIA's Jetson AI Lab
+pip install onnxruntime-gpu --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
+
+# Or download wheel directly from:
+# https://pypi.jetson-ai-lab.io/jp6/cu126/onnxruntime-gpu/
+
+# Verify CUDA provider is available:
+python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
+# Should show: ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
 ```
 
 ### 5. Install Other Dependencies
