@@ -104,6 +104,8 @@
 - Document all config options in sample config file
 - Support both file-based config and programmatic config
 - **When adding a new config parameter**: Always add it to `config/config.sample.yaml` with a descriptive comment
+- **When adding a new dependency**: Add to both `requirements.txt` and `requirements-jetson.txt` (unless it needs special Jetson handling)
+- **Jetson-specific changes**: Update `docs/JETSON.md` when changes affect Jetson deployment
 
 ### Paths
 - Use configurable paths for all file storage (cache, snapshots, models)

@@ -1,0 +1,45 @@
+# Requirements for NVIDIA Jetson devices
+#
+# IMPORTANT: Install these BEFORE running pip install -r requirements-jetson.txt:
+#   1. PyTorch from NVIDIA wheels (not pip)
+#   2. onnxruntime-gpu from NVIDIA wheels (not pip)
+#
+# See docs/JETSON.md for installation instructions.
+
+# Core
+opencv-python>=4.8.0
+numpy>=1.24.0
+pyyaml>=6.0
+pillow>=10.0.0
+
+# Detection & Tracking
+ultralytics>=8.0.0             # YOLOv8 person detection
+lap>=0.4.0                     # ByteTrack dependency (linear assignment)
+filterpy>=1.4.5                # Kalman filter for tracking
+
+# Person Re-ID
+torchreid>=0.2.5               # OSNet and other Re-ID models
+gdown>=5.0.0                   # torchreid dependency (model download)
+tensorboard>=2.0.0             # torchreid dependency
+
+# Face Recognition
+insightface>=0.7.3             # Face detection + recognition
+# NOTE: onnxruntime-gpu must be installed from NVIDIA wheels, not pip
+
+# Database
+sqlalchemy>=2.0.0
+
+# API Server
+fastapi>=0.100.0
+uvicorn>=0.23.0
+
+# Home Assistant Integration
+paho-mqtt>=1.6.0
+
+# CLI
+click>=8.0.0
+
+# NOTE: The following are NOT included - install from NVIDIA wheels:
+# - torch (PyTorch)
+# - torchvision
+# - onnxruntime-gpu
