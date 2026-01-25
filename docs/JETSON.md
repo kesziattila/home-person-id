@@ -38,15 +38,12 @@ source venv/bin/activate
 
 ### 3. Install PyTorch for Jetson
 
-**Do NOT use pip install torch** - it installs x86 version. Use NVIDIA's pre-built wheels:
+**Do NOT use standard `pip install torch`** - it installs x86 version. Jetson uses ARM architecture and needs NVIDIA's pre-built wheels:
 
 ```bash
-# Find your JetPack version and download matching wheel from:
-# https://forums.developer.nvidia.com/t/pytorch-for-jetson/72048
-
-# Example for JetPack 5.x (L4T R35.x):
-pip install torch-2.1.0-cp310-cp310-linux_aarch64.whl
-pip install torchvision-0.16.0-cp310-cp310-linux_aarch64.whl
+# Install them based on your JetPack and CUDA version
+# Example for JetPack 6.x and CUDA 12.6:
+> pip install torch torchvision --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
 ```
 
 ### 4. Install ONNX Runtime for Jetson
