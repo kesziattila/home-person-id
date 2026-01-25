@@ -32,13 +32,15 @@ class PersonIDSystem:
     6. Identity Linker handles face recognition + Re-ID
     """
 
-    def __init__(self, config_path: str):
+    def __init__(self, config_path: str, debug: bool = False):
         """Initialize the system.
 
         Args:
             config_path: Path to configuration file
+            debug: Enable debug output to stdout
         """
         self.config = load_config(config_path)
+        self._debug = debug
         self._setup_logging()
 
         logger.info("Initializing Person ID System")
@@ -107,6 +109,17 @@ class PersonIDSystem:
         """Start the system."""
         logger.info("Starting Person ID System")
 
+        if self._debug:
+            print("=" * 60)
+            print("[DEBUG MODE ENABLED]")
+            print("=" * 60)
+            print(f"Cameras: {[c.id for c in self.config.cameras]}")
+            print(f"Motion detection: {'enabled' if self.config.motion.enabled else 'disabled'}")
+            print(f"Face recognition: {'enabled' if self.config.face_recognition.enabled else 'disabled'}")
+            print(f"Re-ID: {'enabled' if self.config.reid.enabled else 'disabled'}")
+            print(f"Database: {self.config.database.path}")
+            print("=" * 60)
+
         # Warmup models
         logger.info("Warming up person detector...")
         self.person_detector.warmup()
@@ -124,6 +137,9 @@ class PersonIDSystem:
         self._running = True
         logger.info("System started successfully")
 
+        if self._debug:
+            print("[DEBUG] System started. Waiting for frames...")
+
     def stop(self):
         """Stop the system."""
         logger.info("Stopping Person ID System")
@@ -135,11 +151,26 @@ class PersonIDSystem:
         """Main processing loop."""
         self.start()
 
+        last_frame_report = time.time()
+        last_frame_count = 0
+
         try:
             while self._running:
                 self._process_frames()
                 self._periodic_cleanup()
                 time.sleep(0.001)  # Small sleep to prevent busy loop
+
+                # Debug: report frame rate every 10 seconds
+                if self._debug:
+                    now = time.time()
+                    if now - last_frame_report >= 10.0:
+                        frames_processed = self._frame_count - last_frame_count
+                        fps = frames_processed / (now - last_frame_report)
+                        print(f"[DEBUG] Stats: {frames_processed} frames in 10s ({fps:.1f} FPS), total: {self._frame_count}")
+                        if frames_processed == 0:
+                            print("[DEBUG] WARNING: No frames received! Check camera connections.")
+                        last_frame_report = now
+                        last_frame_count = self._frame_count
 
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
@@ -152,11 +183,17 @@ class PersonIDSystem:
             self._frame_count += 1
             camera_id = frame.camera_id
 
+            if self._debug and self._frame_count % 100 == 0:
+                print(f"[DEBUG] Frame #{self._frame_count} from {camera_id} ({frame.image.shape[1]}x{frame.image.shape[0]})")
+
             # Motion detection gate
             motion_result = self.motion_manager.detect(camera_id, frame.image)
 
             # Check if we have active tracks for this camera
             has_active_tracks = self.global_tracker.has_active_tracks(camera_id)
+
+            if self._debug and motion_result.has_motion:
+                print(f"[DEBUG] [{camera_id}] Motion detected (ratio={motion_result.motion_ratio:.4f})")
 
             # Continue processing if motion detected OR we have active tracks
             if not motion_result.has_motion and not has_active_tracks:
@@ -164,6 +201,12 @@ class PersonIDSystem:
 
             # Person detection
             detections = self.person_detector.detect(frame.image)
+
+            if self._debug and detections.count > 0:
+                print(f"[DEBUG] [{camera_id}] Detected {detections.count} person(s)")
+                for i, det in enumerate(detections.detections):
+                    bbox = [int(x) for x in det.bbox]
+                    print(f"  - Person {i+1}: bbox={bbox}, conf={det.confidence:.2f}")
 
             # If no detections but have active tracks, update tracker anyway
             # to maintain track state (will mark as lost after track_buffer frames)
@@ -175,6 +218,13 @@ class PersonIDSystem:
                 camera_id, detections, frame.image
             )
 
+            if self._debug and (track_result.new_track_ids or track_result.lost_track_ids or track_result.tracks):
+                if track_result.new_track_ids:
+                    print(f"[DEBUG] [{camera_id}] New local tracks: {track_result.new_track_ids}")
+                if track_result.lost_track_ids:
+                    print(f"[DEBUG] [{camera_id}] Lost local tracks: {track_result.lost_track_ids}")
+                print(f"[DEBUG] [{camera_id}] Active local tracks: {len(track_result.tracks)}")
+
             # Global tracking (cross-camera)
             global_result = self.global_tracker.process_local_tracks(
                 camera_id=camera_id,
@@ -184,6 +234,16 @@ class PersonIDSystem:
                 lost_track_ids=track_result.lost_track_ids,
                 has_motion=motion_result.has_motion,
             )
+
+            if self._debug:
+                print(f"[DEBUG] [{camera_id}] Global result: new={len(global_result.new_global_tracks)}, active={len(global_result.active_tracks)}, lost={len(global_result.tracks_lost)}")
+                if global_result.new_global_tracks:
+                    print(f"[DEBUG] [{camera_id}] New global tracks: {global_result.new_global_tracks}")
+                if global_result.handovers_completed:
+                    for tid, from_cam, to_cam in global_result.handovers_completed:
+                        print(f"[DEBUG] [{camera_id}] Handover: {tid} from {from_cam} -> {to_cam}")
+                if global_result.tracks_lost:
+                    print(f"[DEBUG] [{camera_id}] Tracks lost: {global_result.tracks_lost}")
 
             # Log events
             self._log_events(camera_id, global_result)
@@ -262,6 +322,12 @@ def main():
         default="config/config.yaml",
         help="Path to configuration file",
     )
+    parser.add_argument(
+        "--debug",
+        "-d",
+        action="store_true",
+        help="Enable debug output (print detections to stdout)",
+    )
     args = parser.parse_args()
 
     # Handle signals
@@ -277,7 +343,7 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     # Run system
-    system = PersonIDSystem(args.config)
+    system = PersonIDSystem(args.config, debug=args.debug)
     system.run()
 
 

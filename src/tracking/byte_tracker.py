@@ -271,11 +271,16 @@ class ByteTracker:
             det_idx, trk_idx = m
             self._trackers[trk_idx].update(high_conf_dets[det_idx, :4])
             track = self._tracks[self._trackers[trk_idx].id]
+            was_confirmed = track.is_confirmed
             track.bbox = tuple(high_conf_dets[det_idx, :4])
             track.confidence = high_conf_dets[det_idx, 4]
             track.hits += 1
             track.time_since_update = 0
             track.state = TrackState.TRACKED
+
+            # Report as new when track becomes confirmed (not on first detection)
+            if not was_confirmed and track.is_confirmed:
+                new_track_ids.append(track.track_id)
 
             # Extract crop if frame provided
             if frame is not None:
@@ -308,6 +313,8 @@ class ByteTracker:
                     still_unmatched.append(trk_idx)
 
         # Create new trackers for unmatched high confidence detections
+        # Note: new_track_ids is NOT populated here - tracks are reported as "new"
+        # only when they become confirmed (hits >= 3) to avoid spurious detections
         for i in unmatched_dets:
             det = high_conf_dets[i]
             tracker = KalmanBoxTracker(det[:4])
@@ -321,7 +328,6 @@ class ByteTracker:
                 state=TrackState.NEW,
             )
             self._tracks[tracker.id] = track
-            new_track_ids.append(self._next_id)
             self._next_id += 1
 
             if frame is not None:

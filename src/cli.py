@@ -947,7 +947,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
         return global_track.track_id if global_track else None
 
     def get_cameras_seen(global_track_id: str) -> list[str] | None:
-        for gt in global_tracker._global_tracks.values():
+        for gt in global_tracker._tracks.values():
             if gt.track_id == global_track_id:
                 return gt.cameras_seen
         return None

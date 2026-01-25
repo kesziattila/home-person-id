@@ -111,14 +111,43 @@ class GlobalTrackManager:
         if not self.zone_manager:
             self._load_handover_zones()
 
-        # Track ID counter
-        self._next_track_id = 1
+        # Track ID counter - load from database to avoid duplicates
+        self._next_track_id = self._load_next_track_id()
 
         # Store frame dimensions per camera for zone checks
         self._frame_dimensions: dict[str, tuple[int, int]] = {}
 
         # Store last known bbox for each local track (for zone-based handover)
         self._last_bboxes: dict[tuple[str, int], tuple[float, float, float, float]] = {}
+
+    def _load_next_track_id(self) -> int:
+        """Load the next track ID from database to avoid duplicates.
+
+        Returns:
+            Next available track ID (max existing ID + 1, or 1 if no tracks)
+        """
+        try:
+            with self.repository.get_session() as session:
+                from src.database.models import Track
+                result = session.query(Track.id).all()
+                if not result:
+                    return 1
+
+                # Extract numeric IDs from "global_N" format
+                max_id = 0
+                for (track_id,) in result:
+                    if track_id and track_id.startswith("global_"):
+                        try:
+                            num = int(track_id.replace("global_", ""))
+                            max_id = max(max_id, num)
+                        except ValueError:
+                            pass
+                next_id = max_id + 1
+                logger.info(f"Loaded next track ID from database: {next_id}")
+                return next_id
+        except Exception as e:
+            logger.warning(f"Failed to load track ID from database: {e}, starting from 1")
+            return 1
 
     def _load_handover_zones(self):
         """Load camera handover zones from config."""
