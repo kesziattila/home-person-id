@@ -49,6 +49,10 @@ cameras:
 # For polygon-based zones, use the "zones" section below instead.
 
 camera_topology:
+  # Use room-based zones for handovers
+  # If false, uses legacy rectangular overlap zones defined below
+  use_zones: true
+
   overlaps:
     # Example: front_door camera's right edge overlaps with hallway's left edge
     # - cameras: ["front_door", "hallway"]

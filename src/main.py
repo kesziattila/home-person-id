@@ -14,7 +14,7 @@ from src.detection.person_detector import PersonDetector
 from src.recognition.identity_linker import IdentityLinker
 from src.stream.manager import StreamManager
 from src.tracking.byte_tracker import ByteTrackerManager
-from src.tracking.global_tracker import GlobalTrackManager
+from src.tracking.global_tracker import GlobalTrackManager, GlobalTrackingResult
 from src.tracking.handover import HandoverManager
 from src.visualization.preview import PreviewBuffer
 from src.api.server import APIServer

@@ -558,7 +558,7 @@ class GlobalTrackManager:
             return None
 
         # Zone-based handover matching
-        if self.zone_manager:
+        if self.zone_manager and self.topology_config.use_zones:
             # Check what zone the new track is in
             zone_name = self.zone_manager.get_person_zone(
                 camera_id, local_track.bbox, frame_w, frame_h

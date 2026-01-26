@@ -66,6 +66,8 @@ class ZonesConfig:
 class CameraTopologyConfig:
     """Camera topology configuration."""
 
+    # Use room-based zones for handovers
+    use_zones: bool = True
     overlaps: list[CameraOverlap] = field(default_factory=list)
 
 
@@ -246,7 +248,9 @@ def load_config(config_path: str | Path) -> Config:
     overlaps = []
     for overlap_data in topology_data.get("overlaps", []):
         overlaps.append(CameraOverlap(**overlap_data))
-    camera_topology = CameraTopologyConfig(overlaps=overlaps)
+    camera_topology = CameraTopologyConfig(
+        use_zones=topology_data.get("use_zones", True), overlaps=overlaps
+    )
 
     # Parse zones configuration
     zones_data = data.get("zones", [])
