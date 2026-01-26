@@ -393,6 +393,8 @@ def test_camera(ctx, camera_id):
     decoder = "NVDEC" if cam_config.use_nvdec else "FFmpeg"
     click.echo(f"Decoder: {decoder}")
 
+    from src.stream.rtsp_client import RTSPClient
+
     # Use RTSPClient to test connection (reuses NVDEC pipeline logic)
     client = RTSPClient(
         camera_id=camera_id,
