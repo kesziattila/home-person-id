@@ -390,17 +390,25 @@ def test_camera(ctx, camera_id):
 
     click.echo(f"Testing camera: {cam_config.name}")
     click.echo(f"URL: {cam_config.rtsp_url}")
+    decoder = "NVDEC" if cam_config.use_nvdec else "FFmpeg"
+    click.echo(f"Decoder: {decoder}")
 
-    import cv2
+    # Use RTSPClient to test connection (reuses NVDEC pipeline logic)
+    client = RTSPClient(
+        camera_id=camera_id,
+        rtsp_url=cam_config.rtsp_url,
+        target_fps=5,
+        use_nvdec=cam_config.use_nvdec,
+    )
 
-    cap = cv2.VideoCapture(cam_config.rtsp_url)
-
-    if not cap.isOpened():
+    if not client._connect():
         click.echo("FAILED: Could not connect to camera", err=True)
+        if cam_config.use_nvdec:
+            click.echo("  NVDEC requires GStreamer and nvidia plugins")
         return
 
-    ret, frame = cap.read()
-    cap.release()
+    ret, frame = client._cap.read()
+    client._release_capture()
 
     if ret and frame is not None:
         h, w = frame.shape[:2]
