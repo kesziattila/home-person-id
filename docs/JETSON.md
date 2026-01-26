@@ -65,14 +65,35 @@ python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
 # Should show: ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
 ```
 
-### 5. Install Other Dependencies
+### 5. Install OpenCV with GStreamer (for NVDEC hardware decoding)
+
+The pip `opencv-python` packages don't include GStreamer support. For NVDEC hardware video decoding, use the system OpenCV via symlink:
 
 ```bash
-# Install Jetson-specific requirements
-pip install -r requirements-jetson.txt
+# Install system OpenCV (has GStreamer + CUDA)
+sudo apt install python3-opencv
+
+# Remove any pip opencv from venv
+pip uninstall opencv-python opencv-python-headless -y
+
+# Symlink system cv2 into venv
+VENV_SITE=$(python -c "import site; print(site.getsitepackages()[0])")
+ln -s /usr/lib/python3/dist-packages/cv2.cpython-310-aarch64-linux-gnu.so $VENV_SITE/
+
+# Verify GStreamer is available:
+python -c "import cv2; print(cv2.getBuildInformation())" | grep -i gstreamer
+# Should show: GStreamer: YES
 ```
 
-### 6. Copy Jetson Config
+### 6. Install Other Dependencies
+
+```bash
+# Install Jetson-specific requirements with constraints
+# Constraints file locks numpy<2.0 and prevents opencv pip packages
+pip install -c constraints-jetson.txt -r requirements-jetson.txt
+```
+
+### 7. Copy Jetson Config
 
 ```bash
 cp config/config.jetson.yaml config/config.yaml

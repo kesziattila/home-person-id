@@ -1,0 +1,13 @@
+# Constraints for Jetson to prevent incompatible package upgrades
+#
+# Usage: pip install -c constraints-jetson.txt -r requirements-jetson.txt
+
+# Lock numpy to <2.0 (required for onnxruntime-gpu 1.23.0)
+numpy<2.0,>=1.24
+
+# Prevent pip from installing opencv (use system python3-opencv with GStreamer)
+# These constraints ensure pip doesn't try to install/upgrade opencv packages
+opencv-python==9999.0.0
+opencv-python-headless==9999.0.0
+opencv-contrib-python==9999.0.0
+opencv-contrib-python-headless==9999.0.0

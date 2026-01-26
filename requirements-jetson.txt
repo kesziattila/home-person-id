@@ -3,12 +3,13 @@
 # IMPORTANT: Install these BEFORE running pip install -r requirements-jetson.txt:
 #   1. PyTorch from NVIDIA wheels (not pip)
 #   2. onnxruntime-gpu from NVIDIA wheels (not pip)
+#   3. System OpenCV with GStreamer (apt install python3-opencv)
 #
 # See docs/JETSON.md for installation instructions.
 
 # Core
-opencv-python>=4.8.0
-numpy>=1.24.0
+# NOTE: opencv-python is NOT included - use system python3-opencv for GStreamer/NVDEC support
+numpy>=1.24.0,<2.0
 pyyaml>=6.0
 pillow>=10.0.0
 

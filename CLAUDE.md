@@ -185,6 +185,18 @@ When user reports a bug with a sample image:
 - Use pytest fixtures for shared setup
 - Name tests descriptively: `test_<what>_<expected_behavior>`
 
+### Pre-commit Verification
+**Before committing any code changes**, verify the code is valid:
+1. **Run syntax check**: `python -m py_compile <modified_file.py>`
+2. **Or use IDE diagnostics**: Check for errors/warnings in the IDE
+3. **For CLI changes**: Test the modified command (e.g., `python -m src.cli <command> --help`)
+4. **For import changes**: Verify imports work: `python -c "from src.module import Class"`
+
+This catches basic errors like:
+- Missing imports
+- Syntax errors
+- Typos in class/function names
+
 ---
 
 ## Pending Improvements
