@@ -606,6 +606,7 @@ class GlobalTrackManager:
                                     f"Zone handover match: zone='{zone_name}', "
                                     f"similarity={similarity:.2f}"
                                 )
+                                self._pending_handovers.remove(pending)
                                 return (pending.global_track_id, pending.from_camera)
                     else:
                         # No Re-ID available, accept based on timing and zone alone
