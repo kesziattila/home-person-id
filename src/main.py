@@ -16,6 +16,8 @@ from src.stream.manager import StreamManager
 from src.tracking.byte_tracker import ByteTrackerManager
 from src.tracking.global_tracker import GlobalTrackManager
 from src.tracking.handover import HandoverManager
+from src.visualization.preview import PreviewBuffer
+from src.api.server import APIServer
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +89,14 @@ class PersonIDSystem:
         self._last_cleanup = time.time()
         self._cleanup_interval = 300  # 5 minutes
 
+        # Initialize Web UI / API
+        self.preview_buffer = PreviewBuffer()
+        self.api_server = APIServer(
+            self.preview_buffer,
+            host=self.config.api.host,
+            port=self.config.api.port
+        )
+
     def _setup_logging(self):
         """Setup logging based on config."""
         log_level = getattr(logging, self.config.logging.level.upper(), logging.INFO)
@@ -134,6 +144,9 @@ class PersonIDSystem:
         # Start camera streams
         self.stream_manager.start()
 
+        # Start API server
+        self.api_server.start()
+
         self._running = True
         logger.info("System started successfully")
 
@@ -144,6 +157,7 @@ class PersonIDSystem:
         """Stop the system."""
         logger.info("Stopping Person ID System")
         self._running = False
+        self.api_server.stop()
         self.stream_manager.stop()
         logger.info("System stopped")
 
@@ -247,6 +261,26 @@ class PersonIDSystem:
 
             # Log events
             self._log_events(camera_id, global_result)
+
+            # Update preview buffer
+            identities = {}
+            for track in track_result.tracks:
+                global_track = self.global_tracker.get_global_track_for_local(camera_id, track.track_id)
+                if global_track:
+                    identity = self.identity_linker.get_identity(global_track.track_id)
+                    if identity:
+                        identities[track.track_id] = identity
+
+            self.preview_buffer.update(
+                camera_id=camera_id,
+                image=frame.image,
+                metadata={
+                    "camera_id": camera_id,
+                    "tracks": track_result.tracks,
+                    "identities": identities,
+                    "global_tracks": global_result.active_tracks
+                }
+            )
 
     def _log_events(self, camera_id: str, result):
         """Log tracking events."""

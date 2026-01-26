@@ -237,6 +237,19 @@ mqtt:
   topic_prefix: "home/person"
 
 # =============================================================================
+# API / WEB UI
+# =============================================================================
+# Web interface for live preview and management.
+
+api:
+  # Interface to bind the server to
+  # "0.0.0.0" = all interfaces, "127.0.0.1" = local only
+  host: "0.0.0.0"
+
+  # Port for the web interface (default: 8000)
+  port: 8000
+
+# =============================================================================
 # DATABASE
 # =============================================================================
 # SQLite database for storing events and track history.

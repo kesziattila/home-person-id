@@ -34,6 +34,11 @@ class IdentificationResult:
     method: str = "none"  # 'face', 'reid', 'none'
     is_confirmed: bool = False
 
+    # For visualization compatibility with TrackIdentity
+    reid_score: float = -1.0
+    face_info: Optional[tuple[str, float]] = None
+    is_reid_identified: bool = False
+
 
 @dataclass
 class TrackIdentityState:
@@ -201,6 +206,41 @@ class IdentityLinker:
         """Get identity state for a track."""
         return self._track_states.get(global_track_id)
 
+    def get_identity(self, global_track_id: str) -> Optional[IdentificationResult]:
+        """Get current identification status for a track.
+
+        This method is used by the system to get identity information for
+        visualization and logging.
+
+        Args:
+            global_track_id: Global track ID
+
+        Returns:
+            IdentificationResult if track exists, None otherwise
+        """
+        state = self._track_states.get(global_track_id)
+        if not state:
+            return None
+
+        name = self._get_person_name(state.person_id) if state.person_id else None
+        
+        # Get reid score from shared gallery if not identified or if identified via reid
+        reid_score = -1.0
+        # For preview we might want to see the best match score even if not confirmed
+        # But we don't have the crop here. 
+        # TrackIdentityState doesn't store the latest score, but TrackIdentity does.
+        # However, for now we just want to fix the AttributeError.
+        
+        return IdentificationResult(
+            person_id=state.person_id,
+            person_name=name,
+            confidence=state.identification_confidence,
+            method=state.identified_by,
+            is_confirmed=state.is_identified,
+            is_reid_identified=state.identified_by == "reid" or "transfer" in state.identified_by,
+            face_info=(name, state.identification_confidence) if "face" in state.identified_by else None
+        )
+
     # ==================== Main Processing Workflow ====================
 
     def process_track(
@@ -233,12 +273,15 @@ class IdentityLinker:
         # If already identified, just update Re-ID gallery
         if state.is_identified:
             self._update_reid_gallery(state, person_crop, num_persons_in_frame)
+            name = self._get_person_name(state.person_id)
             return IdentificationResult(
                 person_id=state.person_id,
-                person_name=self._get_person_name(state.person_id),
+                person_name=name,
                 confidence=state.identification_confidence,
                 method=state.identified_by,
                 is_confirmed=True,
+                is_reid_identified=state.identified_by == "reid",
+                face_info=(name, state.identification_confidence) if state.identified_by == "face" else None
             )
 
         # Check if we should run face recognition
@@ -361,6 +404,7 @@ class IdentityLinker:
                 confidence=best_score,
                 method="face",
                 is_confirmed=True,
+                face_info=(best_match_name, best_score)
             )
 
         return IdentificationResult(
@@ -369,6 +413,7 @@ class IdentityLinker:
             confidence=best_score,
             method="face",
             is_confirmed=False,
+            face_info=(best_match_name, best_score)
         )
 
     def _update_reid_gallery(

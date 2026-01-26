@@ -188,6 +188,14 @@ class LoggingConfig:
 
 
 @dataclass
+class APIConfig:
+    """API server configuration."""
+
+    host: str = "0.0.0.0"
+    port: int = 8000
+
+
+@dataclass
 class Config:
     """Main configuration class."""
 
@@ -200,6 +208,7 @@ class Config:
     reid: ReIDConfig = field(default_factory=ReIDConfig)
     face_recognition: FaceRecognitionConfig = field(default_factory=FaceRecognitionConfig)
     mqtt: MQTTConfig = field(default_factory=MQTTConfig)
+    api: APIConfig = field(default_factory=APIConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     snapshots: SnapshotConfig = field(default_factory=SnapshotConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
@@ -262,6 +271,7 @@ def load_config(config_path: str | Path) -> Config:
     reid = ReIDConfig(**data.get("reid", {}))
     face_recognition = FaceRecognitionConfig(**data.get("face_recognition", {}))
     mqtt = MQTTConfig(**data.get("mqtt", {}))
+    api = APIConfig(**data.get("api", {}))
     database = DatabaseConfig(**data.get("database", {}))
     snapshots = SnapshotConfig(**data.get("snapshots", {}))
     logging_config = LoggingConfig(**data.get("logging", {}))
@@ -276,6 +286,7 @@ def load_config(config_path: str | Path) -> Config:
         reid=reid,
         face_recognition=face_recognition,
         mqtt=mqtt,
+        api=api,
         database=database,
         snapshots=snapshots,
         logging=logging_config,

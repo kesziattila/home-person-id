@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Home Person ID Preview</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .stream-container {
+            position: relative;
+            width: 100%;
+            padding-top: 56.25%; /* 16:9 Aspect Ratio */
+            background-color: #1a1a1a;
+            border-radius: 0.5rem;
+            overflow: hidden;
+        }
+        .stream-img {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <nav class="bg-gray-800 p-4 shadow-lg">
+        <div class="container mx-auto flex justify-between items-center">
+            <h1 class="text-xl font-bold">🏠 Home Person ID</h1>
+            <div id="status-badge" class="px-3 py-1 rounded-full text-xs font-medium bg-green-500 text-green-950">
+                System Online
+            </div>
+        </div>
+    </nav>
+
+    <main class="container mx-auto p-6">
+        <div id="camera-grid" class="grid grid-cols-1 md:grid-cols-2 gap-6">
+            <!-- Camera streams will be injected here -->
+        </div>
+    </main>
+
+    <script>
+        async function loadCameras() {
+            try {
+                const response = await fetch('/api/v1/cameras');
+                const data = await response.json();
+                const grid = document.getElementById('camera-grid');
+                grid.innerHTML = '';
+
+                if (data.cameras && data.cameras.length > 0) {
+                    data.cameras.forEach(cameraId => {
+                        const col = document.createElement('div');
+                        col.className = 'space-y-2';
+                        col.innerHTML = `
+                            <div class="flex justify-between items-center">
+                                <h2 class="text-lg font-semibold px-1">${cameraId}</h2>
+                            </div>
+                            <div class="stream-container shadow-2xl">
+                                <img src="/api/v1/stream/${cameraId}" 
+                                     class="stream-img" 
+                                     alt="Stream for ${cameraId}"
+                                     onerror="this.src='https://via.placeholder.com/640x360?text=No+Stream+Available'">
+                            </div>
+                        `;
+                        grid.appendChild(col);
+                    });
+                } else {
+                    grid.innerHTML = '<div class="col-span-full text-center py-20 text-gray-500">No active camera streams found. Waiting for frames...</div>';
+                }
+            } catch (error) {
+                console.error('Error loading cameras:', error);
+            }
+        }
+
+        // Initial load
+        loadCameras();
+
+        // Refresh camera list every 5 seconds in case new ones appear
+        setInterval(loadCameras, 5000);
+    </script>
+</body>
+</html>

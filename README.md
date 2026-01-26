@@ -90,6 +90,15 @@ Debug images are saved to `data/debug/reid/` for troubleshooting:
 - `gallery_stored_*.jpg` - When person leaves and Re-ID is stored
 - `reid_match_*.jpg` - Side-by-side comparison when Re-ID match found
 
+### 5. Web User Interface
+A real-time web dashboard is available for monitoring all camera streams:
+- **Live Streams**: High-resolution MJPEG streaming with real-time annotations.
+- **Unified View**: See all cameras in a single responsive grid.
+- **Detailed Metadata**: Displays same tracking info as CLI preview (Face/Re-ID confidence).
+- **Zero-Config**: Automatically discovers cameras from system configuration.
+
+Default access: `http://localhost:8000`
+
 ## Project Structure
 
 ```
@@ -100,6 +109,12 @@ home-person-id/
 │   ├── main.py                  # Entry point, main processing loop
 │   ├── cli.py                   # CLI commands
 │   ├── config.py                # Configuration dataclasses
+│   ├── api/
+│   │   └── server.py            # FastAPI web server
+│   ├── visualization/
+│   │   └── preview.py           # Shared visualization and frame buffering
+│   ├── static/
+│   │   └── index.html           # Web UI dashboard
 │   ├── stream/
 │   │   ├── rtsp_client.py       # RTSP camera reader (threaded)
 │   │   └── manager.py           # Multi-camera stream manager
@@ -230,6 +245,14 @@ Press 'q' to quit.
 python -m src.main --config config/config.yaml
 ```
 
+Once running, the Web UI is available at `http://localhost:8000`. You can configure the host and port in `config.yaml`:
+
+```yaml
+api:
+  host: "0.0.0.0"
+  port: 8000
+```
+
 ### 7. Query Events
 
 ```bash
@@ -300,9 +323,8 @@ The Re-ID system helps identify persons who leave and return:
 ## Future Improvements (Not Yet Implemented)
 
 - [ ] **Phase 4**: MQTT publisher for Home Assistant integration
-- [ ] **Phase 5**: FastAPI REST server
+- [x] **Phase 5**: FastAPI REST server & Web UI
 - [ ] **Phase 5**: TensorRT optimization for Jetson
-- [ ] **Phase 6**: Web UI for management
 
 ## Troubleshooting
 

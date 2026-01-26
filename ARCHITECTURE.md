@@ -117,9 +117,31 @@ Dataclasses for all configuration sections:
 - CameraConfig, CameraTopologyConfig
 - MotionConfig, TrackingConfig
 - ReIDConfig, FaceRecognitionConfig
-- MQTTConfig, DatabaseConfig, SnapshotConfig
+- MQTTConfig, DatabaseConfig, SnapshotConfig, APIConfig
 
 Loaded from YAML file via `load_config()`.
+
+### 7. Visualization & Web UI (`src/visualization/`, `src/api/`, `src/static/`)
+
+**PreviewBuffer** (`visualization/preview.py`)
+- Thread-safe buffer for latest frames and metadata per camera
+- Used to decouple main processing loop from web streaming
+- Stores copies of frames to prevent mutation issues
+
+**Visualizer** (`visualization/preview.py`)
+- Shared drawing logic for annotations
+- Uses `TrackRenderer` from `src/preview.py` for consistent look and feel
+
+**APIServer** (`api/server.py`)
+- FastAPI-based web server
+- Runs in a separate daemon thread
+- Provides MJPEG streaming endpoints (`/api/v1/stream/{camera_id}`)
+- Serves static dashboard (`index.html`)
+
+**Web Dashboard** (`static/index.html`)
+- Tailwind CSS based responsive UI
+- Auto-discovers active cameras
+- Displays real-time annotated streams
 
 ## Data Flow
 
@@ -149,6 +171,9 @@ Loaded from YAML file via `load_config()`.
    └── Runs face recognition if due
    └── Updates Re-ID gallery
    └── Returns IdentificationResult
+
+7. PreviewBuffer.update(camera_id, frame, metadata)
+   └── Pushes annotated frame data to buffer for API server
 ```
 
 ## Key Algorithms
@@ -277,11 +302,11 @@ Loaded from YAML file via `load_config()`.
 - Topics: track/new, track/identified, track/handover, occupancy
 
 ### Phase 5: API & Optimization
-- Add `src/api/server.py` with FastAPI
-- REST endpoints for persons, tracks, events
-- Export models to TensorRT for Jetson
+- [x] Add `src/api/server.py` with FastAPI
+- [x] REST endpoints for cameras and streaming
+- [ ] Export models to TensorRT for Jetson
 
 ### Phase 6: Web UI
-- Simple web interface for person management
-- Live camera preview with annotations
-- Event history viewer
+- [x] Simple web interface for monitoring
+- [x] Live camera preview with annotations
+- [ ] Event history viewer
