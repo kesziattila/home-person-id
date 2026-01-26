@@ -46,13 +46,15 @@ class StreamManager:
             camera_id=camera_config.id,
             rtsp_url=camera_config.rtsp_url,
             target_fps=camera_config.fps,
+            use_nvdec=camera_config.use_nvdec,
         )
         self._clients[camera_config.id] = client
 
         if self._running:
             client.start()
 
-        logger.info(f"Added camera: {camera_config.id} ({camera_config.name})")
+        decoder = "NVDEC" if camera_config.use_nvdec else "FFmpeg"
+        logger.info(f"Added camera: {camera_config.id} ({camera_config.name}) [{decoder}]")
 
     def remove_camera(self, camera_id: str) -> None:
         """Remove a camera from the manager.

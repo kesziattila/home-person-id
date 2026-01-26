@@ -26,6 +26,7 @@ class CameraConfig:
     rtsp_url: str
     fps: int = 5
     exclusion_zones: list[ExclusionZone] = field(default_factory=list)
+    use_nvdec: bool = False  # Use Jetson NVDEC hardware decoder
 
 
 @dataclass

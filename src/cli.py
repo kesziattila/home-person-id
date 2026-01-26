@@ -131,7 +131,7 @@ def add_person(ctx, name, images, camera, capture):
 
         import cv2
 
-        with RTSPClient(camera, cam_config.rtsp_url, target_fps=10) as client:
+        with RTSPClient(camera, cam_config.rtsp_url, target_fps=10, use_nvdec=cam_config.use_nvdec) as client:
             captured = 0
             while captured < capture:
                 frame = client.get_frame(timeout=2.0)
@@ -237,7 +237,7 @@ def add_faces(ctx, person, images, camera, capture, interactive):
             click.echo(f"Interactive capture from {cam_config.name}")
             click.echo("Press 'c' to capture, 'q' to quit")
 
-            with RTSPClient(camera, cam_config.rtsp_url, target_fps=cam_config.fps) as client:
+            with RTSPClient(camera, cam_config.rtsp_url, target_fps=cam_config.fps, use_nvdec=cam_config.use_nvdec) as client:
                 while True:
                     frame = client.get_frame(timeout=2.0)
                     if frame is None:
@@ -279,7 +279,7 @@ def add_faces(ctx, person, images, camera, capture, interactive):
             # Automatic capture
             click.echo(f"Capturing {capture} frame(s) from {cam_config.name}...")
 
-            with RTSPClient(camera, cam_config.rtsp_url, target_fps=cam_config.fps) as client:
+            with RTSPClient(camera, cam_config.rtsp_url, target_fps=cam_config.fps, use_nvdec=cam_config.use_nvdec) as client:
                 captured = 0
                 attempts = 0
                 while captured < capture and attempts < capture * 10:
@@ -495,7 +495,7 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
     window_name = "Preview"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
 
-    with RTSPClient(camera, cam_config.rtsp_url, target_fps=cam_config.fps) as client:
+    with RTSPClient(camera, cam_config.rtsp_url, target_fps=cam_config.fps, use_nvdec=cam_config.use_nvdec) as client:
         window_size_set = False
         while True:
             frame_data = client.get_frame(timeout=2.0)
@@ -747,7 +747,7 @@ def draw_zones(ctx, camera, scale):
     cv2.namedWindow("Draw Zones")
     cv2.setMouseCallback("Draw Zones", mouse_callback)
 
-    with RTSPClient(camera, cam_config.rtsp_url, target_fps=cam_config.fps) as client:
+    with RTSPClient(camera, cam_config.rtsp_url, target_fps=cam_config.fps, use_nvdec=cam_config.use_nvdec) as client:
         while True:
             frame = client.get_frame(timeout=2.0)
             if frame is None:
@@ -978,7 +978,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
     def capture_frames(cam_id, cam_config):
         nonlocal running
         try:
-            with RTSPClient(cam_id, cam_config.rtsp_url, target_fps=cam_config.fps) as client:
+            with RTSPClient(cam_id, cam_config.rtsp_url, target_fps=cam_config.fps, use_nvdec=cam_config.use_nvdec) as client:
                 while running:
                     frame = client.get_frame(timeout=1.0)
                     if frame is not None:

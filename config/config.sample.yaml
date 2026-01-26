@@ -13,12 +13,15 @@
 #   - rtsp_url: RTSP stream URL
 #   - fps: Target frames per second (optional, default: 5)
 #   - exclusion_zones: Areas to ignore detections (optional)
+#   - use_nvdec: Use Jetson NVDEC hardware decoder (optional, default: false)
+#                Requires GStreamer and nvidia plugins on Jetson
 
 cameras:
   - id: front_door
     name: "Front Door"
     rtsp_url: "rtsp://user:pass@192.168.1.100:554/stream1"  # CHANGE ME
     fps: 5
+    # use_nvdec: true  # Enable for Jetson hardware decoding
 
   - id: hallway
     name: "Hallway"

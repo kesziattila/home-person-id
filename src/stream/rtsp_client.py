@@ -33,6 +33,7 @@ class RTSPClient:
         target_fps: int = 5,
         buffer_size: int = 2,
         reconnect_delay: float = 5.0,
+        use_nvdec: bool = False,
     ):
         """Initialize RTSP client.
 
@@ -42,12 +43,14 @@ class RTSPClient:
             target_fps: Target frames per second to capture
             buffer_size: Maximum frames to buffer
             reconnect_delay: Seconds to wait before reconnecting after failure
+            use_nvdec: Use Jetson NVDEC hardware decoder (requires GStreamer)
         """
         self.camera_id = camera_id
         self.rtsp_url = rtsp_url
         self.target_fps = target_fps
         self.buffer_size = buffer_size
         self.reconnect_delay = reconnect_delay
+        self.use_nvdec = use_nvdec
 
         self._frame_queue: Queue[Frame] = Queue(maxsize=buffer_size)
         self._running = False
@@ -101,30 +104,61 @@ class RTSPClient:
         except Empty:
             return None
 
+    def _build_gstreamer_pipeline(self) -> str:
+        """Build GStreamer pipeline for NVDEC hardware decoding.
+
+        Returns:
+            GStreamer pipeline string for OpenCV VideoCapture
+        """
+        # GStreamer pipeline for Jetson NVDEC hardware decoding
+        # Supports H.264 and H.265 streams
+        pipeline = (
+            f"rtspsrc location={self.rtsp_url} latency=0 ! "
+            "rtph264depay ! h264parse ! nvv4l2decoder ! "
+            "nvvidconv ! video/x-raw,format=BGRx ! "
+            "videoconvert ! video/x-raw,format=BGR ! "
+            "appsink drop=1 max-buffers=1"
+        )
+        return pipeline
+
     def _connect(self) -> bool:
         """Connect to the RTSP stream."""
         self._release_capture()
 
         logger.info(f"Camera {self.camera_id}: Connecting to {self.rtsp_url}")
 
-        # Configure OpenCV capture with optimal settings for RTSP
-        self._cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
+        if self.use_nvdec:
+            # Use GStreamer with NVDEC hardware decoder
+            pipeline = self._build_gstreamer_pipeline()
+            logger.info(f"Camera {self.camera_id}: Using NVDEC hardware decoder")
+            logger.debug(f"Camera {self.camera_id}: GStreamer pipeline: {pipeline}")
+            self._cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        else:
+            # Use FFmpeg (CPU decoding)
+            self._cap = cv2.VideoCapture(self.rtsp_url, cv2.CAP_FFMPEG)
 
         if self._cap is None or not self._cap.isOpened():
             logger.error(f"Camera {self.camera_id}: Failed to open stream")
+            if self.use_nvdec:
+                logger.error(
+                    f"Camera {self.camera_id}: NVDEC failed - ensure GStreamer and "
+                    "nvidia plugins are installed (gstreamer1.0-plugins-bad)"
+                )
             self._connected = False
             return False
 
-        # Set buffer size to minimize latency
-        self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        # Set buffer size to minimize latency (only works with FFmpeg backend)
+        if not self.use_nvdec:
+            self._cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 
         # Try to get stream properties
         width = int(self._cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         height = int(self._cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         fps = self._cap.get(cv2.CAP_PROP_FPS)
 
+        decoder = "NVDEC" if self.use_nvdec else "FFmpeg"
         logger.info(
-            f"Camera {self.camera_id}: Connected - {width}x{height} @ {fps:.1f} FPS"
+            f"Camera {self.camera_id}: Connected ({decoder}) - {width}x{height} @ {fps:.1f} FPS"
         )
 
         self._connected = True

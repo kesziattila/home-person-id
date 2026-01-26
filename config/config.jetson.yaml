@@ -3,6 +3,7 @@
 #
 # Key optimizations:
 # - Uses GPU-accelerated inference (CUDA/TensorRT)
+# - NVDEC hardware video decoding for RTSP streams
 # - Smaller models to fit in 8GB unified memory
 # - Balanced for performance and accuracy
 #
@@ -13,16 +14,19 @@ cameras:
     name: "Front Door"
     rtsp_url: "rtsp://user:pass@192.168.1.100:554/stream1"  # CHANGE ME
     fps: 5  # Jetson can handle higher FPS
+    use_nvdec: true  # Hardware video decoding
 
   - id: hallway
     name: "Hallway"
     rtsp_url: "rtsp://user:pass@192.168.1.101:554/stream1"  # CHANGE ME
     fps: 5
+    use_nvdec: true
 
   - id: living_room
     name: "Living Room"
     rtsp_url: "rtsp://user:pass@192.168.1.102:554/stream1"  # CHANGE ME
     fps: 5
+    use_nvdec: true
     exclusion_zones:
       - x1: 0.92
         y1: 0.0
