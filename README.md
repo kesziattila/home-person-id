@@ -268,6 +268,11 @@ Press 'q' to quit.
 python -m src.main --config config/config.yaml
 ```
 
+To enable performance reporting, use the `--perf-report` flag:
+```bash
+python -m src.main --perf-report
+```
+
 Once running, the Web UI is available at `http://localhost:8000`. You can configure the host and port in `config.yaml`:
 
 ```yaml

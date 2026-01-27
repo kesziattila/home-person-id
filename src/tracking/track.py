@@ -47,6 +47,8 @@ class LocalTrack:
 
     # Crop for Re-ID (stored temporarily)
     last_crop: Optional[np.ndarray] = None
+    last_reid_embedding: Optional[np.ndarray] = None
+    last_reid_quality: float = 0.0
 
     @property
     def is_confirmed(self) -> bool:

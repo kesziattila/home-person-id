@@ -5,7 +5,7 @@ import logging
 import signal
 import sys
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Any, Dict, List
 
@@ -22,6 +22,7 @@ from src.tracking.global_tracker import GlobalTrackManager, GlobalTrackingResult
 from src.tracking.handover import HandoverManager
 from src.visualization.preview import PreviewBuffer
 from src.api.server import APIServer
+from src.utils.profiler import profiler
 
 from queue import Queue, Empty
 from threading import Thread
@@ -49,6 +50,7 @@ class InferenceResult:
     motion_result: Any
     detections: Any
     timestamp: float
+    reid_embeddings: Dict[int, tuple[np.ndarray, float]] = field(default_factory=dict)
 
 
 class PersonIDSystem:
@@ -207,15 +209,45 @@ class PersonIDSystem:
                 task: InferenceTask = self._inference_queue.get(timeout=0.1)
                 
                 # Person detection (expensive)
-                detections = self.person_detector.detect(task.frame)
+                with profiler.measure("PersonDetector.detect"):
+                    detections = self.person_detector.detect(task.frame)
                 
+                # Extract Re-ID for all detections to avoid doing it in main thread
+                reid_embeddings = {}
+                if detections.detections:
+                    crops = []
+                    det_indices = []
+                    for i, det in enumerate(detections.detections):
+                        # Use a more robust crop to ensure Re-ID quality matches what's expected
+                        # ReIDExtractor uses the whole crop, but we need to ensure it's not empty
+                        x1, y1, x2, y2 = map(int, det.bbox)
+                        # Pad a bit if possible to avoid edge artifacts
+                        h, w = task.frame.shape[:2]
+                        x1, y1 = max(0, x1), max(0, y1)
+                        x2, y2 = min(w, x2), min(h, y2)
+                        
+                        crop = task.frame[y1:y2, x1:x2]
+                        if crop.size > 0:
+                            crops.append(crop)
+                            det_indices.append(i)
+                    
+                    if crops:
+                        with profiler.measure("ReIDExtractor.extract_batch"):
+                            # Lazy load or use existing extractor
+                            reid_extractor = self.identity_linker._id_manager.reid_extractor
+                            if reid_extractor:
+                                results = reid_extractor.extract_batch(crops)
+                                for idx, res in zip(det_indices, results):
+                                    reid_embeddings[idx] = res
+
                 # Push to results
                 result = InferenceResult(
                     camera_id=task.camera_id,
                     frame=task.frame,
                     motion_result=task.motion_result,
                     detections=detections,
-                    timestamp=task.timestamp
+                    timestamp=task.timestamp,
+                    reid_embeddings=reid_embeddings
                 )
                 
                 # If result queue is full, drop oldest
@@ -243,13 +275,17 @@ class PersonIDSystem:
 
         try:
             while self._running:
+                loop_start = time.perf_counter()
+                
                 # 1. Collect frames from cameras and push to inference queue
-                for frame in self.stream_manager.get_frames(timeout=0.01):
+                frames = self.stream_manager.get_frames(timeout=0.01)
+                for frame in frames:
                     self._frame_count += 1
                     camera_id = frame.camera_id
 
                     # Motion detection gate
-                    motion_result = self.motion_manager.detect(camera_id, frame.image)
+                    with profiler.measure("MotionDetector.detect"):
+                        motion_result = self.motion_manager.detect(camera_id, frame.image)
 
                     # Check if we have active tracks for this camera
                     has_active_tracks = self.global_tracker.has_active_tracks(camera_id)
@@ -274,19 +310,20 @@ class PersonIDSystem:
                         self._inference_queue.put(task)
                     else:
                         # No motion/tracks, still update preview buffer for live view
-                        self.preview_buffer.update(
-                            camera_id=camera_id,
-                            image=frame.image,
-                            metadata={
-                                "camera_id": camera_id,
-                                "tracks": [],
-                                "identities": {},
-                                "global_tracks": [
-                                    t for t in self.global_tracker.get_active_tracks()
-                                    if t.current_camera_id == camera_id
-                                ]
-                            }
-                        )
+                        with profiler.measure("PreviewBuffer.update"):
+                            self.preview_buffer.update(
+                                camera_id=camera_id,
+                                image=frame.image,
+                                metadata={
+                                    "camera_id": camera_id,
+                                    "tracks": [],
+                                    "identities": {},
+                                    "global_tracks": [
+                                        t for t in self.global_tracker.get_active_tracks()
+                                        if t.current_camera_id == camera_id
+                                    ]
+                                }
+                            )
 
                 # 2. Process results from inference worker
                 try:
@@ -302,12 +339,27 @@ class PersonIDSystem:
 
                 # 4. Stats
                 now = time.time()
+                loop_time = time.perf_counter() - loop_start
+                profiler.end_measure("MainLoop", loop_start)
+                
                 if now - last_frame_report >= 10.0:
                     frames_processed = self._frame_count - last_frame_count
                     fps = frames_processed / (now - last_frame_report)
-                    print(f"[DEBUG] Stats: {frames_processed} frames in 10s ({fps:.1f} FPS), total: {self._frame_count}")
+                    
+                    extra_stats = {
+                        "FPS": f"{fps:.1f}",
+                        "Total Frames": self._frame_count,
+                        "Inference Queue": self._inference_queue.qsize(),
+                        "Result Queue": self._result_queue.qsize(),
+                        "Main Thread Blocked": "Yes" if loop_time > 0.5 else "No",
+                        "Loop Time (ms)": f"{loop_time*1000:.1f}"
+                    }
+                    
+                    profiler.log_stats(extra_info=extra_stats)
+                    
                     if frames_processed == 0:
-                        print("[DEBUG] WARNING: No frames received! Check camera connections.")
+                        logger.warning("No frames received in the last 10s! Check camera connections.")
+                    
                     last_frame_report = now
                     last_frame_count = self._frame_count
 
@@ -327,42 +379,46 @@ class PersonIDSystem:
         detections = result.detections
 
         # 1. Update tracking
-        track_result = self.tracker_manager.update(
-            camera_id, detections, frame_image
-        )
+        with profiler.measure("ByteTracker.update"):
+            track_result = self.tracker_manager.update(
+                camera_id, detections, frame_image, result.reid_embeddings
+            )
 
         # 2. Global tracking (cross-camera)
-        global_result = self.global_tracker.process_local_tracks(
-            camera_id=camera_id,
-            local_tracks=track_result.tracks,
-            frame=frame_image,
-            new_track_ids=track_result.new_track_ids,
-            lost_track_ids=track_result.lost_track_ids,
-            has_motion=motion_result.has_motion,
-        )
+        with profiler.measure("GlobalTracker.process"):
+            global_result = self.global_tracker.process_local_tracks(
+                camera_id=camera_id,
+                local_tracks=track_result.tracks,
+                frame=frame_image,
+                new_track_ids=track_result.new_track_ids,
+                lost_track_ids=track_result.lost_track_ids,
+                has_motion=motion_result.has_motion,
+            )
 
         # 3. Log events
         self._log_events(camera_id, global_result)
 
         # 4. Update preview buffer
         identities = {}
-        for track in track_result.tracks:
-            global_track = self.global_tracker.get_global_track_for_local(camera_id, track.track_id)
-            if global_track:
-                identity = self.identity_linker.get_identity(global_track.track_id)
-                if identity:
-                    identities[track.track_id] = identity
+        with profiler.measure("IdentityLinker.get_identity"):
+            for track in track_result.tracks:
+                global_track = self.global_tracker.get_global_track_for_local(camera_id, track.track_id)
+                if global_track:
+                    identity = self.identity_linker.get_identity(global_track.track_id)
+                    if identity:
+                        identities[track.track_id] = identity
 
-        self.preview_buffer.update(
-            camera_id=camera_id,
-            image=frame_image,
-            metadata={
-                "camera_id": camera_id,
-                "tracks": track_result.tracks,
-                "identities": identities,
-                "global_tracks": global_result.active_tracks
-            }
-        )
+        with profiler.measure("PreviewBuffer.update"):
+            self.preview_buffer.update(
+                camera_id=camera_id,
+                image=frame_image,
+                metadata={
+                    "camera_id": camera_id,
+                    "tracks": track_result.tracks,
+                    "identities": identities,
+                    "global_tracks": global_result.active_tracks
+                }
+            )
 
     def _process_frames(self):
         """Deprecated: use run() with decoupled pipeline."""
@@ -448,7 +504,15 @@ def main():
         action="store_true",
         help="Enable debug output (print detections to stdout)",
     )
+    parser.add_argument(
+        "--perf-report",
+        action="store_true",
+        help="Print performance report every 10 seconds",
+    )
     args = parser.parse_args()
+
+    # Configure profiler
+    profiler.enabled = args.perf_report
 
     # Handle signals
     system = None

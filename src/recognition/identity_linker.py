@@ -21,6 +21,7 @@ from src.database.repository import Repository
 from src.recognition.face_recognizer import FaceRecognizer
 from src.recognition.identification_manager import IdentificationManager
 from src.recognition.reid_extractor import ReIDExtractor, EmbeddingGallery
+from src.utils.profiler import profiler
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +259,7 @@ class IdentityLinker:
         bbox: tuple[float, float, float, float],
         force_face_check: bool = False,
         num_persons_in_frame: int = 1,
+        precomputed_reid: Optional[tuple[np.ndarray, float]] = None,
     ) -> IdentificationResult:
         """Process a track for identification.
 
@@ -270,6 +272,7 @@ class IdentityLinker:
             bbox: Bounding box of person in frame
             force_face_check: Force face recognition even if recently checked
             num_persons_in_frame: Number of persons detected in frame
+            precomputed_reid: Optional pre-computed Re-ID (embedding, quality)
 
         Returns:
             IdentificationResult with identification status
@@ -279,7 +282,7 @@ class IdentityLinker:
 
         # If already identified, just update Re-ID gallery
         if state.is_identified:
-            self._update_reid_gallery(state, person_crop, num_persons_in_frame)
+            self._update_reid_gallery(state, person_crop, num_persons_in_frame, precomputed_reid)
             name = self._get_person_name(state.person_id)
             return IdentificationResult(
                 person_id=state.person_id,
@@ -293,9 +296,15 @@ class IdentityLinker:
 
         # Check if we should run face recognition
         time_since_face_check = current_time - state.last_face_check
+        
+        # Determine check interval (longer if already identified to save CPU)
+        check_interval = self.face_config.detection_interval
+        if state.is_identified:
+            check_interval = self.face_config.reid_confirmation_interval
+        
         should_check_face = (
             force_face_check
-            or time_since_face_check > (self.face_config.detection_interval / 5.0)
+            or time_since_face_check > (check_interval / 2.0)
         )
 
         result = IdentificationResult()
@@ -310,7 +319,7 @@ class IdentityLinker:
                 result = face_result
 
         # Always update Re-ID gallery for cross-camera matching
-        self._update_reid_gallery(state, person_crop, num_persons_in_frame)
+        self._update_reid_gallery(state, person_crop, num_persons_in_frame, precomputed_reid)
 
         return result
 
@@ -344,7 +353,8 @@ class IdentityLinker:
 
         # Detect faces
         face_recognizer = self._id_manager.face_recognizer
-        detection_result = face_recognizer.detect_faces(face_region)
+        with profiler.measure("FaceRecognizer.detect"):
+            detection_result = face_recognizer.detect_faces(face_region)
 
         if not detection_result.faces:
             return IdentificationResult()
@@ -357,7 +367,8 @@ class IdentityLinker:
 
         # Get embedding
         if best_face.embedding is None:
-            embedding = face_recognizer.extract_embedding(face_region, best_face)
+            with profiler.measure("FaceRecognizer.extract"):
+                embedding = face_recognizer.extract_embedding(face_region, best_face)
             if embedding is None:
                 return IdentificationResult()
         else:
@@ -370,12 +381,13 @@ class IdentityLinker:
         best_match_name = None
         best_score = 0.0
 
-        for person_id, name, gallery_embedding in gallery:
-            similarity = face_recognizer.compare_embeddings(embedding, gallery_embedding)
-            if similarity > self.face_config.similarity_threshold and similarity > best_score:
-                best_match_id = person_id
-                best_match_name = name
-                best_score = similarity
+        with profiler.measure("FaceRecognizer.compare"):
+            for person_id, name, gallery_embedding in gallery:
+                similarity = face_recognizer.compare_embeddings(embedding, gallery_embedding)
+                if similarity > self.face_config.similarity_threshold and similarity > best_score:
+                    best_match_id = person_id
+                    best_match_name = name
+                    best_score = similarity
 
         if best_match_id is None:
             return IdentificationResult()
@@ -428,6 +440,7 @@ class IdentityLinker:
         state: TrackIdentityState,
         crop: np.ndarray,
         num_persons_in_frame: int = 1,
+        precomputed_reid: Optional[tuple[np.ndarray, float]] = None,
     ):
         """Update Re-ID embedding gallery for a track.
 
@@ -436,11 +449,15 @@ class IdentityLinker:
         if num_persons_in_frame > 1:
             return
 
-        reid_extractor = self._id_manager.reid_extractor
-        if not reid_extractor:
-            return
+        if precomputed_reid:
+            embedding, quality = precomputed_reid
+        else:
+            reid_extractor = self._id_manager.reid_extractor
+            if not reid_extractor:
+                return
 
-        embedding, quality = reid_extractor.extract(crop, return_quality=True)
+            with profiler.measure("ReIDExtractor.extract"):
+                embedding, quality = reid_extractor.extract(crop, return_quality=True)
 
         if quality >= self.reid_config.min_visibility:
             # Update per-track gallery
@@ -465,6 +482,7 @@ class IdentityLinker:
         new_crop: np.ndarray,
         candidate_track_ids: list[str],
         num_persons_in_frame: int = 1,
+        precomputed_reid: Optional[tuple[np.ndarray, float]] = None,
     ) -> Optional[tuple[str, float, Optional[str]]]:
         """Match a new track against existing tracks using Re-ID.
 
@@ -473,6 +491,7 @@ class IdentityLinker:
             new_crop: Person crop from new track
             candidate_track_ids: IDs of tracks to match against
             num_persons_in_frame: Number of persons in frame
+            precomputed_reid: Optional pre-computed Re-ID (embedding, quality)
 
         Returns:
             Tuple of (matched_track_id, similarity, person_name) or None
@@ -480,11 +499,16 @@ class IdentityLinker:
         if num_persons_in_frame > 1:
             return None
 
-        reid_extractor = self._id_manager.reid_extractor
-        if not reid_extractor or new_crop.size == 0:
-            return None
+        if precomputed_reid:
+            new_embedding, quality = precomputed_reid
+        else:
+            reid_extractor = self._id_manager.reid_extractor
+            if not reid_extractor or new_crop.size == 0:
+                return None
 
-        new_embedding, quality = reid_extractor.extract(new_crop, return_quality=True)
+            with profiler.measure("ReIDExtractor.extract"):
+                new_embedding, quality = reid_extractor.extract(new_crop, return_quality=True)
+
         if quality < self.reid_config.min_visibility:
             return None
 
@@ -493,21 +517,23 @@ class IdentityLinker:
         best_person_name = None
 
         # Match against active track states
-        for track_id in candidate_track_ids:
-            state = self._track_states.get(track_id)
-            if state is None or len(state.reid_gallery) == 0:
-                continue
+        with profiler.measure("ReIDExtractor.compare"):
+            for track_id in candidate_track_ids:
+                state = self._track_states.get(track_id)
+                if state is None or len(state.reid_gallery) == 0:
+                    continue
 
-            similarity = state.reid_gallery.match(new_embedding)
-            if similarity > self.reid_config.similarity_threshold and similarity > best_score:
-                best_match_id = track_id
-                best_score = similarity
-                if state.is_identified:
-                    best_person_name = self._get_person_name(state.person_id)
+                similarity = state.reid_gallery.match(new_embedding)
+                if similarity > self.reid_config.similarity_threshold and similarity > best_score:
+                    best_match_id = track_id
+                    best_score = similarity
+                    if state.is_identified:
+                        best_person_name = self._get_person_name(state.person_id)
 
         # Also try shared gallery
         if self.reid_gallery_manager:
-            match_result = self.reid_gallery_manager.match_new_track(new_crop, num_persons_in_frame)
+            with profiler.measure("ReIDGallery.match"):
+                match_result = self.reid_gallery_manager.match_new_track(new_crop, num_persons_in_frame)
             if match_result.matched and match_result.score > best_score:
                 logger.info(
                     f"Re-ID gallery match: {new_track_id} -> {match_result.person_name} "

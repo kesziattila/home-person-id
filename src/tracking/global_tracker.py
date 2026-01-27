@@ -21,6 +21,7 @@ from src.detection.person_detector import compute_iou
 from src.recognition.identity_linker import IdentityLinker
 from src.tracking.track import GlobalTrack, LocalTrack, TrackState
 from src.tracking.zone_manager import ZoneManager
+from src.utils.profiler import profiler
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +291,8 @@ class GlobalTrackManager:
 
             else:
                 # Try Re-ID match against recent lost tracks
-                reid_match = self._try_reid_match(camera_id, local_track, frame)
+                with profiler.measure("GlobalTracker.reid_match"):
+                    reid_match = self._try_reid_match(camera_id, local_track, frame)
 
                 if reid_match:
                     global_track_id = reid_match
@@ -332,13 +334,16 @@ class GlobalTrackManager:
             if local_track.last_crop is not None:
                 # Skip Re-ID if this track overlaps with another (num_persons > 1)
                 num_persons = 2 if local_track.track_id in overlapping_track_ids else 1
-                self.identity_linker.process_track(
-                    global_track_id,
-                    frame,
-                    local_track.last_crop,
-                    local_track.bbox,
-                    num_persons_in_frame=num_persons,
-                )
+                with profiler.measure("IdentityLinker.process_track"):
+                    self.identity_linker.process_track(
+                        global_track_id,
+                        frame,
+                        local_track.last_crop,
+                        local_track.bbox,
+                        num_persons_in_frame=num_persons,
+                        precomputed_reid=(local_track.last_reid_embedding, local_track.last_reid_quality)
+                        if local_track.last_reid_embedding is not None else None
+                    )
 
         # Process lost local tracks
         for local_track_id in lost_track_ids:
@@ -593,10 +598,19 @@ class GlobalTrackManager:
                         continue
 
                     # Match using Re-ID if available
-                    if pending.reid_embedding is not None and local_track.last_crop is not None:
-                        embedding, quality = self.identity_linker.reid_extractor.extract(
-                            local_track.last_crop, return_quality=True
-                        )
+                    if pending.reid_embedding is not None:
+                        # Use pre-computed Re-ID from local track if available
+                        if local_track.last_reid_embedding is not None:
+                            embedding = local_track.last_reid_embedding
+                            quality = local_track.last_reid_quality
+                        elif local_track.last_crop is not None:
+                            # Fallback to extraction if not pre-computed (should be rare)
+                            with profiler.measure("GlobalTracker.handover_reid"):
+                                embedding, quality = self.identity_linker.reid_extractor.extract(
+                                    local_track.last_crop, return_quality=True
+                                )
+                        else:
+                            continue
 
                         if quality >= self.reid_config.min_visibility:
                             from src.recognition.reid_extractor import cosine_similarity
@@ -634,10 +648,18 @@ class GlobalTrackManager:
                 continue
 
             # Match using Re-ID if available
-            if pending.reid_embedding is not None and local_track.last_crop is not None:
-                embedding, quality = self.identity_linker.reid_extractor.extract(
-                    local_track.last_crop, return_quality=True
-                )
+            if pending.reid_embedding is not None:
+                # Use pre-computed Re-ID from local track if available
+                if local_track.last_reid_embedding is not None:
+                    embedding = local_track.last_reid_embedding
+                    quality = local_track.last_reid_quality
+                elif local_track.last_crop is not None:
+                    with profiler.measure("GlobalTracker.handover_reid"):
+                        embedding, quality = self.identity_linker.reid_extractor.extract(
+                            local_track.last_crop, return_quality=True
+                        )
+                else:
+                    continue
 
                 if quality >= self.reid_config.min_visibility:
                     from src.recognition.reid_extractor import cosine_similarity
@@ -699,6 +721,8 @@ class GlobalTrackManager:
             f"temp_{camera_id}_{local_track.track_id}",
             local_track.last_crop,
             candidate_track_ids,
+            precomputed_reid=(local_track.last_reid_embedding, local_track.last_reid_quality)
+            if local_track.last_reid_embedding is not None else None
         )
 
         if match:

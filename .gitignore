@@ -92,3 +92,4 @@ htmlcov/
 /local/
 /.claude/
 /tests/test-images/sensitive/
+/.output.txt

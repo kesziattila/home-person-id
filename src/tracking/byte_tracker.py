@@ -211,7 +211,10 @@ class ByteTracker:
         self._next_id = 1
 
     def update(
-        self, detections: DetectionResult, frame: Optional[np.ndarray] = None
+        self,
+        detections: DetectionResult,
+        frame: Optional[np.ndarray] = None,
+        reid_embeddings: Optional[dict[int, tuple[np.ndarray, float]]] = None,
     ) -> TrackingResult:
         """Update tracker with new detections.
 
@@ -269,6 +272,9 @@ class ByteTracker:
         # Update matched trackers
         for m in matched:
             det_idx, trk_idx = m
+            # Map det_idx to original index if mask was used
+            orig_det_idx = np.where(high_conf_mask)[0][det_idx]
+
             self._trackers[trk_idx].update(high_conf_dets[det_idx, :4])
             track = self._tracks[self._trackers[trk_idx].id]
             was_confirmed = track.is_confirmed
@@ -277,6 +283,12 @@ class ByteTracker:
             track.hits += 1
             track.time_since_update = 0
             track.state = TrackState.TRACKED
+
+            # Store pre-computed Re-ID embedding if available
+            if reid_embeddings and orig_det_idx in reid_embeddings:
+                emb, qual = reid_embeddings[orig_det_idx]
+                track.last_reid_embedding = emb
+                track.last_reid_quality = qual
 
             # Report as new when track becomes confirmed (not on first detection)
             if not was_confirmed and track.is_confirmed:
@@ -298,12 +310,21 @@ class ByteTracker:
             for m in matched_low:
                 det_idx, trk_idx = m
                 if iou_matrix[det_idx, trk_idx] >= self.config.match_thresh:
+                    # Map det_idx to original index if mask was used
+                    orig_det_idx = np.where(~high_conf_mask)[0][det_idx]
+
                     tracker = remaining_trks[trk_idx]
                     tracker.update(low_conf_dets[det_idx, :4])
                     track = self._tracks[tracker.id]
                     track.bbox = tuple(low_conf_dets[det_idx, :4])
                     track.confidence = low_conf_dets[det_idx, 4]
                     track.time_since_update = 0
+
+                    # Store pre-computed Re-ID embedding if available
+                    if reid_embeddings and orig_det_idx in reid_embeddings:
+                        emb, qual = reid_embeddings[orig_det_idx]
+                        track.last_reid_embedding = emb
+                        track.last_reid_quality = qual
 
                     # Remove from unmatched
                     orig_idx = unmatched_trks[trk_idx]
@@ -317,6 +338,9 @@ class ByteTracker:
         # only when they become confirmed (hits >= 3) to avoid spurious detections
         for i in unmatched_dets:
             det = high_conf_dets[i]
+            # Map i to original index
+            orig_det_idx = np.where(high_conf_mask)[0][i]
+
             tracker = KalmanBoxTracker(det[:4])
             self._trackers.append(tracker)
 
@@ -327,6 +351,13 @@ class ByteTracker:
                 confidence=det[4],
                 state=TrackState.NEW,
             )
+            
+            # Store pre-computed Re-ID embedding if available
+            if reid_embeddings and orig_det_idx in reid_embeddings:
+                emb, qual = reid_embeddings[orig_det_idx]
+                track.last_reid_embedding = emb
+                track.last_reid_quality = qual
+
             self._tracks[tracker.id] = track
             self._next_id += 1
 
@@ -444,6 +475,7 @@ class ByteTrackerManager:
         camera_id: str,
         detections: DetectionResult,
         frame: Optional[np.ndarray] = None,
+        reid_embeddings: Optional[dict[int, tuple[np.ndarray, float]]] = None,
     ) -> TrackingResult:
         """Update tracker for a camera.
 
@@ -451,12 +483,13 @@ class ByteTrackerManager:
             camera_id: Camera identifier
             detections: Person detections
             frame: Optional frame for crops
+            reid_embeddings: Optional pre-computed Re-ID embeddings
 
         Returns:
             TrackingResult with current tracks
         """
         tracker = self.get_tracker(camera_id)
-        return tracker.update(detections, frame)
+        return tracker.update(detections, frame, reid_embeddings)
 
     def reset(self, camera_id: Optional[str] = None):
         """Reset tracker(s).

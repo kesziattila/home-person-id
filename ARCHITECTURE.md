@@ -13,7 +13,7 @@ Identify and track persons in a home environment using multiple RTSP cameras. Th
 
 ## Processing Pipeline
 
-The system uses a decoupled, multi-threaded pipeline to maximize throughput and minimize latency, especially on resource-constrained hardware like the NVIDIA Jetson.
+The system uses a decoupled, multi-threaded pipeline to maximize throughput and minimize latency, especially on resource-constrained hardware like the NVIDIA Jetson. Performance profiling is integrated to monitor bottlenecks.
 
 ### 1. Frame Ingestion (Stream Thread)
 - `RTSPClient` runs a background thread for each camera.
@@ -27,19 +27,20 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
     - It creates an `InferenceTask` and pushes it to the `InferenceQueue`.
 - If no motion/tracks:
     - it updates the **Preview Buffer** with the raw frame and skips expensive ML.
-- It also polls the `ResultQueue` for completed inference results.
+- It also polls the `ResultQueue` for completed inference results and processes them (tracking, cross-camera coordination).
+- **Performance Monitoring**: A global `profiler` measures execution time of key blocks and detects if the main loop is blocked (>500ms).
 
-### 3. Heavy Inference (Inference Thread)
+### 3. Heavy Inference (Inference Worker Thread)
 - A dedicated background thread monitors the `InferenceQueue`.
-- It runs the **Person Detector** (YOLOv8) on the frame.
-- It pushes the detections back to the `ResultQueue`.
-- This decoupling allows motion detection and frame ingestion to overlap with the GPU-bound YOLO inference.
+- **Person Detection**: Runs YOLOv8 on the frame.
+- **Batch Re-ID Extraction**: For all detections in the frame, it extracts Re-ID embeddings in a single batch. This offloads significant compute from the main thread.
+- It pushes the detections and pre-computed embeddings back to the `ResultQueue`.
 
 ### 4. Tracking & Recognition (Main Thread)
 - When an `InferenceResult` is received:
-    - **Local Tracking**: ByteTrack updates track positions.
-    - **Recognition**: If a person is tracked, `IdentityLinker` may run **Face Recognition** and **Re-ID Extraction**.
-    - **Global Tracking**: `GlobalTrackManager` updates cross-camera state.
+    - **Local Tracking**: ByteTrack updates track positions using detections and pre-computed Re-ID embeddings.
+    - **Global Tracking**: `GlobalTrackManager` updates cross-camera state, using pre-computed Re-ID for handover and reappearance matching.
+    - **Identity Linker**: Periodically runs **Face Recognition** to confirm or update identity. It uses pre-computed Re-ID embeddings for gallery updates, avoiding redundant extraction.
 - Finally, it updates the **Preview Buffer** with full metadata (bounding boxes, names).
 
 ## Component Details
@@ -112,7 +113,7 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
 - Uses OSNet model (torchreid library)
 - Extracts 512-dim appearance features from person crops
 - Computes quality score based on crop size, aspect ratio, blur
-- Supports batch extraction for efficiency
+- Supports batch extraction for efficiency. Used in `InferenceWorker` to offload work from the main thread.
 
 **EmbeddingGallery** (in `reid_extractor.py`)
 - Stores multiple embeddings per track
@@ -161,7 +162,17 @@ The system uses a **Scenario-Based Testing Framework** to verify complex trackin
 
 See [TESTING_SCENARIOS.md](docs/TESTING_SCENARIOS.md) for detailed examples and guide.
 
-### 6. Configuration (`src/config.py`)
+### 6. Utils (`src/utils/`)
+
+**Profiler** (`profiler.py`)
+- High-precision timing using `time.perf_counter()`
+- Measures average, max, and total execution time per module/block
+- Tracks call counts
+- Reports statistics every 10 seconds to logger
+- Thread-safe using locks
+- Controlled via `--perf-report` command line argument
+
+### 7. Configuration (`src/config.py`)
 
 Dataclasses for all configuration sections:
 - CameraConfig, CameraTopologyConfig
