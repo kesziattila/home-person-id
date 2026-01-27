@@ -80,6 +80,8 @@ class MotionConfig:
     var_threshold: int = 50
     min_area_ratio: float = 0.01
     cooldown_sec: float = 5.0
+    # Process frames at this height for motion detection
+    processing_height: int = 360
 
 
 @dataclass

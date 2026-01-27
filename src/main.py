@@ -135,7 +135,11 @@ class PersonIDSystem:
 
     def _setup_logging(self):
         """Setup logging based on config."""
-        log_level = getattr(logging, self.config.logging.level.upper(), logging.INFO)
+        # Use DEBUG level if --debug flag is set, otherwise use config value
+        if self._debug:
+            log_level = logging.DEBUG
+        else:
+            log_level = getattr(logging, self.config.logging.level.upper(), logging.INFO)
 
         handlers = [logging.StreamHandler()]
 
@@ -325,10 +329,12 @@ class PersonIDSystem:
                                 }
                             )
 
-                # 2. Process results from inference worker
+                # Process results from inference worker
                 try:
                     while True:
                         result = self._result_queue.get_nowait()
+                        if self._debug:
+                            logger.debug(f"Processing inference result for {result.camera_id}")
                         self._process_inference_result(result)
                         self._result_queue.task_done()
                 except Empty:

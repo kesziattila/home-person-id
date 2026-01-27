@@ -98,6 +98,9 @@ motion:
   min_area_ratio: 0.01
   # Cooldown after motion stops before pausing detection (seconds)
   cooldown_sec: 5.0
+  # Frame height to use for processing (downscaling improves performance)
+  # 1080p -> 360p reduces pixel count by ~90%
+  processing_height: 360
 
 # =============================================================================
 # PERSON DETECTION (YOLO)

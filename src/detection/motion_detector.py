@@ -67,15 +67,26 @@ class MotionDetector:
             # Motion detection disabled, always return True
             return MotionResult(has_motion=True, motion_ratio=1.0)
 
+        # Downscale frame for faster processing
+        # 1080p -> 360p or similar is usually enough for motion detection
+        h, w = frame.shape[:2]
+        target_height = self.config.processing_height
+        if h > target_height:
+            scale = target_height / h
+            target_width = int(w * scale)
+            proc_frame = cv2.resize(frame, (target_width, target_height), interpolation=cv2.INTER_LINEAR)
+        else:
+            proc_frame = frame
+
         # Apply background subtraction
-        fg_mask = self._bg_subtractor.apply(frame)
+        fg_mask = self._bg_subtractor.apply(proc_frame)
 
         # Apply morphological operations to reduce noise
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self._kernel)
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self._kernel)
 
         # Calculate motion ratio
-        total_pixels = frame.shape[0] * frame.shape[1]
+        total_pixels = proc_frame.shape[0] * proc_frame.shape[1]
         motion_pixels = cv2.countNonZero(fg_mask)
         motion_ratio = motion_pixels / total_pixels
 
@@ -101,8 +112,29 @@ class MotionDetector:
         )
 
         if return_mask:
-            result.motion_mask = fg_mask
-            result.bounding_boxes = self._find_motion_regions(fg_mask)
+            # Rescale mask back to original size if it was downscaled
+            if h > target_height:
+                # Use a cached scaling factor to avoid recalculating
+                inv_scale = h / target_height
+                
+                result.motion_mask = cv2.resize(fg_mask, (w, h), interpolation=cv2.INTER_NEAREST)
+                
+                # Find regions in the downscaled mask first
+                boxes = self._find_motion_regions(fg_mask)
+                
+                # Rescale bounding boxes to original resolution
+                rescaled_boxes = []
+                for (rx, ry, rw, rh) in boxes:
+                    rescaled_boxes.append((
+                        int(rx * inv_scale),
+                        int(ry * inv_scale),
+                        int(rw * inv_scale),
+                        int(rh * inv_scale)
+                    ))
+                result.bounding_boxes = rescaled_boxes
+            else:
+                result.motion_mask = fg_mask
+                result.bounding_boxes = self._find_motion_regions(fg_mask)
 
         return result
 

@@ -29,6 +29,7 @@ motion:
   var_threshold: 50
   min_area_ratio: 0.01
   cooldown_sec: 5
+  processing_height: 240
 
 # Person detection
 detection:

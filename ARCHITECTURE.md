@@ -23,6 +23,7 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
 ### 2. Processing Orchestration (Main Thread)
 - The main `run` loop collects frames from all camera clients.
 - It performs **Motion Detection** (fast, CPU-based) for each frame.
+    - **Optimization**: To handle high-resolution (1080p+) streams efficiently on Jetson, frames are downscaled (default: 360p) before background subtraction. This reduces the pixel count by ~90% while maintaining detection accuracy.
 - If motion is detected OR there are active tracks on that camera:
     - It creates an `InferenceTask` and pushes it to the `InferenceQueue`.
 - If no motion/tracks:
@@ -64,6 +65,7 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
 **MotionDetector** (`motion_detector.py`)
 - Uses OpenCV MOG2 background subtraction
 - Acts as processing gate (skip expensive ML when no motion)
+- **Downscaling**: Automatically resizes high-resolution frames to `processing_height` (e.g., 360px) to ensure low CPU usage on edge devices.
 - Implements cooldown period after motion stops
 - One instance per camera (via MotionDetectorManager)
 - **Stationary tracking**: When active tracks exist but no motion detected,
