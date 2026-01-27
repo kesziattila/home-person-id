@@ -5,7 +5,11 @@ import logging
 import signal
 import sys
 import time
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional, Any, Dict, List
+
+import numpy as np
 
 from src.config import load_config
 from src.database.repository import Repository
@@ -19,7 +23,32 @@ from src.tracking.handover import HandoverManager
 from src.visualization.preview import PreviewBuffer
 from src.api.server import APIServer
 
+from queue import Queue, Empty
+from threading import Thread
+
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class InferenceTask:
+    """Task for inference worker."""
+
+    camera_id: str
+    frame: np.ndarray
+    motion_result: Any
+    has_active_tracks: bool
+    timestamp: float
+
+
+@dataclass
+class InferenceResult:
+    """Result from inference worker."""
+
+    camera_id: str
+    frame: np.ndarray
+    motion_result: Any
+    detections: Any
+    timestamp: float
 
 
 class PersonIDSystem:
@@ -82,6 +111,11 @@ class PersonIDSystem:
             self.repository,
             zones_config=self.config.zones,
         )
+
+        # Parallel processing queues
+        self._inference_queue = Queue(maxsize=len(self.config.cameras) * 2)
+        self._result_queue = Queue(maxsize=len(self.config.cameras) * 2)
+        self._inference_thread = None
 
         # State
         self._running = False
@@ -147,6 +181,10 @@ class PersonIDSystem:
         # Start API server
         self.api_server.start()
 
+        # Start inference worker thread
+        self._inference_thread = Thread(target=self._inference_worker, name="InferenceWorker", daemon=True)
+        self._inference_thread.start()
+
         self._running = True
         logger.info("System started successfully")
 
@@ -161,6 +199,41 @@ class PersonIDSystem:
         self.stream_manager.stop()
         logger.info("System stopped")
 
+    def _inference_worker(self):
+        """Background thread for running person detection."""
+        logger.info("Inference worker started")
+        while self._running:
+            try:
+                task: InferenceTask = self._inference_queue.get(timeout=0.1)
+                
+                # Person detection (expensive)
+                detections = self.person_detector.detect(task.frame)
+                
+                # Push to results
+                result = InferenceResult(
+                    camera_id=task.camera_id,
+                    frame=task.frame,
+                    motion_result=task.motion_result,
+                    detections=detections,
+                    timestamp=task.timestamp
+                )
+                
+                # If result queue is full, drop oldest
+                if self._result_queue.full():
+                    try:
+                        self._result_queue.get_nowait()
+                    except Empty:
+                        pass
+                
+                self._result_queue.put(result)
+                self._inference_queue.task_done()
+                
+            except Empty:
+                continue
+            except Exception as e:
+                logger.error(f"Error in inference worker: {e}")
+                time.sleep(0.1)
+
     def run(self):
         """Main processing loop."""
         self.start()
@@ -170,117 +243,130 @@ class PersonIDSystem:
 
         try:
             while self._running:
-                self._process_frames()
-                self._periodic_cleanup()
-                time.sleep(0.001)  # Small sleep to prevent busy loop
+                # 1. Collect frames from cameras and push to inference queue
+                for frame in self.stream_manager.get_frames(timeout=0.01):
+                    self._frame_count += 1
+                    camera_id = frame.camera_id
 
-                # Debug: report frame rate every 10 seconds
-                if self._debug:
-                    now = time.time()
-                    if now - last_frame_report >= 10.0:
-                        frames_processed = self._frame_count - last_frame_count
-                        fps = frames_processed / (now - last_frame_report)
-                        print(f"[DEBUG] Stats: {frames_processed} frames in 10s ({fps:.1f} FPS), total: {self._frame_count}")
-                        if frames_processed == 0:
-                            print("[DEBUG] WARNING: No frames received! Check camera connections.")
-                        last_frame_report = now
-                        last_frame_count = self._frame_count
+                    # Motion detection gate
+                    motion_result = self.motion_manager.detect(camera_id, frame.image)
+
+                    # Check if we have active tracks for this camera
+                    has_active_tracks = self.global_tracker.has_active_tracks(camera_id)
+
+                    if motion_result.has_motion or has_active_tracks:
+                        # Push to inference queue
+                        task = InferenceTask(
+                            camera_id=camera_id,
+                            frame=frame.image,
+                            motion_result=motion_result,
+                            has_active_tracks=has_active_tracks,
+                            timestamp=frame.timestamp
+                        )
+                        
+                        # If queue is full, drop oldest
+                        if self._inference_queue.full():
+                            try:
+                                self._inference_queue.get_nowait()
+                            except Empty:
+                                pass
+                        
+                        self._inference_queue.put(task)
+                    else:
+                        # No motion/tracks, still update preview buffer for live view
+                        self.preview_buffer.update(
+                            camera_id=camera_id,
+                            image=frame.image,
+                            metadata={
+                                "camera_id": camera_id,
+                                "tracks": [],
+                                "identities": {},
+                                "global_tracks": [
+                                    t for t in self.global_tracker.get_active_tracks()
+                                    if t.current_camera_id == camera_id
+                                ]
+                            }
+                        )
+
+                # 2. Process results from inference worker
+                try:
+                    while True:
+                        result = self._result_queue.get_nowait()
+                        self._process_inference_result(result)
+                        self._result_queue.task_done()
+                except Empty:
+                    pass
+
+                # 3. Periodic tasks
+                self._periodic_cleanup()
+
+                # 4. Stats
+                now = time.time()
+                if now - last_frame_report >= 10.0:
+                    frames_processed = self._frame_count - last_frame_count
+                    fps = frames_processed / (now - last_frame_report)
+                    print(f"[DEBUG] Stats: {frames_processed} frames in 10s ({fps:.1f} FPS), total: {self._frame_count}")
+                    if frames_processed == 0:
+                        print("[DEBUG] WARNING: No frames received! Check camera connections.")
+                    last_frame_report = now
+                    last_frame_count = self._frame_count
+
+                # Tiny sleep to prevent high CPU when idle
+                time.sleep(0.001)
 
         except KeyboardInterrupt:
             logger.info("Interrupted by user")
         finally:
             self.stop()
 
+    def _process_inference_result(self, result: InferenceResult):
+        """Process results from the inference worker."""
+        camera_id = result.camera_id
+        frame_image = result.frame
+        motion_result = result.motion_result
+        detections = result.detections
+
+        # 1. Update tracking
+        track_result = self.tracker_manager.update(
+            camera_id, detections, frame_image
+        )
+
+        # 2. Global tracking (cross-camera)
+        global_result = self.global_tracker.process_local_tracks(
+            camera_id=camera_id,
+            local_tracks=track_result.tracks,
+            frame=frame_image,
+            new_track_ids=track_result.new_track_ids,
+            lost_track_ids=track_result.lost_track_ids,
+            has_motion=motion_result.has_motion,
+        )
+
+        # 3. Log events
+        self._log_events(camera_id, global_result)
+
+        # 4. Update preview buffer
+        identities = {}
+        for track in track_result.tracks:
+            global_track = self.global_tracker.get_global_track_for_local(camera_id, track.track_id)
+            if global_track:
+                identity = self.identity_linker.get_identity(global_track.track_id)
+                if identity:
+                    identities[track.track_id] = identity
+
+        self.preview_buffer.update(
+            camera_id=camera_id,
+            image=frame_image,
+            metadata={
+                "camera_id": camera_id,
+                "tracks": track_result.tracks,
+                "identities": identities,
+                "global_tracks": global_result.active_tracks
+            }
+        )
+
     def _process_frames(self):
-        """Process frames from all cameras."""
-        for frame in self.stream_manager.get_frames(timeout=0.1):
-            self._frame_count += 1
-            camera_id = frame.camera_id
-
-            if self._debug and self._frame_count % 100 == 0:
-                print(f"[DEBUG] Frame #{self._frame_count} from {camera_id} ({frame.image.shape[1]}x{frame.image.shape[0]})")
-
-            # Motion detection gate
-            motion_result = self.motion_manager.detect(camera_id, frame.image)
-
-            # Check if we have active tracks for this camera
-            has_active_tracks = self.global_tracker.has_active_tracks(camera_id)
-
-            if self._debug and motion_result.has_motion:
-                print(f"[DEBUG] [{camera_id}] Motion detected (ratio={motion_result.motion_ratio:.4f})")
-
-            # Continue processing if motion detected OR we have active tracks
-            if not motion_result.has_motion and not has_active_tracks:
-                continue
-
-            # Person detection
-            detections = self.person_detector.detect(frame.image)
-
-            if self._debug and detections.count > 0:
-                print(f"[DEBUG] [{camera_id}] Detected {detections.count} person(s)")
-                for i, det in enumerate(detections.detections):
-                    bbox = [int(x) for x in det.bbox]
-                    print(f"  - Person {i+1}: bbox={bbox}, conf={det.confidence:.2f}")
-
-            # If no detections but have active tracks, update tracker anyway
-            # to maintain track state (will mark as lost after track_buffer frames)
-            if detections.count == 0 and not has_active_tracks:
-                continue
-
-            # Single-camera tracking
-            track_result = self.tracker_manager.update(
-                camera_id, detections, frame.image
-            )
-
-            if self._debug and (track_result.new_track_ids or track_result.lost_track_ids or track_result.tracks):
-                if track_result.new_track_ids:
-                    print(f"[DEBUG] [{camera_id}] New local tracks: {track_result.new_track_ids}")
-                if track_result.lost_track_ids:
-                    print(f"[DEBUG] [{camera_id}] Lost local tracks: {track_result.lost_track_ids}")
-                print(f"[DEBUG] [{camera_id}] Active local tracks: {len(track_result.tracks)}")
-
-            # Global tracking (cross-camera)
-            global_result = self.global_tracker.process_local_tracks(
-                camera_id=camera_id,
-                local_tracks=track_result.tracks,
-                frame=frame.image,
-                new_track_ids=track_result.new_track_ids,
-                lost_track_ids=track_result.lost_track_ids,
-                has_motion=motion_result.has_motion,
-            )
-
-            if self._debug:
-                print(f"[DEBUG] [{camera_id}] Global result: new={len(global_result.new_global_tracks)}, active={len(global_result.active_tracks)}, lost={len(global_result.tracks_lost)}")
-                if global_result.new_global_tracks:
-                    print(f"[DEBUG] [{camera_id}] New global tracks: {global_result.new_global_tracks}")
-                if global_result.handovers_completed:
-                    for tid, from_cam, to_cam in global_result.handovers_completed:
-                        print(f"[DEBUG] [{camera_id}] Handover: {tid} from {from_cam} -> {to_cam}")
-                if global_result.tracks_lost:
-                    print(f"[DEBUG] [{camera_id}] Tracks lost: {global_result.tracks_lost}")
-
-            # Log events
-            self._log_events(camera_id, global_result)
-
-            # Update preview buffer
-            identities = {}
-            for track in track_result.tracks:
-                global_track = self.global_tracker.get_global_track_for_local(camera_id, track.track_id)
-                if global_track:
-                    identity = self.identity_linker.get_identity(global_track.track_id)
-                    if identity:
-                        identities[track.track_id] = identity
-
-            self.preview_buffer.update(
-                camera_id=camera_id,
-                image=frame.image,
-                metadata={
-                    "camera_id": camera_id,
-                    "tracks": track_result.tracks,
-                    "identities": identities,
-                    "global_tracks": global_result.active_tracks
-                }
-            )
+        """Deprecated: use run() with decoupled pipeline."""
+        pass
 
     def _log_events(self, camera_id: str, result):
         """Log tracking events."""

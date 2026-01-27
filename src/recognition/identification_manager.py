@@ -83,6 +83,8 @@ class IdentificationManager:
         face_gallery: Optional[list[tuple[int, str, np.ndarray]]] = None,
         repository: Optional["Repository"] = None,
         enable_debug_images: bool = False,
+        face_recognizer: Optional[FaceRecognizer] = None,
+        reid_extractor: Optional[ReIDExtractor] = None,
     ):
         """Initialize identification manager.
 
@@ -91,6 +93,8 @@ class IdentificationManager:
             face_gallery: Pre-loaded face gallery (person_id, name, embedding) - for preview
             repository: Database repository - for production (loads gallery automatically)
             enable_debug_images: Whether to save debug images
+            face_recognizer: Optional pre-initialized face recognizer (for testing/shared use)
+            reid_extractor: Optional pre-initialized Re-ID extractor (for testing/shared use)
         """
         self.config = config
         self.face_config = config.face_recognition
@@ -103,8 +107,8 @@ class IdentificationManager:
         self._gallery_ttl = 60.0  # Reload from DB every 60 seconds
 
         # Lazy-loaded recognizers
-        self._face_recognizer: Optional[FaceRecognizer] = None
-        self._reid_extractor: Optional[ReIDExtractor] = None
+        self._face_recognizer = face_recognizer
+        self._reid_extractor = reid_extractor
         self._reid_gallery_manager: Optional[ReIDGalleryManager] = None
 
         # Debug image saver

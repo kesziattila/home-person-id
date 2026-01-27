@@ -10,6 +10,11 @@
 
 ## Code Organization
 
+### Environment & Execution
+- **Always use virtual environment**: When running any Python command (including tests, scripts, or the main application), activate the venv first: `source venv/bin/activate`
+- **Set PYTHONPATH**: Ensure the project root is in your python path: `PYTHONPATH=. python <script.py>`
+- **Combined command**: `source venv/bin/activate && PYTHONPATH=. python <script.py>`
+
 ### Single Source of Truth
 - Avoid duplicate implementations of the same logic across files
 - When similar classes exist (e.g., `IdentificationManager` in preview vs production), consolidate into one class that works for both use cases

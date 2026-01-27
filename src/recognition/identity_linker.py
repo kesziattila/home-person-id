@@ -18,8 +18,9 @@ import numpy as np
 
 from src.config import Config, FaceRecognitionConfig, ReIDConfig
 from src.database.repository import Repository
+from src.recognition.face_recognizer import FaceRecognizer
 from src.recognition.identification_manager import IdentificationManager
-from src.recognition.reid_extractor import EmbeddingGallery
+from src.recognition.reid_extractor import ReIDExtractor, EmbeddingGallery
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,8 @@ class IdentityLinker:
         reid_config: ReIDConfig,
         repository: Repository,
         enable_debug_images: bool = True,
+        face_recognizer: Optional[FaceRecognizer] = None,
+        reid_extractor: Optional[ReIDExtractor] = None,
     ):
         """Initialize identity linker.
 
@@ -118,6 +121,8 @@ class IdentityLinker:
             reid_config: Re-ID configuration
             repository: Database repository
             enable_debug_images: Whether to save debug images
+            face_recognizer: Optional pre-initialized face recognizer (for testing)
+            reid_extractor: Optional pre-initialized Re-ID extractor (for testing)
         """
         self.face_config = face_config
         self.reid_config = reid_config
@@ -131,6 +136,8 @@ class IdentityLinker:
             config=self._config,
             repository=repository,
             enable_debug_images=enable_debug_images,
+            face_recognizer=face_recognizer,
+            reid_extractor=reid_extractor,
         )
 
         # Track identity states (production-specific, with consecutive match tracking)
@@ -521,6 +528,9 @@ class IdentityLinker:
 
         Used when tracks are matched across cameras.
         """
+        if from_track_id == to_track_id:
+            return
+
         from_state = self._track_states.get(from_track_id)
         to_state = self.register_track(to_track_id)
 

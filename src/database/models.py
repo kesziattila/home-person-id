@@ -162,12 +162,17 @@ def init_database(db_path: str) -> tuple:
     """Initialize database and return engine and session maker.
 
     Args:
-        db_path: Path to SQLite database file
+        db_path: Path to SQLite database file (or ":memory:")
 
     Returns:
         Tuple of (engine, SessionLocal)
     """
-    engine = create_engine(f"sqlite:///{db_path}", echo=False)
+    if db_path == ":memory:":
+        url = "sqlite://"
+    else:
+        url = f"sqlite:///{db_path}"
+
+    engine = create_engine(url, echo=False)
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return engine, SessionLocal

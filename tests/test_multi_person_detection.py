@@ -69,6 +69,9 @@ def compute_overlap_ratio(box1: tuple, box2: tuple) -> tuple[float, float]:
     return intersection / area1 if area1 > 0 else 0.0, intersection / area2 if area2 > 0 else 0.0
 
 
+import pytest
+
+@pytest.mark.skip(reason="This is a manual utility script, not a unit test")
 def test_option_b_person_detection_on_crop(image_path: str):
     """Option B: Test if person detection on the crop can find 2 people."""
     print(f"\n{'='*60}")
@@ -120,6 +123,7 @@ def test_option_b_person_detection_on_crop(image_path: str):
     return detected_2_persons
 
 
+@pytest.mark.skip(reason="This is a manual utility script, not a unit test")
 def test_option_c_iou_on_real_image(image_path: str):
     """Option C: Run detection on full frame and analyze IoU between detections."""
     print(f"\n{'='*60}")
@@ -168,6 +172,7 @@ def test_option_c_iou_on_real_image(image_path: str):
     print(f"\nSaved debug image to: {output_path}")
 
 
+@pytest.mark.skip(reason="This is a manual utility script, not a unit test")
 def test_option_c_iou_simulated_scenarios():
     """Option C: Analyze IoU values for typical overlapping scenarios."""
     print(f"\n{'='*60}")

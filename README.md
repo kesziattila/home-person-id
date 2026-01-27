@@ -99,6 +99,21 @@ A real-time web dashboard is available for monitoring all camera streams:
 
 Default access: `http://localhost:8000`
 
+## Testing
+
+To ensure the stability of tracking logic, the system includes a scenario-based testing framework.
+
+### Running Scenario Tests
+
+These tests simulate person movement across cameras using in-memory databases and mocked ML models, making them fast and reliable.
+
+```bash
+# Run all scenario tests
+PYTHONPATH=. python3 tests/test_global_tracking_scenarios.py
+```
+
+For more details on how to write and run tests, see [TESTING_SCENARIOS.md](docs/TESTING_SCENARIOS.md).
+
 ## Project Structure
 
 ```
@@ -157,6 +172,14 @@ home-person-id/
 | Streaming | OpenCV | RTSP camera reading |
 
 ## Installation & Testing
+
+**Note: Always run the application and CLI tools within the virtual environment and with PYTHONPATH set:**
+```bash
+source venv/bin/activate
+export PYTHONPATH=$PYTHONPATH:.
+# Then run your command, e.g.:
+python -m src.main
+```
 
 ### 1. Install Dependencies
 

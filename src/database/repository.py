@@ -29,13 +29,17 @@ class Repository:
         """Initialize repository.
 
         Args:
-            db_path: Path to SQLite database
+            db_path: Path to SQLite database or ":memory:"
         """
-        # Ensure directory exists
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        if db_path != ":memory:":
+            # Ensure directory exists
+            Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
         self._engine, self._session_maker = init_database(db_path)
-        logger.info(f"Database initialized at {db_path}")
+        if db_path == ":memory:":
+            logger.info("In-memory database initialized")
+        else:
+            logger.info(f"Database initialized at {db_path}")
 
     def get_session(self) -> Session:
         """Get a new database session."""

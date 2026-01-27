@@ -11,7 +11,38 @@ Identify and track persons in a home environment using multiple RTSP cameras. Th
 4. Identify known persons using face recognition
 5. Use Re-ID to maintain identity when face isn't visible
 
-## Core Components
+## Processing Pipeline
+
+The system uses a decoupled, multi-threaded pipeline to maximize throughput and minimize latency, especially on resource-constrained hardware like the NVIDIA Jetson.
+
+### 1. Frame Ingestion (Stream Thread)
+- `RTSPClient` runs a background thread for each camera.
+- It continuously `grabs` frames from the RTSP stream to prevent buffer buildup.
+- It `retrieves` and decodes frames at the target FPS, placing them in a `frame_queue`.
+
+### 2. Processing Orchestration (Main Thread)
+- The main `run` loop collects frames from all camera clients.
+- It performs **Motion Detection** (fast, CPU-based) for each frame.
+- If motion is detected OR there are active tracks on that camera:
+    - It creates an `InferenceTask` and pushes it to the `InferenceQueue`.
+- If no motion/tracks:
+    - it updates the **Preview Buffer** with the raw frame and skips expensive ML.
+- It also polls the `ResultQueue` for completed inference results.
+
+### 3. Heavy Inference (Inference Thread)
+- A dedicated background thread monitors the `InferenceQueue`.
+- It runs the **Person Detector** (YOLOv8) on the frame.
+- It pushes the detections back to the `ResultQueue`.
+- This decoupling allows motion detection and frame ingestion to overlap with the GPU-bound YOLO inference.
+
+### 4. Tracking & Recognition (Main Thread)
+- When an `InferenceResult` is received:
+    - **Local Tracking**: ByteTrack updates track positions.
+    - **Recognition**: If a person is tracked, `IdentityLinker` may run **Face Recognition** and **Re-ID Extraction**.
+    - **Global Tracking**: `GlobalTrackManager` updates cross-camera state.
+- Finally, it updates the **Preview Buffer** with full metadata (bounding boxes, names).
+
+## Component Details
 
 ### 1. Stream Management (`src/stream/`)
 
@@ -95,6 +126,7 @@ Identify and track persons in a home environment using multiple RTSP cameras. Th
 - Updates Re-ID gallery for cross-camera matching
 - Implements consecutive match requirement for stability
 - Transfers identity during camera handover
+- **Testability**: Supports dependency injection of ML models and repository.
 
 ### 5. Database (`src/database/`)
 
@@ -107,9 +139,27 @@ Identify and track persons in a home environment using multiple RTSP cameras. Th
 - Camera, CameraOverlap: Configuration storage
 
 **Repository** (`repository.py`)
+- Handles all SQLite/SQLAlchemy interactions
+- **Testability**: Supports `:memory:` databases for isolated unit testing.
 - CRUD operations for all models
 - Embedding serialization (numpy <-> blob)
 - Cleanup operations for old data
+
+## Testing Strategy
+
+The system uses a **Scenario-Based Testing Framework** to verify complex tracking logic without requiring real cameras or ML models.
+
+### Key Testing Pillars
+
+1.  **In-Memory Database**: Isolated SQLite databases for every test run to ensure no side effects.
+2.  **ML Dependency Injection**: Mocked `FaceRecognizer` and `ReIDExtractor` allow testing identification logic without the 1GB+ model overhead.
+3.  **Logic-Only Frame Processing**: `GlobalTrackManager` can process "virtual" frames (passing `frame=None`), enabling simulation of track movement across cameras via bounding boxes alone.
+4.  **Scenario Test Base**: `GlobalTrackerScenarioTest` (in `tests/scenario_base.py`) provides helpers to:
+    - Create local tracks with specific coordinates.
+    - Simulate track appearances and disappearances on different cameras.
+    - Assert on global track outcomes (handovers, Re-ID matches, identification).
+
+See [TESTING_SCENARIOS.md](docs/TESTING_SCENARIOS.md) for detailed examples and guide.
 
 ### 6. Configuration (`src/config.py`)
 
