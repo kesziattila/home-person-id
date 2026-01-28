@@ -186,9 +186,12 @@ torch.onnx.export(model, dummy, 'osnet_x0_25.onnx', opset_version=11)
 # Convert ONNX to TensorRT
 /usr/src/tensorrt/bin/trtexec --onnx=osnet_x0_25.onnx --saveEngine=osnet_x0_25.engine --fp16
 
-# Update config.yaml to use the engine:
+# Update config.yaml to use the ONNX model (recommended for onnxruntime):
 # reid:
-#   model: "osnet_x0_25.engine"
+#   model: "osnet_x0_25.onnx"
+#
+# NOTE: onnxruntime will use the .engine file automatically if it exists 
+# in the same directory and is named correctly (e.g., osnet_x0_25.engine).
 ```
 
 ---

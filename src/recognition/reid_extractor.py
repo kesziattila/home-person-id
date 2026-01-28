@@ -158,8 +158,8 @@ class ReIDExtractor:
 
             model_path = self.config.model
 
-            # Check for TensorRT engine
-            if model_path.endswith(".engine"):
+            # Check for TensorRT engine or ONNX model
+            if model_path.endswith(".engine") or model_path.endswith(".onnx"):
                 self._load_tensorrt_model(model_path)
             # Check if model is a file path
             elif model_path.endswith(".pth") or "/" in model_path:
@@ -325,15 +325,27 @@ class ReIDExtractor:
         return embedding
 
     def _load_tensorrt_model(self, model_path: str):
-        """Load TensorRT engine using onnxruntime."""
+        """Load TensorRT engine or ONNX model using onnxruntime."""
         import onnxruntime as ort
         from pathlib import Path
 
         model_file = Path(model_path)
         if not model_file.exists():
-            raise FileNotFoundError(f"TensorRT Re-ID engine not found: {model_path}")
+            raise FileNotFoundError(f"Model file not found: {model_path}")
 
-        logger.info(f"Loading TensorRT Re-ID engine: {model_path}")
+        # If it's a raw .engine file, we can't use onnxruntime InferenceSession directly.
+        # We need the .onnx file to initialize the session.
+        if model_path.endswith(".engine"):
+            onnx_path = model_path.replace(".engine", ".onnx")
+            if Path(onnx_path).exists():
+                logger.info(f"Found matching ONNX model for engine: {onnx_path}")
+                model_path = onnx_path
+            else:
+                logger.warning(f"Raw .engine file provided but no matching .onnx found at {onnx_path}")
+                logger.warning("onnruntime cannot load raw .engine files directly. "
+                               "Please point to the .onnx file instead.")
+
+        logger.info(f"Loading Re-ID model for TensorRT: {model_path}")
 
         # Check for TensorrtExecutionProvider
         available_providers = ort.get_available_providers()
@@ -355,9 +367,15 @@ class ReIDExtractor:
         # Filter providers to only those available
         providers = [p for p in providers if (p[0] if isinstance(p, tuple) else p) in available_providers]
 
-        self._model = ort.InferenceSession(model_path, providers=providers)
-        self._is_ort = True
-        logger.info(f"TensorRT Re-ID model loaded successfully using {self._model.get_providers()[0]}")
+        try:
+            self._model = ort.InferenceSession(model_path, providers=providers)
+            self._is_ort = True
+            logger.info(f"Re-ID model loaded successfully using {self._model.get_providers()[0]}")
+        except Exception as e:
+            if "INVALID_PROTOBUF" in str(e) and model_path.endswith(".engine"):
+                logger.error("Failed to load .engine file directly. onnxruntime requires the .onnx file "
+                             "to use the TensorRT execution provider.")
+            raise e
 
     def extract_batch(
         self, crops: list[np.ndarray]
