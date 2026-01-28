@@ -170,29 +170,21 @@ InsightFace models use ONNX format which automatically uses TensorRT on Jetson w
 
 ### Re-ID Models (Optional)
 
-OSNet models from torchreid run on PyTorch. For TensorRT:
+OSNet models from torchreid run on PyTorch. For TensorRT optimization:
 
-```bash
-# Export to ONNX (if needed)
-python -c "
-import torch
-from torchreid import models
-model = models.build_model(name='osnet_x0_25', num_classes=1000)
-model.eval()
-dummy = torch.randn(1, 3, 256, 128)
-torch.onnx.export(model, dummy, 'osnet_x0_25.onnx', opset_version=11)
-"
+1. **Convert the model to ONNX** using the provided utility script:
+   ```bash
+   # Usage: python tools/convert_reid_to_onnx.py <path_to_pth> --arch <architecture>
+   python tools/convert_reid_to_onnx.py models/osnet_ain_x1_0.pth --arch osnet_ain_x1_0
+   ```
 
-# Convert ONNX to TensorRT
-/usr/src/tensorrt/bin/trtexec --onnx=osnet_x0_25.onnx --saveEngine=osnet_x0_25.engine --fp16
+2. **Update config.yaml** to use the ONNX model:
+   ```yaml
+   reid:
+     model: "models/osnet_ain_x1_0.onnx"
+   ```
 
-# Update config.yaml to use the ONNX model (recommended for onnxruntime):
-# reid:
-#   model: "osnet_x0_25.onnx"
-#
-# NOTE: onnxruntime will use the .engine file automatically if it exists 
-# in the same directory and is named correctly (e.g., osnet_x0_25.engine).
-```
+**NOTE:** onnxruntime will automatically create and cache a `.engine` file the first time it's loaded. This initial load may take several minutes.
 
 ---
 
