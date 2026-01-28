@@ -24,7 +24,7 @@ class CameraConfig:
     id: str
     name: str
     rtsp_url: str
-    fps: int = 5
+    fps: Optional[int] = 5
     exclusion_zones: list[ExclusionZone] = field(default_factory=list)
     use_nvdec: bool = False  # Use Jetson NVDEC hardware decoder
 
@@ -88,6 +88,7 @@ class MotionConfig:
 class DetectionConfig:
     """Person detection configuration."""
 
+    enabled: bool = True
     # YOLO model to use (e.g., yolov8n.pt, yolov8s.pt, yolo11n.pt, yolo11s.pt)
     # Smaller models are faster: yolov8n (fastest) < yolov8s < yolov8m < yolov8l
     model: str = "yolov8n.pt"

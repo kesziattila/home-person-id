@@ -54,6 +54,7 @@ motion:
 #   yolo export model=yolov8n.pt format=engine device=0 half=True
 # Then use: model: "yolov8n.engine"
 detection:
+  enabled: true
   model: "yolov8n.pt"           # Or "yolov8n.engine" for TensorRT (2-3x faster)
   confidence_threshold: 0.5
   nms_iou_threshold: 0.4

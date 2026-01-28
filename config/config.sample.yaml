@@ -11,7 +11,7 @@
 #   - id: Unique identifier (used in zones, topology, CLI commands)
 #   - name: Human-readable name (displayed in UI)
 #   - rtsp_url: RTSP stream URL
-#   - fps: Target frames per second (optional, default: 5)
+#   - fps: Target frames per second (optional, default: 5, null for native)
 #   - exclusion_zones: Areas to ignore detections (optional)
 #   - use_nvdec: Use Jetson NVDEC hardware decoder (optional, default: false)
 #                Requires GStreamer and nvidia plugins on Jetson
@@ -108,6 +108,10 @@ motion:
 # YOLO model for detecting people in frames.
 
 detection:
+  # Enable/disable person detection (YOLO).
+  # If disabled, Re-ID and face recognition will also not run on live streams.
+  enabled: true
+
   # Model file (downloaded automatically on first run)
   # Options: yolov8n.pt (nano), yolov8s.pt (small), yolov8m.pt (medium), yolov8l.pt (large)
   # Or TensorRT: yolov8n.engine (export first with: yolo export model=yolov8n.pt format=engine)

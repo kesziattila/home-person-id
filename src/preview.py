@@ -347,7 +347,9 @@ class CameraProcessor:
         """
         self.camera_id = camera_id
         self.config = config
-        self.person_detector = person_detector
+        self.person_detector = None
+        if self.config.detection.enabled:
+            self.person_detector = person_detector
         self.id_manager = id_manager
         self.exclusion_zones = exclusion_zones or []
 

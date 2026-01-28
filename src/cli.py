@@ -447,14 +447,16 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
     import cv2
 
     # Initialize person detector (shared)
-    click.echo("Warming up person detector...")
-    detector = PersonDetector(
-        model_path=config.detection.model,
-        confidence_threshold=config.detection.confidence_threshold,
-        nms_iou_threshold=config.detection.nms_iou_threshold,
-        num_threads=config.detection.num_threads,
-    )
-    detector.warmup()
+    detector = None
+    if config.detection.enabled:
+        click.echo("Warming up person detector...")
+        detector = PersonDetector(
+            model_path=config.detection.model,
+            confidence_threshold=config.detection.confidence_threshold,
+            nms_iou_threshold=config.detection.nms_iou_threshold,
+            num_threads=config.detection.num_threads,
+        )
+        detector.warmup()
 
     # Initialize zone manager
     zone_manager = None
@@ -939,14 +941,16 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
         click.echo(f"Snapshots will be saved to: {config.snapshots.path}")
 
     # Initialize shared person detector
-    click.echo("Warming up person detector...")
-    person_detector = PersonDetector(
-        model_path=config.detection.model,
-        confidence_threshold=config.detection.confidence_threshold,
-        nms_iou_threshold=config.detection.nms_iou_threshold,
-        num_threads=config.detection.num_threads,
-    )
-    person_detector.warmup()
+    person_detector = None
+    if config.detection.enabled:
+        click.echo("Warming up person detector...")
+        person_detector = PersonDetector(
+            model_path=config.detection.model,
+            confidence_threshold=config.detection.confidence_threshold,
+            nms_iou_threshold=config.detection.nms_iou_threshold,
+            num_threads=config.detection.num_threads,
+        )
+        person_detector.warmup()
 
     click.echo("Warming up identification models...")
     id_manager.warmup()

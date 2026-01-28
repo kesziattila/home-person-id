@@ -14,7 +14,7 @@ import numpy as np
 from src.config import load_config
 from src.database.repository import Repository
 from src.detection.motion_detector import MotionDetectorManager
-from src.detection.person_detector import PersonDetector
+from src.detection.person_detector import PersonDetector, DetectionResult
 from src.recognition.identity_linker import IdentityLinker
 from src.stream.manager import StreamManager
 from src.tracking.byte_tracker import ByteTrackerManager
@@ -88,11 +88,13 @@ class PersonIDSystem:
 
         # Initialize detection
         self.motion_manager = MotionDetectorManager(self.config.motion)
-        self.person_detector = PersonDetector(
-            model_path=self.config.detection.model,
-            confidence_threshold=self.config.detection.confidence_threshold,
-            nms_iou_threshold=self.config.detection.nms_iou_threshold,
-        )
+        self.person_detector = None
+        if self.config.detection.enabled:
+            self.person_detector = PersonDetector(
+                model_path=self.config.detection.model,
+                confidence_threshold=self.config.detection.confidence_threshold,
+                nms_iou_threshold=self.config.detection.nms_iou_threshold,
+            )
 
         # Initialize tracking
         self.tracker_manager = ByteTrackerManager(self.config.tracking)
@@ -166,6 +168,7 @@ class PersonIDSystem:
             print("=" * 60)
             print(f"Cameras: {[c.id for c in self.config.cameras]}")
             print(f"Motion detection: {'enabled' if self.config.motion.enabled else 'disabled'}")
+            print(f"Person detection: {'enabled' if self.config.detection.enabled else 'disabled'}")
             print(f"Face recognition: {'enabled' if self.config.face_recognition.enabled else 'disabled'}")
             print(f"Re-ID: {'enabled' if self.config.reid.enabled else 'disabled'}")
             print(f"Database: {self.config.database.path}")
@@ -173,7 +176,8 @@ class PersonIDSystem:
 
         # Warmup models
         logger.info("Warming up models...")
-        self.person_detector.warmup()
+        if self.person_detector:
+            self.person_detector.warmup()
         self.identity_linker.warmup()
 
         # Start camera streams
@@ -208,8 +212,10 @@ class PersonIDSystem:
                 task: InferenceTask = self._inference_queue.get(timeout=0.1)
                 
                 # Person detection (expensive)
-                with profiler.measure("PersonDetector.detect"):
-                    detections = self.person_detector.detect(task.frame)
+                detections = DetectionResult(detections=[], frame_shape=task.frame.shape)
+                if self.person_detector:
+                    with profiler.measure("PersonDetector.detect"):
+                        detections = self.person_detector.detect(task.frame)
                 
                 # Extract Re-ID for all detections to avoid doing it in main thread
                 reid_embeddings = {}
@@ -365,7 +371,7 @@ class PersonIDSystem:
                     last_frame_count = self._frame_count
 
                 # Tiny sleep to prevent high CPU when idle
-                time.sleep(0.001)
+                time.sleep(0.01)
 
         except KeyboardInterrupt:
             logger.info("Interrupted by user")

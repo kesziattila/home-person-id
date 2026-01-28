@@ -30,7 +30,7 @@ class RTSPClient:
         self,
         camera_id: str,
         rtsp_url: str,
-        target_fps: int = 5,
+        target_fps: Optional[int] = 5,
         buffer_size: int = 2,
         reconnect_delay: float = 5.0,
         use_nvdec: bool = False,
@@ -40,7 +40,7 @@ class RTSPClient:
         Args:
             camera_id: Unique identifier for the camera
             rtsp_url: RTSP URL to connect to
-            target_fps: Target frames per second to capture
+            target_fps: Target frames per second to capture (None = native FPS)
             buffer_size: Maximum frames to buffer
             reconnect_delay: Seconds to wait before reconnecting after failure
             use_nvdec: Use Jetson NVDEC hardware decoder (requires GStreamer)
@@ -173,7 +173,7 @@ class RTSPClient:
 
     def _read_loop(self) -> None:
         """Main loop for reading frames from the stream."""
-        frame_interval = 1.0 / self.target_fps
+        frame_interval = 1.0 / self.target_fps if self.target_fps else 0.0
 
         while self._running:
             # Connect if not connected
@@ -201,7 +201,7 @@ class RTSPClient:
             # Only decode and use frame at target FPS rate
             current_time = time.time()
             elapsed = current_time - self._last_frame_time
-            if elapsed < frame_interval:
+            if self.target_fps and elapsed < frame_interval:
                 # Frame grabbed but not used - prevents buffer buildup
                 continue
 

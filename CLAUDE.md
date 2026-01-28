@@ -178,6 +178,10 @@ ReIDGalleryManager
 
 ## Testing Guidelines
 
+### New Features & Modifications
+- **Write unit tests**: When writing a test for a new or modified feature, write a correct unit test and keep it (do not delete).
+- **Automated coverage**: Prefer automated tests over manual verification for core logic and algorithms.
+
 ### Bug Reports with Sample Images
 When user reports a bug with a sample image:
 1. **Create a test file** to reproduce the issue (don't use inline Python in Bash)
