@@ -45,9 +45,8 @@ def encode_jpeg(image: np.ndarray, quality: int = 85, use_nvjpeg: bool = False) 
         nj = get_nvjpeg()
         if nj:
             try:
-                # pynvjpeg uses RGB
-                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-                return nj.encode(rgb_image)
+                # pynvjpeg expects BGR by default if we want to match OpenCV behavior
+                return nj.encode(image)
             except Exception as e:
                 logger.error(f"nvJPEG encoding failed: {e}. Falling back to CPU")
                 
