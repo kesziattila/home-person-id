@@ -130,7 +130,8 @@ class PersonIDSystem:
         self.api_server = APIServer(
             self.preview_buffer,
             host=self.config.api.host,
-            port=self.config.api.port
+            port=self.config.api.port,
+            use_nvjpeg=self.config.detection.use_nvjpeg
         )
 
     def _setup_logging(self):

@@ -10,14 +10,16 @@ from fastapi.staticfiles import StaticFiles
 from typing import Optional
 
 from src.visualization.preview import PreviewBuffer, Visualizer
+from src.utils.image_utils import encode_jpeg
 
 logger = logging.getLogger(__name__)
 
 class APIServer:
-    def __init__(self, buffer: PreviewBuffer, host: str = "0.0.0.0", port: int = 8000):
+    def __init__(self, buffer: PreviewBuffer, host: str = "0.0.0.0", port: int = 8000, use_nvjpeg: bool = False):
         self.buffer = buffer
         self.host = host
         self.port = port
+        self.use_nvjpeg = use_nvjpeg
         self.app = FastAPI(title="Home Person ID API")
         
         # Determine static directory relative to this file
@@ -58,11 +60,12 @@ class APIServer:
                 )
                 
                 # Encode to JPEG
-                ret, buffer = cv2.imencode('.jpg', annotated_image)
-                if ret:
-                    frame_bytes = buffer.tobytes()
+                try:
+                    frame_bytes = encode_jpeg(annotated_image, use_nvjpeg=self.use_nvjpeg)
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                except Exception as e:
+                    logger.error(f"Error encoding frame: {e}")
             
             # Control frame rate for the stream
             await asyncio.sleep(0.05)  # ~20 FPS

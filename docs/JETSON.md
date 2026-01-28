@@ -120,6 +120,8 @@ TensorRT provides 2-3x faster inference on Jetson. Convert models before running
 
 ### YOLO to TensorRT
 
+TensorRT is required for `.engine` models.
+
 ```bash
 # Activate your venv
 source venv/bin/activate
@@ -135,6 +137,23 @@ mv yolov8n.engine models/
 # detection:
 #   model: "models/yolov8n.engine"
 ```
+
+If you get `ModuleNotFoundError: No module named 'tensorrt'`, follow these steps:
+
+1. **Install TensorRT Python bindings:**
+   ```bash
+   sudo apt update
+   sudo apt install python3-libnvinfer
+   ```
+
+2. **Symlink into virtual environment:**
+   The `apt` package installs to system site-packages. You need to symlink it to your `venv`:
+   ```bash
+   VENV_SITE=$(python -c "import site; print(site.getsitepackages()[0])")
+   # Find where tensorrt is installed in system packages (usually /usr/lib/python3.x/dist-packages/)
+   # For JetPack 6 (Ubuntu 22.04), it's usually:
+   ln -s /usr/lib/python3/dist-packages/tensorrt* $VENV_SITE/
+   ```
 
 **Model size comparison:**
 
@@ -167,6 +186,26 @@ torch.onnx.export(model, dummy, 'osnet_x0_25.onnx', opset_version=11)
 # Convert ONNX to TensorRT
 /usr/src/tensorrt/bin/trtexec --onnx=osnet_x0_25.onnx --saveEngine=osnet_x0_25.engine --fp16
 ```
+
+---
+
+## Hardware Acceleration (nvJPEG)
+
+### Install nvjpeg for hardware-accelerated JPEG encoding
+
+`pynvjpeg` provides a Python wrapper for the NVIDIA nvJPEG library, which significantly speeds up JPEG encoding for snapshots and MJPEG streaming.
+
+1. **Ensure `nvcc` is in your PATH:**
+   The installer needs to compile C++ code using the CUDA compiler.
+   ```bash
+   export PATH=/usr/local/cuda/bin:$PATH
+   ```
+
+2. **Install `pynvjpeg`:**
+   ```bash
+   source venv/bin/activate
+   pip install pynvjpeg
+   ```
 
 ---
 

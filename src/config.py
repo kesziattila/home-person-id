@@ -100,6 +100,8 @@ class DetectionConfig:
     frame_skip: int = 1
     # Number of CPU threads for inference (0 = auto)
     num_threads: int = 0
+    # Use hardware-accelerated JPEG encoding (pynvjpeg) on Jetson
+    use_nvjpeg: bool = False
 
 
 @dataclass

@@ -38,6 +38,7 @@ detection:
   nms_iou_threshold: 0.4
   frame_skip: 2                 # Only detect every 2nd frame (saves ~50% CPU)
   num_threads: 4                # Limit threads to prevent CPU saturation
+  use_nvjpeg: false
 
 # Single-camera tracking
 tracking:

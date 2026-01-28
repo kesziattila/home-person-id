@@ -44,6 +44,10 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
     - **Identity Linker**: Periodically runs **Face Recognition** to confirm or update identity. It uses pre-computed Re-ID embeddings for gallery updates, avoiding redundant extraction.
 - Finally, it updates the **Preview Buffer** with full metadata (bounding boxes, names).
 
+### 5. Web UI & Hardware Acceleration (API Thread)
+- The **APIServer** (FastAPI) provides MJPEG streaming.
+- **Optimization**: On Jetson, hardware-accelerated JPEG encoding via `nvJPEG` is used to reduce CPU load when generating the MJPEG stream.
+
 ## Component Details
 
 ### 1. Stream Management (`src/stream/`)
