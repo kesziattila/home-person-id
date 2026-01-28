@@ -256,7 +256,9 @@ python -m src.cli preview --camera living_room --reid --scale 0.5 --show-zones
 Preview display shows:
 - Person bounding boxes with track IDs
 - Identified persons: `Name (F:0.85)` for face, `Name (R:0.72)` for Re-ID
-- Unidentified: `#5 (0.92) R:0.45` showing detection and Re-ID confidence
+- Unidentified: `#5 R:0.45` showing track ID and Re-ID confidence
+- Zones: Zone name in brackets e.g., `[living_room]`
+- Stationary: `S:10s` indicator with orange color for unidentified
 - Motion status and track counts
 - Re-ID gallery size (when `--reid` enabled)
 

@@ -47,6 +47,9 @@ class TrackIdentity:
     # Multi-face detection flag
     has_multiple_faces: bool = False
 
+    # Stationary time for display
+    stationary_time: Optional[int] = None
+
     # Timestamps
     first_seen: float = field(default_factory=time.time)
     last_face_check: float = 0.0

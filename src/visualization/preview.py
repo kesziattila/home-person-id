@@ -4,7 +4,9 @@ import numpy as np
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
-from src.preview import TrackRenderer
+from src.visualization.render import TrackRenderer, ZoneRenderer
+from src.recognition.identification_manager import TrackIdentity
+from src.tracking.zone_manager import ZoneManager
 
 @dataclass
 class PreviewFrame:
@@ -46,16 +48,27 @@ class Visualizer:
     """Helper class to draw annotations on frames."""
     
     @staticmethod
-    def draw_detections(image: np.ndarray, metadata: Dict[str, Any]) -> np.ndarray:
-        """Draw bounding boxes and labels on the image."""
-        from src.preview import TrackRenderer
-        track_renderer = TrackRenderer()
+    def draw_detections(
+        image: np.ndarray,
+        metadata: Dict[str, Any],
+        zone_manager: Optional[ZoneManager] = None,
+        show_zones: bool = True
+    ) -> np.ndarray:
+        """Draw bounding boxes, labels and zones on the image."""
+        track_renderer = TrackRenderer(zone_manager=zone_manager)
         draw_img = image.copy()
         frame_h, frame_w = draw_img.shape[:2]
+        
+        # Draw zones if manager provided and requested
+        camera_id = metadata.get("camera_id", "unknown")
+        if zone_manager and show_zones:
+            zone_renderer = ZoneRenderer(zone_manager)
+            zone_renderer.draw_zones(draw_img, camera_id)
         
         # Local tracks from TrackerResult
         tracks = metadata.get("tracks", [])
         identities = metadata.get("identities", {})
+        stationary_times = metadata.get("stationary_times", {})
         camera_id = metadata.get("camera_id", "unknown")
         
         for track in tracks:
@@ -65,18 +78,19 @@ class Visualizer:
             
             if bbox is not None:
                 identity = identities.get(local_id)
-                if identity:
-                    label, color = track_renderer.get_track_label_and_color(
-                        str(local_id), identity, camera_id, bbox, frame_w, frame_h
-                    )
-                    track_renderer.draw_track(draw_img, bbox, label, color)
-                else:
-                    # Fallback if no identity object (should not happen with current main.py)
-                    x1, y1, x2, y2 = map(int, bbox)
-                    label = f"#{local_id}"
-                    color = (0, 255, 0)
-                    cv2.rectangle(draw_img, (x1, y1), (x2, y2), color, 2)
-                    cv2.putText(draw_img, label, (x1, y1 - 10),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                stationary_time = stationary_times.get(local_id)
+                
+                if not identity:
+                    # Create a dummy TrackIdentity for unidentified tracks
+                    # to use the centralized label/color logic
+                    identity = TrackIdentity(track_id=str(local_id))
+                
+                # Ensure stationary_time is reflected in identity if possible,
+                # though get_track_label_and_color takes it as an argument anyway.
+                label, color = track_renderer.get_track_label_and_color(
+                    str(local_id), identity, camera_id, bbox, frame_w, frame_h,
+                    stationary_time=stationary_time
+                )
+                track_renderer.draw_track(draw_img, bbox, label, color)
         
         return draw_img

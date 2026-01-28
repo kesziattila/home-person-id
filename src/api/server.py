@@ -10,16 +10,25 @@ from fastapi.staticfiles import StaticFiles
 from typing import Optional
 
 from src.visualization.preview import PreviewBuffer, Visualizer
+from src.tracking.zone_manager import ZoneManager
 from src.utils.image_utils import encode_jpeg
 
 logger = logging.getLogger(__name__)
 
 class APIServer:
-    def __init__(self, buffer: PreviewBuffer, host: str = "0.0.0.0", port: int = 8000, use_nvjpeg: bool = False):
+    def __init__(
+        self,
+        buffer: PreviewBuffer,
+        host: str = "0.0.0.0",
+        port: int = 8000,
+        use_nvjpeg: bool = False,
+        zone_manager: Optional[ZoneManager] = None
+    ):
         self.buffer = buffer
         self.host = host
         self.port = port
         self.use_nvjpeg = use_nvjpeg
+        self.zone_manager = zone_manager
         self.app = FastAPI(title="Home Person ID API")
         
         # Determine static directory relative to this file
@@ -53,10 +62,12 @@ class APIServer:
         while True:
             preview_frame = self.buffer.get_latest_frame(camera_id)
             if preview_frame is not None:
-                # Draw annotations
+                # Draw annotations (but hide zone boundaries as requested)
                 annotated_image = Visualizer.draw_detections(
                     preview_frame.image, 
-                    preview_frame.metadata
+                    preview_frame.metadata,
+                    zone_manager=self.zone_manager,
+                    show_zones=False
                 )
                 
                 # Encode to JPEG

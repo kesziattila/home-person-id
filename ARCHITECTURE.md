@@ -197,13 +197,25 @@ Loaded from YAML file via `load_config()`.
 
 **Visualizer** (`visualization/preview.py`)
 - Shared drawing logic for annotations
-- Uses `TrackRenderer` from `src/preview.py` for consistent look and feel
+- Uses `TrackRenderer` from `src/visualization/render.py` for consistent look and feel
+
+**TrackRenderer** (`visualization/render.py`)
+- Centralized rendering of tracks with labels and bounding boxes
+- Used by both standalone preview (`preview.py`) and web visualizer
+- Implements unified labeling logic (Face, Re-ID, unidentified)
+- Handles stationary indicators and zone information in labels
+
+**ZoneRenderer** (`visualization/render.py`)
+- Centralized rendering of polygon zones on frames
+- Used by standalone preview (`preview.py`)
+- Optionally used by web visualizer (currently hidden by default)
 
 **APIServer** (`api/server.py`)
 - FastAPI-based web server
 - Runs in a separate daemon thread
 - Provides MJPEG streaming endpoints (`/api/v1/stream/{camera_id}`)
 - Serves static dashboard (`index.html`)
+- Integrated with `ZoneManager` to provide zone context in labels
 
 **Web Dashboard** (`static/index.html`)
 - Tailwind CSS based responsive UI
@@ -295,9 +307,9 @@ Loaded from YAML file via `load_config()`.
 - NEW: Just created, not yet confirmed (< 3 hits)
 - TRACKED: Actively being tracked (with motion)
 - TRACKED (stationary): Actively tracked but no motion detected
-  - Displayed with yellow color in preview
+  - Displayed with orange color in preview (`S:10s`)
   - Shown with stationary duration counter
-  - Removed after 60 seconds of no detection
+  - Removed after 60 seconds of no detection (if `stationary_timeout` configured)
 - LOST: No detection match, but still in memory
 - REMOVED: Marked for deletion
 

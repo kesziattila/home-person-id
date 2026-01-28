@@ -45,7 +45,7 @@ def convert_to_onnx(pth_path, onnx_path, arch='osnet_ain_x1_0'):
         model, 
         dummy, 
         onnx_path, 
-        opset_version=11, 
+        # opset_version=11,
         input_names=['input'], 
         output_names=['output'],
         dynamic_axes={'input': {0: 'batch_size'}, 'output': {0: 'batch_size'}}

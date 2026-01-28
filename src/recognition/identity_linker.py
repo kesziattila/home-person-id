@@ -40,6 +40,7 @@ class IdentificationResult:
     reid_score: float = -1.0
     face_info: Optional[tuple[str, float]] = None
     is_reid_identified: bool = False
+    stationary_time: Optional[int] = None
 
 
 @dataclass

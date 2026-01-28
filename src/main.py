@@ -19,6 +19,8 @@ from src.recognition.identity_linker import IdentityLinker
 from src.stream.manager import StreamManager
 from src.tracking.byte_tracker import ByteTrackerManager
 from src.tracking.global_tracker import GlobalTrackManager, GlobalTrackingResult
+from src.tracking.stationary_tracker import StationaryTracker
+from src.tracking.zone_manager import ZoneManager
 from src.tracking.handover import HandoverManager
 from src.visualization.preview import PreviewBuffer
 from src.api.server import APIServer
@@ -98,6 +100,8 @@ class PersonIDSystem:
 
         # Initialize tracking
         self.tracker_manager = ByteTrackerManager(self.config.tracking)
+        self.stationary_tracker = StationaryTracker(self.config.tracking.stationary_timeout)
+        self.zone_manager = ZoneManager(self.config.zones)
         self.handover_manager = HandoverManager(self.config.camera_topology)
 
         # Initialize recognition
@@ -133,7 +137,8 @@ class PersonIDSystem:
             self.preview_buffer,
             host=self.config.api.host,
             port=self.config.api.port,
-            use_nvjpeg=self.config.detection.use_nvjpeg
+            use_nvjpeg=self.config.detection.use_nvjpeg,
+            zone_manager=self.zone_manager
         )
 
     def _setup_logging(self):
@@ -402,11 +407,17 @@ class PersonIDSystem:
                 has_motion=motion_result.has_motion,
             )
 
-        # 3. Log events
+        # 3. Update stationary state
+        current_time = result.timestamp
+        track_ids = [t.track_id for t in track_result.tracks]
+        self.stationary_tracker.update(camera_id, track_ids, motion_result.has_motion, current_time)
+
+        # 4. Log events
         self._log_events(camera_id, global_result)
 
-        # 4. Update preview buffer
+        # 5. Update preview buffer
         identities = {}
+        stationary_times = {}
         with profiler.measure("IdentityLinker.get_identity"):
             for track in track_result.tracks:
                 global_track = self.global_tracker.get_global_track_for_local(camera_id, track.track_id)
@@ -414,6 +425,11 @@ class PersonIDSystem:
                     identity = self.identity_linker.get_identity(global_track.track_id)
                     if identity:
                         identities[track.track_id] = identity
+                
+                # Get stationary time
+                s_time = self.stationary_tracker.get_stationary_time(camera_id, track.track_id, current_time)
+                if s_time is not None:
+                    stationary_times[track.track_id] = s_time
 
         with profiler.measure("PreviewBuffer.update"):
             self.preview_buffer.update(
@@ -423,6 +439,7 @@ class PersonIDSystem:
                     "camera_id": camera_id,
                     "tracks": track_result.tracks,
                     "identities": identities,
+                    "stationary_times": stationary_times,
                     "global_tracks": global_result.active_tracks
                 }
             )
