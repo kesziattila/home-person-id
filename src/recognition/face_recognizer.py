@@ -237,6 +237,9 @@ class FaceRecognizer:
         
         Performs both detection and extraction to ensure all components are ready.
         """
+        if not self.config.enabled:
+            return
+
         self._initialize()
         # Dummy frame (1080p)
         dummy_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)

@@ -479,7 +479,7 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
     id_manager = IdentificationManager(config, face_gallery)
     if reid or face_gallery:
         click.echo("Re-ID enabled" if reid else "Face recognition enabled")
-    click.echo("Warming up Re-ID extractor...")
+    click.echo("Warming up identification models...")
     id_manager.warmup()
 
     # Initialize track renderer
@@ -948,7 +948,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
     )
     person_detector.warmup()
 
-    click.echo("Warming up Re-ID extractor...")
+    click.echo("Warming up identification models...")
     id_manager.warmup()
 
     # Helper functions for global track lookups

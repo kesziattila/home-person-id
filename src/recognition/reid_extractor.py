@@ -496,6 +496,9 @@ class ReIDExtractor:
 
     def warmup(self):
         """Warm up the model with a dummy inference."""
+        if not self.config.enabled:
+            return
+
         self._initialize()
         # Standard Re-ID input size
         dummy = np.zeros((256, 128, 3), dtype=np.uint8)

@@ -172,18 +172,9 @@ class PersonIDSystem:
             print("=" * 60)
 
         # Warmup models
-        logger.info("Warming up person detector...")
+        logger.info("Warming up models...")
         self.person_detector.warmup()
-
-        if self.config.face_recognition.enabled:
-            logger.info("Warming up face recognizer...")
-            # IdentityLinker has a face_recognizer property that lazy-loads
-            face_recognizer = self.identity_linker._id_manager.face_recognizer
-            if face_recognizer:
-                face_recognizer.warmup()
-
-        logger.info("Warming up Re-ID extractor...")
-        self.identity_linker.reid_extractor.warmup()
+        self.identity_linker.warmup()
 
         # Start camera streams
         self.stream_manager.start()

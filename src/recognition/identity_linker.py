@@ -603,3 +603,7 @@ class IdentityLinker:
 
         if to_remove:
             logger.debug(f"Cleaned up {len(to_remove)} old track states")
+
+    def warmup(self):
+        """Warm up models."""
+        self._id_manager.warmup()

@@ -195,6 +195,8 @@ class IdentificationManager:
 
     def warmup(self):
         """Warm up models for faster first inference."""
+        if self.face_recognizer:
+            self.face_recognizer.warmup()
         if self.reid_extractor:
             self.reid_extractor.warmup()
 
