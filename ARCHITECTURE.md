@@ -357,9 +357,11 @@ Loaded from YAML file via `load_config()`.
    - Cameras processed sequentially
    - Could be parallelized for better performance
 
-4. **TensorRT optimization for Re-ID and YOLO**
-   - YOLOv8 and OSNet Re-ID models can be exported to TensorRT `.engine` format for 2-3x speedup on Jetson.
-   - The system automatically detects `.engine` files and uses `onnxruntime` with `TensorrtExecutionProvider` for high-performance inference.
+4. **TensorRT optimization for YOLO, Face Recognition, and Re-ID**
+   - YOLOv8, InsightFace, and OSNet Re-ID models can be optimized with TensorRT for 2-3x speedup on Jetson.
+   - The system uses `onnxruntime` with `TensorrtExecutionProvider` for high-performance inference of Face and Re-ID models.
+   - Memory limits for TensorRT workspace can be configured per module.
+   - All modules (Detection, Face, Re-ID) are warmed up with dummy images on startup to ensure smooth initial processing.
 
 ## Future Development Notes
 

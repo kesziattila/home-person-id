@@ -81,6 +81,7 @@ reid:
   min_consecutive_matches: 3
   min_crop_height: 100
   min_visibility: 0.5
+  trt_max_workspace_size: 268435456  # 256MB for Re-ID TensorRT
 
 # Face recognition - InsightFace
 # Models: buffalo_sc (smallest), buffalo_s (small), buffalo_l (large/default)
@@ -91,6 +92,9 @@ face_recognition:
   min_face_size: 60             # Slightly larger for smaller model
   detection_interval: 10
   reid_confirmation_interval: 30
+  multi_face_min_size: 20
+  use_tensorrt: true            # Enable TensorRT for Face recognition
+  trt_max_workspace_size: 536870912  # 512MB for Face TensorRT
 
 # MQTT (Home Assistant)
 mqtt:

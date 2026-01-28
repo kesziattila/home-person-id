@@ -229,13 +229,14 @@ class PersonDetector:
             frame_shape=frame.shape,
         )
 
-    def warmup(self, frame_shape: tuple[int, int, int] = (480, 640, 3)) -> None:
+    def warmup(self, frame_shape: tuple[int, int, int] = (1080, 1920, 3)) -> None:
         """Warm up the model with a dummy inference.
 
         Args:
             frame_shape: Shape of frames that will be processed
         """
         self._load_model()
+        # Use a real-size frame for better warmup
         dummy_frame = np.zeros(frame_shape, dtype=np.uint8)
         self.detect(dummy_frame)
-        logger.info("Person detector warmed up")
+        logger.info(f"Person detector warmed up with shape {frame_shape}")

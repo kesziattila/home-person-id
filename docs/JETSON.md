@@ -166,7 +166,17 @@ If you get `ModuleNotFoundError: No module named 'tensorrt'`, follow these steps
 
 ### InsightFace (Optional)
 
-InsightFace models use ONNX format which automatically uses TensorRT on Jetson when `onnxruntime-gpu` is installed. No manual conversion needed.
+InsightFace models use ONNX format which automatically uses CUDA on Jetson when `onnxruntime-gpu` is installed. To enable full TensorRT acceleration:
+
+1. **Update config.yaml:**
+   ```yaml
+   face_recognition:
+     use_tensorrt: true
+     trt_max_workspace_size: 536870912  # 512MB
+   ```
+
+2. **Wait for engine build:**
+   The first time face recognition is used, it will build the TensorRT engine. This may take a few minutes.
 
 ### Re-ID Models (Optional)
 

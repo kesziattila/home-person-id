@@ -134,6 +134,8 @@ class ReIDConfig:
     # Helps avoid storing embeddings when people are close together (e.g., parent+child).
     # Set to 0.0 to disable. Recommended: 0.15
     skip_overlapping_iou: float = 0.15
+    # Max memory for TensorRT engine (bytes), 0 = default (usually 1GB)
+    trt_max_workspace_size: int = 0
 
 
 @dataclass
@@ -151,6 +153,10 @@ class FaceRecognitionConfig:
     # Interval for re-checking Re-ID identified tracks with face recognition
     # (to confirm identity with primary method). Set higher than detection_interval.
     reid_confirmation_interval: int = 30
+    # Use TensorRT acceleration on Jetson
+    use_tensorrt: bool = False
+    # Max memory for TensorRT engine (bytes), 0 = default (usually 1GB)
+    trt_max_workspace_size: int = 0
 
 
 @dataclass

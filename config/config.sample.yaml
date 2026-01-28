@@ -200,6 +200,10 @@ reid:
   # Set to 0.0 to disable. Recommended: 0.15
   skip_overlapping_iou: 0.15
 
+  # Max memory for TensorRT engine workspace (bytes).
+  # 0 = default (usually 1GB). Adjust if hitting memory limits.
+  trt_max_workspace_size: 0
+
 # =============================================================================
 # FACE RECOGNITION (InsightFace)
 # =============================================================================
@@ -232,6 +236,14 @@ face_recognition:
   # Interval to re-check Re-ID identified tracks with face recognition
   # Confirms Re-ID matches with higher-confidence face recognition
   reid_confirmation_interval: 30
+
+  # Use TensorRT acceleration on Jetson
+  # Requires onnxruntime-gpu with TensorRT provider
+  use_tensorrt: false
+
+  # Max memory for TensorRT engine workspace (bytes).
+  # 0 = default (usually 1GB).
+  trt_max_workspace_size: 0
 
 # =============================================================================
 # MQTT (Home Assistant Integration)

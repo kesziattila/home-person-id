@@ -73,9 +73,32 @@ class FaceRecognizer:
 
             logger.info(f"Loading InsightFace model: {self.config.model}")
 
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            
+            # Add TensorRT if enabled and available
+            if self.config.use_tensorrt:
+                try:
+                    import onnxruntime as ort
+                    if "TensorrtExecutionProvider" in ort.get_available_providers():
+                        logger.info("Using TensorRT acceleration for face recognition")
+                        trt_options = {
+                            "device_id": 0,
+                            "trt_fp16_enable": True,
+                            "trt_engine_cache_enable": True,
+                            "trt_engine_cache_path": "data/cache/trt_cache",
+                        }
+                        if self.config.trt_max_workspace_size > 0:
+                            trt_options["trt_max_workspace_size"] = self.config.trt_max_workspace_size
+                        
+                        providers.insert(0, ("TensorrtExecutionProvider", trt_options))
+                    else:
+                        logger.warning("TensorrtExecutionProvider not available for face recognition")
+                except ImportError:
+                    logger.warning("onnxruntime not available to check for TensorRT")
+
             self._app = FaceAnalysis(
                 name=self.config.model,
-                providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+                providers=providers,
             )
             self._app.prepare(ctx_id=0, det_size=(640, 640))
 
@@ -208,3 +231,21 @@ class FaceRecognizer:
             return (best_match, best_score)
 
         return None
+
+    def warmup(self) -> None:
+        """Warm up the model with dummy inferences.
+        
+        Performs both detection and extraction to ensure all components are ready.
+        """
+        self._initialize()
+        # Dummy frame (1080p)
+        dummy_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        
+        # Warmup detection
+        self.detect_faces(dummy_frame)
+        
+        # Warmup extraction (needs a crop that looks like a face-ish)
+        dummy_face_crop = np.zeros((200, 200, 3), dtype=np.uint8)
+        self.extract_embedding(dummy_face_crop)
+        
+        logger.info("Face recognizer warmed up (detection and extraction)")

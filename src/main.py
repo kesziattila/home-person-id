@@ -177,7 +177,10 @@ class PersonIDSystem:
 
         if self.config.face_recognition.enabled:
             logger.info("Warming up face recognizer...")
-            # Face recognizer is lazy-loaded in identity_linker
+            # IdentityLinker has a face_recognizer property that lazy-loads
+            face_recognizer = self.identity_linker._id_manager.face_recognizer
+            if face_recognizer:
+                face_recognizer.warmup()
 
         logger.info("Warming up Re-ID extractor...")
         self.identity_linker.reid_extractor.warmup()

@@ -342,13 +342,17 @@ class ReIDExtractor:
             logger.warning("TensorrtExecutionProvider not available in onnxruntime, "
                            "falling back to CUDA or CPU. Performance will be degraded.")
 
+        trt_options = {
+            "device_id": 0,
+            "trt_fp16_enable": True,
+            "trt_engine_cache_enable": True,
+            "trt_engine_cache_path": "data/cache/trt_cache",
+        }
+        if self.config.trt_max_workspace_size > 0:
+            trt_options["trt_max_workspace_size"] = self.config.trt_max_workspace_size
+
         providers = [
-            ("TensorrtExecutionProvider", {
-                "device_id": 0,
-                "trt_fp16_enable": True,
-                "trt_engine_cache_enable": True,
-                "trt_engine_cache_path": "data/cache/trt_cache",
-            }),
+            ("TensorrtExecutionProvider", trt_options),
             "CUDAExecutionProvider",
             "CPUExecutionProvider"
         ]
@@ -493,6 +497,12 @@ class ReIDExtractor:
     def warmup(self):
         """Warm up the model with a dummy inference."""
         self._initialize()
+        # Standard Re-ID input size
         dummy = np.zeros((256, 128, 3), dtype=np.uint8)
         self.extract(dummy)
-        logger.info("Re-ID extractor warmed up")
+        
+        # Also warmup batch extraction
+        dummy_batch = [dummy] * 2
+        self.extract_batch(dummy_batch)
+        
+        logger.info("Re-ID extractor warmed up (single and batch)")

@@ -131,6 +131,7 @@
 - Source code and configuration
 - Sample/example configs (with placeholder credentials)
 - Documentation
+- **Do NOT commit/push gitignored files** (e.g., `config/config.yaml`, database files, caches)
 
 ### What NOT to Commit
 - Actual credentials or API keys
