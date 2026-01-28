@@ -357,9 +357,9 @@ Loaded from YAML file via `load_config()`.
    - Cameras processed sequentially
    - Could be parallelized for better performance
 
-4. **No TensorRT optimization yet**
-   - Models run with PyTorch/ONNX
-   - Phase 5 planned for Jetson optimization
+4. **TensorRT optimization for Re-ID and YOLO**
+   - YOLOv8 and OSNet Re-ID models can be exported to TensorRT `.engine` format for 2-3x speedup on Jetson.
+   - The system automatically detects `.engine` files and uses `onnxruntime` with `TensorrtExecutionProvider` for high-performance inference.
 
 ## Future Development Notes
 

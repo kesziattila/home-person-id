@@ -167,6 +167,7 @@ reid:
   enabled: true
 
   # Model (smallest to largest): osnet_x0_25, osnet_x0_5, osnet_x0_75, osnet_x1_0
+  # For TensorRT: models/osnet_x0_25.engine (convert first, see docs/JETSON.md)
   # Smaller = faster and less memory, larger = more accurate
   model: "osnet_x1_0"
 

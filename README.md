@@ -352,7 +352,7 @@ The Re-ID system helps identify persons who leave and return:
 
 - [ ] **Phase 4**: MQTT publisher for Home Assistant integration
 - [x] **Phase 5**: FastAPI REST server & Web UI
-- [ ] **Phase 5**: TensorRT optimization for Jetson
+- [x] **Phase 5**: TensorRT optimization for Jetson (YOLO & Re-ID)
 
 ## Troubleshooting
 

@@ -140,6 +140,7 @@ class ReIDExtractor:
         self._transform = None
         self._initialized = False
         self._device = None
+        self._is_ort = False
 
     def _initialize(self):
         """Initialize model (lazy loading)."""
@@ -157,8 +158,11 @@ class ReIDExtractor:
 
             model_path = self.config.model
 
+            # Check for TensorRT engine
+            if model_path.endswith(".engine"):
+                self._load_tensorrt_model(model_path)
             # Check if model is a file path
-            if model_path.endswith(".pth") or "/" in model_path:
+            elif model_path.endswith(".pth") or "/" in model_path:
                 # Load from local file
                 model_file = Path(model_path)
                 if not model_file.exists():
@@ -290,25 +294,70 @@ class ReIDExtractor:
         rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
 
         # Transform and add batch dimension
-        tensor = self._transform(rgb).unsqueeze(0).to(self._device)
+        tensor = self._transform(rgb).unsqueeze(0)
 
         # Extract features
-        with torch.no_grad():
-            features = self._model(tensor)
-
-            # Handle different model output formats
-            if isinstance(features, tuple):
-                features = features[0]
-
+        if self._is_ort:
+            input_name = self._model.get_inputs()[0].name
+            ort_inputs = {input_name: tensor.numpy()}
+            features_np = self._model.run(None, ort_inputs)[0]
             # Normalize features
-            features = torch.nn.functional.normalize(features, p=2, dim=1)
+            norm = np.linalg.norm(features_np, ord=2, axis=1, keepdims=True)
+            embedding = (features_np / norm).flatten()
+        else:
+            tensor = tensor.to(self._device)
+            import torch
+            with torch.no_grad():
+                features = self._model(tensor)
 
-            embedding = features.cpu().numpy().flatten()
+                # Handle different model output formats
+                if isinstance(features, tuple):
+                    features = features[0]
+
+                # Normalize features
+                features = torch.nn.functional.normalize(features, p=2, dim=1)
+
+                embedding = features.cpu().numpy().flatten()
 
         if return_quality:
             return embedding, quality
 
         return embedding
+
+    def _load_tensorrt_model(self, model_path: str):
+        """Load TensorRT engine using onnxruntime."""
+        import onnxruntime as ort
+        from pathlib import Path
+
+        model_file = Path(model_path)
+        if not model_file.exists():
+            raise FileNotFoundError(f"TensorRT Re-ID engine not found: {model_path}")
+
+        logger.info(f"Loading TensorRT Re-ID engine: {model_path}")
+
+        # Check for TensorrtExecutionProvider
+        available_providers = ort.get_available_providers()
+        if "TensorrtExecutionProvider" not in available_providers:
+            logger.warning("TensorrtExecutionProvider not available in onnxruntime, "
+                           "falling back to CUDA or CPU. Performance will be degraded.")
+
+        providers = [
+            ("TensorrtExecutionProvider", {
+                "device_id": 0,
+                "trt_fp16_enable": True,
+                "trt_engine_cache_enable": True,
+                "trt_engine_cache_path": "data/cache/trt_cache",
+            }),
+            "CUDAExecutionProvider",
+            "CPUExecutionProvider"
+        ]
+
+        # Filter providers to only those available
+        providers = [p for p in providers if (p[0] if isinstance(p, tuple) else p) in available_providers]
+
+        self._model = ort.InferenceSession(model_path, providers=providers)
+        self._is_ort = True
+        logger.info(f"TensorRT Re-ID model loaded successfully using {self._model.get_providers()[0]}")
 
     def extract_batch(
         self, crops: list[np.ndarray]
@@ -355,16 +404,25 @@ class ReIDExtractor:
             return results
 
         # Batch inference
-        batch = torch.stack(tensors).to(self._device)
+        batch = torch.stack(tensors)
 
-        with torch.no_grad():
-            features = self._model(batch)
+        if self._is_ort:
+            input_name = self._model.get_inputs()[0].name
+            ort_inputs = {input_name: batch.numpy()}
+            features_np = self._model.run(None, ort_inputs)[0]
+            # Normalize features
+            norm = np.linalg.norm(features_np, ord=2, axis=1, keepdims=True)
+            embeddings = features_np / norm
+        else:
+            batch = batch.to(self._device)
+            with torch.no_grad():
+                features = self._model(batch)
 
-            if isinstance(features, tuple):
-                features = features[0]
+                if isinstance(features, tuple):
+                    features = features[0]
 
-            features = torch.nn.functional.normalize(features, p=2, dim=1)
-            embeddings = features.cpu().numpy()
+                features = torch.nn.functional.normalize(features, p=2, dim=1)
+                embeddings = features.cpu().numpy()
 
         # Rebuild results list
         result_dict = {}

@@ -70,6 +70,8 @@ tracking:
 
 # Cross-camera Re-ID
 # Models (smallest to largest): osnet_x0_25, osnet_x0_5, osnet_x0_75, osnet_x1_0
+# For TensorRT acceleration, convert model first (see docs/JETSON.md)
+# Then use: model: "models/osnet_x0_25.engine"
 reid:
   enabled: true                 # Set to false to save ~300MB
   model: "osnet_x0_25"          # Smallest model, saves memory (~150MB vs ~350MB)
