@@ -272,11 +272,20 @@ face_recognition:
 
 ### Optimization Tips
 
-1. **Use TensorRT** - 2-3x faster inference
-2. **Enable motion detection** - Skip frames without motion
-3. **Reduce FPS** - 5 FPS is usually sufficient
-4. **Disable Re-ID** - Saves ~300MB if not needed
-5. **Use frame_skip** - Process every 2nd frame if needed
+1. **Power Mode and Clocks**: Ensure your Jetson is in high-performance mode and clocks are maxed out:
+   ```bash
+   # Set to maximum power mode (ID depends on your specific Jetson model)
+   sudo nvpmodel -m 0
+   # Lock clocks to maximum frequency
+   sudo jetson_clocks
+   ```
+   *Note: This can significantly improve CPU-bound tasks like motion detection (e.g., from 21ms down to 8ms per frame).*
+
+2. **Use TensorRT** - 2-3x faster inference
+3. **Enable motion detection** - Skip frames without motion
+4. **Reduce FPS** - 5 FPS is usually sufficient
+5. **Disable Re-ID** - Saves ~300MB if not needed
+6. **Use frame_skip** - Process every 2nd frame if needed
 
 ---
 

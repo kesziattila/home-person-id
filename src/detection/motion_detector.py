@@ -291,8 +291,8 @@ class CUDAMotionDetector(BaseMotionDetector):
             proc_gpu_frame = self._gpu_frame
 
         # Apply background subtraction
-        self._bg_subtractor.apply(
-            proc_gpu_frame, -1, self._gpu_fg_mask, stream=self._stream
+        self._gpu_fg_mask = self._bg_subtractor.apply(
+            proc_gpu_frame, -1, self._stream
         )
 
         # Apply morphological operations
