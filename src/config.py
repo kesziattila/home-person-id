@@ -126,7 +126,13 @@ class ReIDConfig:
     # Models: osnet_x1_0 (best), osnet_x0_75, osnet_x0_5, osnet_x0_25 (smallest)
     model: str = "osnet_x1_0"
     similarity_threshold: float = 0.65
-    max_reappear_time_sec: float = 300.0
+    # Max time (seconds) to re-identify a track after it was lost.
+    # Longer times allow for long-term tracking but may increase false matches.
+    # Note: Global tracker uses a shorter grace period for global_track_id continuity.
+    max_reappear_time_sec: float = 3600.0
+    # Grace period (seconds) to maintain the same global_track_id after a track is lost.
+    # If a person returns within this time, they keep their ID. After this, they get a new ID.
+    global_id_grace_period: float = 60.0
     gallery_size: int = 10
     min_consecutive_matches: int = 3
     min_crop_height: int = 100

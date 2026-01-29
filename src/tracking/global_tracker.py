@@ -710,7 +710,7 @@ class GlobalTrackManager:
                 time_since_lost = (
                     datetime.now() - global_track.last_seen
                 ).total_seconds()
-                if time_since_lost < self.reid_config.max_reappear_time_sec:
+                if time_since_lost < self.reid_config.global_id_grace_period:
                     candidate_track_ids.append(global_track_id)
 
         if not candidate_track_ids:

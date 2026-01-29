@@ -140,6 +140,8 @@ class MatchResult:
     score: float = 0.0
     matched: bool = False
     gallery_crop: Optional[np.ndarray] = None
+    best_person_name: Optional[str] = None  # Best match even if below threshold
+    best_score: float = 0.0
 
 
 class ReIDGalleryManager:
@@ -343,6 +345,8 @@ class ReIDGalleryManager:
         for emb in embeddings:
             entry.add_embedding(emb, crop)
 
+        entry.last_seen = time.time()  # Update last seen time when track is lost
+
         # Save debug image
         if self.debug_saver and crop is not None:
             self.debug_saver.save_gallery_stored(crop, person_name, len(entry.embeddings))
@@ -390,16 +394,17 @@ class ReIDGalleryManager:
         best_crop = None
 
         for person_name, entry in self._gallery.items():
-            score, crop = entry.match(embedding)
+            score, match_crop = entry.match(embedding)
             if score > best_score:
                 best_score = score
-                if score > self.similarity_threshold:
-                    best_name = person_name
-                    best_crop = crop  # Crop from the best matching embedding
+                best_name = person_name
+                best_crop = match_crop
 
+        result.best_score = best_score
+        result.best_person_name = best_name
         result.score = best_score
 
-        if best_name:
+        if best_name and best_score > self.similarity_threshold:
             result.person_name = best_name
             result.matched = True
             result.gallery_crop = best_crop  # This is now the actual best matching crop

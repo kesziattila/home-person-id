@@ -184,7 +184,11 @@ reid:
   similarity_threshold: 0.65
 
   # Maximum time (seconds) to consider re-appearance of same person
-  max_reappear_time_sec: 300.0
+  max_reappear_time_sec: 3600.0
+
+  # Grace period (seconds) to maintain the same global_track_id after a track is lost.
+  # If a person returns within this time, they keep their ID. After this, they get a new ID.
+  global_id_grace_period: 60.0
 
   # Number of feature embeddings to store per person
   gallery_size: 10

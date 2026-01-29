@@ -42,6 +42,7 @@ class TrackIdentity:
 
     # Scores for display
     reid_score: float = -1.0
+    reid_info: Optional[tuple[str, float]] = None  # (closest_name, confidence)
     face_info: Optional[tuple[str, float]] = None  # (closest_name, confidence)
 
     # Multi-face detection flag
@@ -270,6 +271,9 @@ class IdentificationManager:
 
         match_result = self.reid_gallery_manager.match_new_track(crop, num_persons)
         identity = self.get_identity(track_id)
+
+        if match_result.best_person_name:
+            identity.reid_info = (match_result.best_person_name, match_result.best_score)
 
         if match_result.score >= 0:
             identity.reid_score = match_result.score

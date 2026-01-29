@@ -71,8 +71,13 @@ class TrackRenderer:
                 closest_name, face_conf = identity.face_info
                 label += f" ~{closest_name}({face_conf:.2f})"
 
+            # Add Re-ID info (closest match even if below threshold)
+            if identity.reid_info and not identity.face_info:
+                closest_name, reid_conf = identity.reid_info
+                label += f" (?){closest_name}({reid_conf:.2f})"
+
             # Always show Re-ID score if available (for debugging/monitoring)
-            if identity.reid_score >= 0:
+            if identity.reid_score >= 0 and not identity.reid_info:
                 label += f" R:{identity.reid_score:.2f}"
 
             color = self.COLOR_UNIDENTIFIED
