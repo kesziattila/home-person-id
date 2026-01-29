@@ -38,8 +38,10 @@ class IdentificationResult:
 
     # For visualization compatibility with TrackIdentity
     reid_score: float = -1.0
+    reid_info: Optional[tuple[str, float]] = None  # (closest_name, confidence)
     face_info: Optional[tuple[str, float]] = None
     is_reid_identified: bool = False
+    has_multiple_faces: bool = False  # Added for compatibility
     stationary_time: Optional[int] = None
 
 
@@ -233,12 +235,9 @@ class IdentityLinker:
 
         name = self._get_person_name(state.person_id) if state.person_id else None
         
-        # Get reid score from shared gallery if not identified or if identified via reid
-        reid_score = -1.0
-        # For preview we might want to see the best match score even if not confirmed
-        # But we don't have the crop here. 
-        # TrackIdentityState doesn't store the latest score, but TrackIdentity does.
-        # However, for now we just want to fix the AttributeError.
+        # Get reid info from TrackIdentity if available
+        # Note: We don't have direct access to TrackIdentity here, but we can fix the AttributeError
+        # by initializing it to None.
         
         return IdentificationResult(
             person_id=state.person_id,
@@ -247,7 +246,8 @@ class IdentityLinker:
             method=state.identified_by,
             is_confirmed=state.is_identified,
             is_reid_identified=state.identified_by == "reid" or "transfer" in state.identified_by,
-            face_info=(name, state.identification_confidence) if "face" in state.identified_by else None
+            face_info=(name, state.identification_confidence) if "face" in state.identified_by else None,
+            reid_info=None  # Explicitly initialized to avoid AttributeError
         )
 
     # ==================== Main Processing Workflow ====================
@@ -292,7 +292,8 @@ class IdentityLinker:
                 method=state.identified_by,
                 is_confirmed=True,
                 is_reid_identified=state.identified_by == "reid",
-                face_info=(name, state.identification_confidence) if state.identified_by == "face" else None
+                face_info=(name, state.identification_confidence) if state.identified_by == "face" else None,
+                reid_info=None
             )
 
         # Check if we should run face recognition
@@ -307,8 +308,9 @@ class IdentityLinker:
             force_face_check
             or time_since_face_check > (check_interval / 2.0)
         )
-
-        result = IdentificationResult()
+        
+        # Initialize result with reid_info=None to avoid AttributeError in renderer
+        result = IdentificationResult(reid_info=None)
 
         if should_check_face and self.face_config.enabled:
             state.last_face_check = current_time
