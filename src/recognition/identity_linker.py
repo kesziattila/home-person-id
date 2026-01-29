@@ -235,9 +235,8 @@ class IdentityLinker:
 
         name = self._get_person_name(state.person_id) if state.person_id else None
         
-        # Get reid info from TrackIdentity if available
-        # Note: We don't have direct access to TrackIdentity here, but we can fix the AttributeError
-        # by initializing it to None.
+        # Get info from underlying IdentificationManager
+        identity = self._id_manager.get_identity(global_track_id)
         
         return IdentificationResult(
             person_id=state.person_id,
@@ -246,8 +245,10 @@ class IdentityLinker:
             method=state.identified_by,
             is_confirmed=state.is_identified,
             is_reid_identified=state.identified_by == "reid" or "transfer" in state.identified_by,
-            face_info=(name, state.identification_confidence) if "face" in state.identified_by else None,
-            reid_info=None  # Explicitly initialized to avoid AttributeError
+            face_info=identity.face_info if identity else None,
+            reid_info=identity.reid_info if identity else None,
+            reid_score=identity.reid_score if identity else -1.0,
+            has_multiple_faces=identity.has_multiple_faces if identity else False
         )
 
     # ==================== Main Processing Workflow ====================
@@ -285,6 +286,10 @@ class IdentityLinker:
         if state.is_identified:
             self._update_reid_gallery(state, person_crop, num_persons_in_frame, precomputed_reid)
             name = self._get_person_name(state.person_id)
+            
+            # Also get latest reid_score/info for display
+            identity = self._id_manager.get_identity(global_track_id)
+            
             return IdentificationResult(
                 person_id=state.person_id,
                 person_name=name,
@@ -293,7 +298,8 @@ class IdentityLinker:
                 is_confirmed=True,
                 is_reid_identified=state.identified_by == "reid",
                 face_info=(name, state.identification_confidence) if state.identified_by == "face" else None,
-                reid_info=None
+                reid_info=identity.reid_info if identity else None,
+                reid_score=identity.reid_score if identity else -1.0
             )
 
         # Check if we should run face recognition
@@ -317,12 +323,26 @@ class IdentityLinker:
             face_result = self._try_face_identification(state, frame, bbox, person_crop, num_persons_in_frame)
 
             if face_result.is_confirmed:
+                # Update with reid_info for rendering before returning
+                identity = self._id_manager.get_identity(global_track_id)
+                if identity:
+                    face_result.reid_info = identity.reid_info
+                    face_result.reid_score = identity.reid_score
                 return face_result
             elif face_result.person_id is not None:
                 result = face_result
 
         # Always update Re-ID gallery for cross-camera matching
         self._update_reid_gallery(state, person_crop, num_persons_in_frame, precomputed_reid)
+
+        # Get best-match info from underlying IdentificationManager for unidentified tracks
+        if not result.is_confirmed:
+            identity = self._id_manager.get_identity(global_track_id)
+            if identity:
+                result.reid_info = identity.reid_info
+                result.face_info = identity.face_info
+                result.reid_score = identity.reid_score
+                result.has_multiple_faces = identity.has_multiple_faces
 
         return result
 

@@ -46,11 +46,20 @@ class TestIdentityLinkerCompatibility(unittest.TestCase):
         track_id = "global_1"
         self.linker.register_track(track_id)
         
+        # Mock IdentificationManager to have some best-match info
+        mock_id = MagicMock()
+        mock_id.reid_info = ("John", 0.7)
+        mock_id.face_info = ("Jane", 0.5)
+        mock_id.reid_score = 0.7
+        mock_id.has_multiple_faces = True
+        self.linker._id_manager.get_identity = MagicMock(return_value=mock_id)
+        
         result = self.linker.get_identity(track_id)
         self.assertIsNotNone(result)
-        # reid_info should be initialized to None (not causing AttributeError)
-        self.assertIsNone(result.reid_info)
-        self.assertFalse(result.has_multiple_faces)
+        self.assertEqual(result.reid_info, ("John", 0.7))
+        self.assertEqual(result.face_info, ("Jane", 0.5))
+        self.assertEqual(result.reid_score, 0.7)
+        self.assertTrue(result.has_multiple_faces)
 
     def test_process_track_returns_compatibility_fields(self):
         """Test that process_track returns result with compatibility fields."""
@@ -58,6 +67,17 @@ class TestIdentityLinkerCompatibility(unittest.TestCase):
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
         person_crop = np.zeros((50, 50, 3), dtype=np.uint8)
         bbox = (0, 0, 50, 50)
+        
+        # Mock IdentificationManager to have some best-match info
+        mock_id = MagicMock()
+        mock_id.reid_info = ("John", 0.7)
+        mock_id.reid_score = 0.7
+        mock_id.face_info = None
+        mock_id.has_multiple_faces = False
+        self.linker._id_manager.get_identity = MagicMock(return_value=mock_id)
+        
+        # We need to disable face recognition for this test or mock its internal calls
+        self.linker.face_config.enabled = False
         
         result = self.linker.process_track(
             global_track_id=track_id,
@@ -67,7 +87,8 @@ class TestIdentityLinkerCompatibility(unittest.TestCase):
         )
         
         self.assertIsNotNone(result)
-        self.assertIsNone(result.reid_info)
+        self.assertEqual(result.reid_info, ("John", 0.7))
+        self.assertEqual(result.reid_score, 0.7)
         self.assertFalse(result.has_multiple_faces)
 
 if __name__ == "__main__":
