@@ -40,8 +40,8 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
 ### 4. Tracking & Recognition (Main Thread)
 - When an `InferenceResult` is received:
     - **Local Tracking**: ByteTrack updates track positions using detections and pre-computed Re-ID embeddings.
-    - **Global Tracking**: `GlobalTrackManager` updates cross-camera state, using pre-computed Re-ID for handover and reappearance matching.
-    - **Identity Linker**: Periodically runs **Face Recognition** to confirm or update identity. It uses pre-computed Re-ID embeddings for gallery updates, avoiding redundant extraction.
+    - **Global Tracking**: `GlobalTrackManager` updates cross-camera state. It treats `global_track_id` as a session-based identifier, assigning a new ID if a person is missing for more than a grace period (default 60s), while maintaining person identity via the Re-ID gallery.
+    - **Identity Linker**: Periodically runs **Face Recognition** to confirm or update identity. It uses pre-computed Re-ID embeddings for gallery updates and maintains "best guess" identities for unidentified persons.
 - Finally, it updates the **Preview Buffer** with full metadata (bounding boxes, names).
 
 ### 5. Web UI & Hardware Acceleration (API Thread)
@@ -99,7 +99,8 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
 - Coordinates tracks across all cameras
 - Creates global tracks from confirmed local tracks
 - Handles camera handover (overlapping views)
-- Uses Re-ID for cross-camera matching (non-overlapping views)
+- Uses Re-ID for cross-camera matching within a short grace period
+- Assigns new `global_track_id` after the grace period expires
 - Manages track lifecycle and cleanup
 
 **HandoverManager** (`handover.py`)

@@ -197,10 +197,11 @@ When user reports a bug with a sample image:
 
 ### Pre-commit Verification
 **Before committing any code changes**, verify the code is valid:
-1. **Run syntax check**: `python -m py_compile <modified_file.py>`
-2. **Or use IDE diagnostics**: Check for errors/warnings in the IDE
-3. **For CLI changes**: Test the modified command (e.g., `python -m src.cli <command> --help`)
-4. **For import changes**: Verify imports work: `python -c "from src.module import Class"`
+1. **Run ALL tests**: `PYTHONPATH=. python3 -m pytest tests/` (or run specific test files)
+2. **Run syntax check**: `python -m py_compile <modified_file.py>`
+3. **Or use IDE diagnostics**: Check for errors/warnings in the IDE
+4. **For CLI changes**: Test the modified command (e.g., `python -m src.cli <command> --help`)
+5. **For import changes**: Verify imports work: `python -c "from src.module import Class"`
 
 This catches basic errors like:
 - Missing imports
