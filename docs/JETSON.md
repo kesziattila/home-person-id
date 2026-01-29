@@ -71,14 +71,14 @@ The pip `opencv-python` packages don't include GStreamer support. For NVDEC hard
 
 ```bash
 # Install system OpenCV (has GStreamer + CUDA)
-sudo apt install python3-opencv
+sudo apt install libopencv-python
 
 # Remove any pip opencv from venv
 pip uninstall opencv-python opencv-python-headless -y
 
 # Symlink system cv2 into venv
 VENV_SITE=$(python -c "import site; print(site.getsitepackages()[0])")
-ln -s /usr/lib/python3/dist-packages/cv2.cpython-310-aarch64-linux-gnu.so $VENV_SITE/
+ln -s /usr/lib/python3.10/dist-packages/cv2 $VENV_SITE/
 
 # Verify GStreamer is available:
 python -c "import cv2; print(cv2.getBuildInformation())" | grep -i gstreamer
@@ -98,6 +98,18 @@ pip install -c constraints-jetson.txt -r requirements-jetson.txt
 ```bash
 cp config/config.jetson.yaml config/config.yaml
 # Edit config.yaml with your camera URLs
+```
+
+### 8. CUDA-Accelerated Motion Detection
+
+To use CUDA-accelerated motion detection, you need an OpenCV build with CUDA support. The system OpenCV on JetPack usually includes this.
+
+- **Requirement**: OpenCV compiled with `WITH_CUDA=ON`.
+- **Configuration**: Set `motion.use_cuda: true` in `config.yaml`.
+
+You can verify CUDA support using the provided tool:
+```bash
+python tools/check_cuda.py
 ```
 
 ---

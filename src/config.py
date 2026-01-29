@@ -82,6 +82,8 @@ class MotionConfig:
     cooldown_sec: float = 5.0
     # Process frames at this height for motion detection
     processing_height: int = 360
+    # Use CUDA-accelerated motion detection (requires OpenCV with CUDA support)
+    use_cuda: bool = False
 
 
 @dataclass

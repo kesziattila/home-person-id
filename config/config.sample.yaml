@@ -101,6 +101,10 @@ motion:
   # Frame height to use for processing (downscaling improves performance)
   # 1080p -> 360p reduces pixel count by ~90%
   processing_height: 360
+  # Use CUDA-accelerated motion detection.
+  # REQUIRES: OpenCV compiled with CUDA support (cv2.cuda) and a compatible GPU.
+  # System OpenCV on Jetson JetPack typically supports this.
+  use_cuda: false
 
 # =============================================================================
 # PERSON DETECTION (YOLO)

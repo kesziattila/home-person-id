@@ -12,7 +12,7 @@ import cv2
 import numpy as np
 
 from src.config import Config, CameraConfig
-from src.detection.motion_detector import MotionDetector
+from src.detection.motion_detector import MotionDetector, BaseMotionDetector
 from src.detection.person_detector import PersonDetector, DetectionResult
 from src.recognition.identification_manager import IdentificationManager, TrackIdentity
 from src.tracking.byte_tracker import ByteTracker
@@ -127,7 +127,7 @@ class CameraProcessor:
         self._get_cameras_seen = get_cameras_seen
 
         # Per-camera components
-        self.motion_detector = MotionDetector(config.motion)
+        self.motion_detector: BaseMotionDetector = MotionDetector(config.motion)
         self.tracker = ByteTracker(camera_id, config.tracking)
         self.stationary_tracker = StationaryTracker(config.tracking.stationary_timeout)
 

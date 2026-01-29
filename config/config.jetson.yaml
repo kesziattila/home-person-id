@@ -47,7 +47,11 @@ motion:
   var_threshold: 50
   min_area_ratio: 0.01
   cooldown_sec: 5
-  processing_height: 360        # Optimize for CPU background subtraction
+  processing_height: 360        # Optimize for background subtraction
+  # Use CUDA-accelerated motion detection.
+  # REQUIRES: OpenCV compiled with CUDA support (cv2.cuda) and a compatible GPU.
+  # System OpenCV on Jetson JetPack typically supports this.
+  use_cuda: true
 
 # Person detection - YOLO
 # For TensorRT acceleration, export model first:
