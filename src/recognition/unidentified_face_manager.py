@@ -16,6 +16,7 @@ import numpy as np
 
 from src.config import UnidentifiedFacesConfig
 from src.database.repository import Repository
+from src.utils.profiler import profiler
 
 logger = logging.getLogger(__name__)
 
@@ -256,6 +257,9 @@ class UnidentifiedFaceManager:
         - Sharpness (FFT-based, catches both focus and motion blur)
         - Brightness (not too dark, not too bright)
 
+        Performance: ~8-10ms per call (FFT is the bottleneck).
+        Runs in background thread so doesn't block main processing.
+
         Args:
             face_crop: Face crop image
             face_bbox: Face bounding box
@@ -274,7 +278,8 @@ class UnidentifiedFaceManager:
 
         # Sharpness score using FFT high-frequency ratio
         # This catches both focus blur AND motion blur
-        sharpness_score = self._compute_sharpness_fft(gray)
+        with profiler.measure("QualityCheck.sharpness_fft"):
+            sharpness_score = self._compute_sharpness_fft(gray)
 
         # Brightness score (0-1, penalize extremes)
         mean_brightness = np.mean(gray)

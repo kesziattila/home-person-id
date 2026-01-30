@@ -140,7 +140,8 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
 **UnidentifiedFaceManager** (`unidentified_face_manager.py`)
 - Background thread manager for capturing faces below recognition threshold
 - Non-blocking `submit()` method for main thread
-- Computes quality score (size, blur via Laplacian variance, brightness)
+- Computes quality score (size, sharpness, brightness)
+- **FFT-based blur detection**: Uses frequency domain analysis to detect both motion blur and focus blur (Laplacian variance only catches focus blur). Performance: ~8-10ms per image.
 - Diversity check to avoid storing duplicate faces (cosine similarity)
 - Per-camera limit enforcement and automatic cleanup
 - Stores face crops to disk and metadata to database

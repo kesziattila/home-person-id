@@ -62,6 +62,25 @@
 - Run expensive checks (like multi-face detection) only when storing data, not on every frame
 - Cache results that don't change frequently (e.g., face gallery with TTL)
 
+### Performance Measurement for CPU/GPU Intensive Code
+When adding CPU or GPU intensive code (FFT, ML inference, image processing, matrix operations):
+- **Always wrap with `profiler.measure()`** to track in Performance Report
+- **Document expected performance** in docstring (e.g., "Performance: ~8-10ms per call")
+- Import: `from src.utils.profiler import profiler`
+- Example pattern:
+  ```python
+  from src.utils.profiler import profiler
+
+  def expensive_operation(self, data):
+      """Process data. Performance: ~10ms for 400x400 image."""
+      with profiler.measure("MyModule.expensive_op"):
+          # ... expensive computation ...
+          result = compute(data)
+      return result
+  ```
+- The profiler aggregates stats and prints them periodically in `--- Performance Report ---`
+- Use descriptive names: `"ClassName.method_name"` or `"Feature.operation"`
+
 ---
 
 ## Re-ID Specific Rules

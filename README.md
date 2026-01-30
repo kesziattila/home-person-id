@@ -103,7 +103,8 @@ Default access: `http://localhost:8000`
 
 ### 6. Unidentified Faces Feature
 When a face is detected but doesn't match any known person (below similarity threshold):
-- Face is automatically captured with quality scoring (size, blur, brightness)
+- Face is automatically captured with quality scoring (size, sharpness, brightness)
+- **FFT-based blur detection** rejects motion blur and focus blur (~8-10ms overhead)
 - Best-match person and confidence are recorded for quick review
 - Diversity check prevents storing duplicate faces
 - Per-camera limits keep storage manageable (configurable)
@@ -356,6 +357,7 @@ See `config/config.yaml` for all options. Key settings:
 | `unidentified_faces.enabled` | Capture unidentified faces | true |
 | `unidentified_faces.max_per_camera` | Max faces to keep per camera | 20 |
 | `unidentified_faces.min_quality_score` | Min quality score (0-1) | 0.3 |
+| `unidentified_faces.min_sharpness_score` | Min sharpness for blur rejection (0-1) | 0.4 |
 | `unidentified_faces.min_face_size` | Min face size for capture (pixels) | 60 |
 | `unidentified_faces.retention_days` | Days to keep before cleanup | 30 |
 
