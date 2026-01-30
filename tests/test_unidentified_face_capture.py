@@ -378,5 +378,103 @@ class TestCropUtilities:
         assert face_region.shape[1] == 80  # 90-10
 
 
+class TestBlurDetection:
+    """Test blur detection for quality scoring."""
+
+    def test_motion_blur_detected(self):
+        """Test that motion blur is detected by FFT-based sharpness.
+
+        Laplacian variance fails to detect motion blur because edges still
+        exist (just smeared). FFT-based detection catches it by measuring
+        high-frequency content loss.
+        """
+        import cv2
+        from pathlib import Path
+        from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
+        from src.config import UnidentifiedFacesConfig
+
+        # Load motion blurred test image
+        test_image_path = Path("tests/test-images/sensitive/20260130_205338_088f1a6c.jpg")
+        if not test_image_path.exists():
+            pytest.skip("Motion blur test image not available")
+
+        img = cv2.imread(str(test_image_path))
+        assert img is not None, "Failed to load test image"
+
+        # Create manager to access _compute_sharpness_fft
+        config = UnidentifiedFacesConfig(enabled=True)
+        mock_repo = MagicMock()
+        manager = UnidentifiedFaceManager(config, mock_repo)
+
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        sharpness_score = manager._compute_sharpness_fft(gray)
+
+        # Motion blurred image should have LOW sharpness score (<0.5)
+        assert sharpness_score < 0.5, (
+            f"Motion blur not detected! Sharpness score {sharpness_score:.2f} "
+            f"should be below 0.5 for motion-blurred images"
+        )
+
+    def test_sharp_image_high_score(self):
+        """Test that sharp images get high sharpness score."""
+        import cv2
+        from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
+        from src.config import UnidentifiedFacesConfig
+
+        # Create a sharp image with natural-looking noise and edges
+        # Random texture with varying intensities (like a natural image)
+        np.random.seed(42)
+        img = np.random.randint(50, 200, (200, 200), dtype=np.uint8)
+
+        # Add some sharp edges
+        img[50:150, 90:110] = 30  # Dark vertical stripe
+        img[80:120, 40:160] = 220  # Bright horizontal stripe
+
+        # Add fine detail/texture (high frequency)
+        for i in range(0, 200, 4):
+            for j in range(0, 200, 4):
+                if (i + j) % 8 == 0:
+                    img[i:i+2, j:j+2] = np.clip(img[i:i+2, j:j+2] + 50, 0, 255)
+
+        config = UnidentifiedFacesConfig(enabled=True)
+        mock_repo = MagicMock()
+        manager = UnidentifiedFaceManager(config, mock_repo)
+
+        sharpness_score = manager._compute_sharpness_fft(img)
+
+        # Sharp natural-looking image should have good sharpness score (>0.5)
+        assert sharpness_score > 0.5, (
+            f"Sharp image not detected! Sharpness score {sharpness_score:.2f} "
+            f"should be above 0.5 for sharp images"
+        )
+
+    def test_gaussian_blur_detected(self):
+        """Test that Gaussian blur is detected."""
+        import cv2
+        from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
+        from src.config import UnidentifiedFacesConfig
+
+        # Create sharp image and blur it
+        img = np.zeros((200, 200), dtype=np.uint8)
+        for i in range(0, 200, 20):
+            for j in range(0, 200, 20):
+                if (i // 20 + j // 20) % 2 == 0:
+                    img[i:i+20, j:j+20] = 255
+
+        blurred = cv2.GaussianBlur(img, (21, 21), 0)
+
+        config = UnidentifiedFacesConfig(enabled=True)
+        mock_repo = MagicMock()
+        manager = UnidentifiedFaceManager(config, mock_repo)
+
+        sharpness_score = manager._compute_sharpness_fft(blurred)
+
+        # Blurred image should have LOW sharpness score (<0.3)
+        assert sharpness_score < 0.3, (
+            f"Gaussian blur not detected! Sharpness score {sharpness_score:.2f} "
+            f"should be below 0.3 for blurred images"
+        )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

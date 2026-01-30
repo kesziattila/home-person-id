@@ -180,7 +180,7 @@ class UnidentifiedFaceManager:
         """
         try:
             # 1. Compute quality score
-            quality_score, blur_score = self._compute_quality(
+            quality_score, sharpness_score = self._compute_quality(
                 task.face_crop, task.face_bbox
             )
 
@@ -188,6 +188,13 @@ class UnidentifiedFaceManager:
             if quality_score < self.config.min_quality_score:
                 logger.debug(
                     f"Unidentified face quality too low: {quality_score:.2f} < {self.config.min_quality_score}"
+                )
+                return
+
+            # Check minimum sharpness (rejects motion blur and focus blur)
+            if sharpness_score < self.config.min_sharpness_score:
+                logger.debug(
+                    f"Unidentified face too blurry: sharpness {sharpness_score:.2f} < {self.config.min_sharpness_score}"
                 )
                 return
 
@@ -213,6 +220,7 @@ class UnidentifiedFaceManager:
                 return
 
             # 4. Store in database
+            # Note: blur_score column stores sharpness score (0-1, higher = sharper)
             face = self.repository.add_unidentified_face(
                 camera_id=task.camera_id,
                 embedding=task.embedding,
@@ -221,7 +229,7 @@ class UnidentifiedFaceManager:
                 track_id=task.track_id,
                 best_match_person_id=task.best_match_person_id,
                 best_match_score=task.best_match_score,
-                blur_score=blur_score,
+                blur_score=sharpness_score,
                 face_size=face_width,
             )
 
@@ -245,7 +253,7 @@ class UnidentifiedFaceManager:
 
         Quality is based on:
         - Face size (larger is better)
-        - Blur (sharper is better, via Laplacian variance)
+        - Sharpness (FFT-based, catches both focus and motion blur)
         - Brightness (not too dark, not too bright)
 
         Args:
@@ -253,7 +261,7 @@ class UnidentifiedFaceManager:
             face_bbox: Face bounding box
 
         Returns:
-            Tuple of (quality_score, blur_score)
+            Tuple of (quality_score, sharpness_score)
         """
         if face_crop.size == 0:
             return 0.0, 0.0
@@ -262,11 +270,11 @@ class UnidentifiedFaceManager:
         face_width = face_bbox[2] - face_bbox[0]
         size_score = min(1.0, face_width / 200.0)  # 200px = perfect
 
-        # Blur score via Laplacian variance (higher = sharper)
         gray = cv2.cvtColor(face_crop, cv2.COLOR_BGR2GRAY) if len(face_crop.shape) == 3 else face_crop
-        laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        # Normalize: 100+ is sharp, <10 is very blurry
-        blur_score = min(1.0, laplacian_var / 100.0)
+
+        # Sharpness score using FFT high-frequency ratio
+        # This catches both focus blur AND motion blur
+        sharpness_score = self._compute_sharpness_fft(gray)
 
         # Brightness score (0-1, penalize extremes)
         mean_brightness = np.mean(gray)
@@ -281,11 +289,55 @@ class UnidentifiedFaceManager:
         # Combined quality score (weighted average)
         quality_score = (
             0.4 * size_score +
-            0.4 * blur_score +
+            0.4 * sharpness_score +
             0.2 * brightness_score
         )
 
-        return quality_score, laplacian_var
+        return quality_score, sharpness_score
+
+    def _compute_sharpness_fft(self, gray: np.ndarray) -> float:
+        """Compute sharpness using FFT high-frequency content ratio.
+
+        This method detects both focus blur and motion blur by analyzing
+        the frequency domain. Blurry images (from any cause) have less
+        high-frequency content.
+
+        Args:
+            gray: Grayscale image
+
+        Returns:
+            Sharpness score 0-1 (higher = sharper)
+        """
+        # Compute 2D FFT and shift zero frequency to center
+        f = np.fft.fft2(gray.astype(np.float32))
+        fshift = np.fft.fftshift(f)
+        magnitude = np.abs(fshift)
+
+        h, w = gray.shape
+        center_y, center_x = h // 2, w // 2
+
+        # Create distance mask from center
+        y, x = np.ogrid[:h, :w]
+        dist = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+
+        # High frequency = outer region (beyond 25% of image size)
+        radius_threshold = min(h, w) * 0.25
+        high_freq_mask = dist > radius_threshold
+
+        # Compute ratio of high frequency to total energy
+        total_energy = np.sum(magnitude)
+        if total_energy < 1e-6:
+            return 0.0
+
+        high_freq_energy = np.sum(magnitude[high_freq_mask])
+        high_freq_ratio = high_freq_energy / total_energy
+
+        # Normalize: sharp images have ratio ~0.7+, blurry ~0.3-0.5
+        # Map to 0-1 score: 0.3 -> 0, 0.7 -> 1
+        sharpness_score = (high_freq_ratio - 0.3) / 0.4
+        sharpness_score = max(0.0, min(1.0, sharpness_score))
+
+        return sharpness_score
 
     def _is_diverse(self, camera_id: str, embedding: np.ndarray) -> bool:
         """Check if the embedding is diverse enough from existing ones.

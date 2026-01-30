@@ -179,6 +179,8 @@ class UnidentifiedFacesConfig:
     max_per_camera: int = 20
     # Minimum quality score (0-1) to save a face
     min_quality_score: float = 0.3
+    # Minimum sharpness score (0-1) to save a face - rejects motion/focus blur
+    min_sharpness_score: float = 0.4
     # Minimum face size (pixels) for face bbox width
     min_face_size: int = 60
     # Minimum similarity threshold to have a best match (below face threshold but reasonable)

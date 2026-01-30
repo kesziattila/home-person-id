@@ -274,8 +274,13 @@ unidentified_faces:
   max_per_camera: 20
 
   # Minimum quality score (0-1) to save a face
-  # Quality is based on: face size, blur, brightness
+  # Quality is based on: face size, sharpness, brightness
   min_quality_score: 0.3
+
+  # Minimum sharpness score (0-1) to save a face
+  # Uses FFT-based detection to reject motion blur and focus blur
+  # 0.4 = moderate blur tolerance, 0.5 = stricter
+  min_sharpness_score: 0.4
 
   # Minimum face size (pixels) for bbox width
   min_face_size: 60
