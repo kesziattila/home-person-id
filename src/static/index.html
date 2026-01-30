@@ -319,7 +319,8 @@
         <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full">
             <h3 class="text-xl font-bold mb-4">Assign Face to Person</h3>
             <div class="mb-4">
-                <img id="assign-face-preview" class="w-32 h-32 object-cover rounded mx-auto mb-4">
+                <img id="assign-face-preview" class="w-32 h-32 object-cover rounded mx-auto mb-2">
+                <div id="assign-face-quality" class="text-center mb-2"></div>
                 <div id="assign-face-info" class="text-sm text-gray-400 text-center mb-4"></div>
             </div>
             <div class="mb-4">
@@ -883,12 +884,20 @@
                     const qualityPercent = (face.quality_score * 100).toFixed(0);
                     const qualityColor = face.quality_score > 0.6 ? 'bg-green-600' : face.quality_score > 0.4 ? 'bg-yellow-600' : 'bg-red-600';
 
+                    // Sharpness indicator (blur_score contains sharpness: higher = sharper)
+                    const sharpness = face.blur_score || 0;
+                    const isGoodForLearning = sharpness >= 0.5 && face.quality_score >= 0.6;
+                    const learningBadge = isGoodForLearning
+                        ? '<div class="absolute top-2 left-2 bg-green-600 text-xs px-2 py-1 rounded flex items-center gap-1"><span>✓</span> Learning</div>'
+                        : '<div class="absolute top-2 left-2 bg-gray-600 text-xs px-2 py-1 rounded opacity-75">Review</div>';
+
                     card.innerHTML = `
                         <div class="aspect-square bg-gray-900 relative">
                             <img src="/api/v1/unidentified-faces/${face.id}/image"
                                  class="w-full h-full object-cover cursor-pointer"
                                  onclick="previewUnidentifiedFace(${face.id})"
                                  onerror="this.src='https://via.placeholder.com/200?text=No+Image'">
+                            ${learningBadge}
                             <div class="absolute top-2 right-2 ${qualityColor} text-xs px-2 py-1 rounded">
                                 Q: ${qualityPercent}%
                             </div>
@@ -975,6 +984,19 @@
                     infoText += ` | Best match: ${face.best_match_person_name} (${(face.best_match_score * 100).toFixed(0)}%)`;
                 }
                 document.getElementById('assign-face-info').textContent = infoText;
+
+                // Set quality indicator (blur_score contains sharpness: higher = sharper)
+                const sharpness = face.blur_score || 0;
+                const quality = face.quality_score || 0;
+                const isGoodForLearning = sharpness >= 0.5 && quality >= 0.6;
+                const qualityDiv = document.getElementById('assign-face-quality');
+                if (isGoodForLearning) {
+                    qualityDiv.innerHTML = `<span class="inline-block bg-green-600 text-xs px-3 py-1 rounded">✓ Good for learning</span>
+                        <span class="text-xs text-gray-500 ml-2">Q:${(quality*100).toFixed(0)}% S:${(sharpness*100).toFixed(0)}%</span>`;
+                } else {
+                    qualityDiv.innerHTML = `<span class="inline-block bg-yellow-600 text-xs px-3 py-1 rounded">⚠ Low quality</span>
+                        <span class="text-xs text-gray-500 ml-2">Q:${(quality*100).toFixed(0)}% S:${(sharpness*100).toFixed(0)}%</span>`;
+                }
 
                 // Load persons for dropdown
                 const personsResp = await fetch('/api/v1/persons');
