@@ -16,6 +16,7 @@ from src.database.repository import Repository
 from src.detection.motion_detector import MotionDetectorManager
 from src.detection.person_detector import PersonDetector, DetectionResult
 from src.recognition.identity_linker import IdentityLinker
+from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 from src.stream.manager import StreamManager
 from src.tracking.byte_tracker import ByteTrackerManager
 from src.tracking.global_tracker import GlobalTrackManager, GlobalTrackingResult
@@ -104,11 +105,20 @@ class PersonIDSystem:
         self.zone_manager = ZoneManager(self.config.zones)
         self.handover_manager = HandoverManager(self.config.camera_topology)
 
+        # Initialize unidentified face manager (optional)
+        self.unidentified_face_manager: Optional[UnidentifiedFaceManager] = None
+        if self.config.unidentified_faces.enabled:
+            self.unidentified_face_manager = UnidentifiedFaceManager(
+                config=self.config.unidentified_faces,
+                repository=self.repository,
+            )
+
         # Initialize recognition
         self.identity_linker = IdentityLinker(
             self.config.face_recognition,
             self.config.reid,
             self.repository,
+            unidentified_face_manager=self.unidentified_face_manager,
         )
 
         # Initialize global tracking
@@ -135,6 +145,9 @@ class PersonIDSystem:
         self.preview_buffer = PreviewBuffer()
         self.api_server = APIServer(
             self.preview_buffer,
+            repository=self.repository,
+            face_config=self.config.face_recognition,
+            unidentified_faces_config=self.config.unidentified_faces,
             host=self.config.api.host,
             port=self.config.api.port,
             use_nvjpeg=self.config.detection.use_nvjpeg,
@@ -188,6 +201,10 @@ class PersonIDSystem:
         # Start camera streams
         self.stream_manager.start()
 
+        # Start unidentified face manager
+        if self.unidentified_face_manager:
+            self.unidentified_face_manager.start()
+
         # Start API server
         self.api_server.start()
 
@@ -206,6 +223,8 @@ class PersonIDSystem:
         logger.info("Stopping Person ID System")
         self._running = False
         self.api_server.stop()
+        if self.unidentified_face_manager:
+            self.unidentified_face_manager.stop()
         self.stream_manager.stop()
         logger.info("System stopped")
 
@@ -215,65 +234,70 @@ class PersonIDSystem:
         while self._running:
             try:
                 task: InferenceTask = self._inference_queue.get(timeout=0.1)
-                
-                # Person detection (expensive)
-                detections = DetectionResult(detections=[], frame_shape=task.frame.shape)
-                if self.person_detector:
-                    with profiler.measure("PersonDetector.detect"):
-                        detections = self.person_detector.detect(task.frame)
-                
-                # Extract Re-ID for all detections to avoid doing it in main thread
-                reid_embeddings = {}
-                if detections.detections:
-                    crops = []
-                    det_indices = []
-                    for i, det in enumerate(detections.detections):
-                        # Use a more robust crop to ensure Re-ID quality matches what's expected
-                        # ReIDExtractor uses the whole crop, but we need to ensure it's not empty
-                        x1, y1, x2, y2 = map(int, det.bbox)
-                        # Pad a bit if possible to avoid edge artifacts
-                        h, w = task.frame.shape[:2]
-                        x1, y1 = max(0, x1), max(0, y1)
-                        x2, y2 = min(w, x2), min(h, y2)
-                        
-                        crop = task.frame[y1:y2, x1:x2]
-                        if crop.size > 0:
-                            crops.append(crop)
-                            det_indices.append(i)
-                    
-                    if crops:
-                        with profiler.measure("ReIDExtractor.extract_batch"):
-                            # Lazy load or use existing extractor
-                            reid_extractor = self.identity_linker._id_manager.reid_extractor
-                            if reid_extractor:
-                                results = reid_extractor.extract_batch(crops)
-                                for idx, res in zip(det_indices, results):
-                                    reid_embeddings[idx] = res
 
-                # Push to results
-                result = InferenceResult(
-                    camera_id=task.camera_id,
-                    frame=task.frame,
-                    motion_result=task.motion_result,
-                    detections=detections,
-                    timestamp=task.timestamp,
-                    reid_embeddings=reid_embeddings
-                )
-                
-                # If result queue is full, drop oldest
-                if self._result_queue.full():
-                    try:
-                        self._result_queue.get_nowait()
-                    except Empty:
-                        pass
-                
-                self._result_queue.put(result)
-                self._inference_queue.task_done()
-                
+                try:
+                    # Person detection (expensive)
+                    detections = DetectionResult(detections=[], frame_shape=task.frame.shape)
+                    if self.person_detector:
+                        with profiler.measure("PersonDetector.detect"):
+                            detections = self.person_detector.detect(task.frame)
+
+                    # Extract Re-ID for all detections to avoid doing it in main thread
+                    reid_embeddings = {}
+                    if detections.detections:
+                        crops = []
+                        det_indices = []
+                        for i, det in enumerate(detections.detections):
+                            # Use a more robust crop to ensure Re-ID quality matches what's expected
+                            # ReIDExtractor uses the whole crop, but we need to ensure it's not empty
+                            x1, y1, x2, y2 = map(int, det.bbox)
+                            # Pad a bit if possible to avoid edge artifacts
+                            h, w = task.frame.shape[:2]
+                            x1, y1 = max(0, x1), max(0, y1)
+                            x2, y2 = min(w, x2), min(h, y2)
+
+                            crop = task.frame[y1:y2, x1:x2]
+                            if crop.size > 0:
+                                crops.append(crop)
+                                det_indices.append(i)
+
+                        if crops:
+                            with profiler.measure("ReIDExtractor.extract_batch"):
+                                # Lazy load or use existing extractor
+                                reid_extractor = self.identity_linker._id_manager.reid_extractor
+                                if reid_extractor:
+                                    results = reid_extractor.extract_batch(crops)
+                                    for idx, res in zip(det_indices, results):
+                                        reid_embeddings[idx] = res
+
+                    # Push to results
+                    result = InferenceResult(
+                        camera_id=task.camera_id,
+                        frame=task.frame,
+                        motion_result=task.motion_result,
+                        detections=detections,
+                        timestamp=task.timestamp,
+                        reid_embeddings=reid_embeddings
+                    )
+
+                    # If result queue is full, drop oldest
+                    if self._result_queue.full():
+                        try:
+                            self._result_queue.get_nowait()
+                        except Empty:
+                            pass
+
+                    self._result_queue.put(result)
+
+                except Exception as e:
+                    logger.error(f"Error processing inference task: {e}", exc_info=True)
+                finally:
+                    self._inference_queue.task_done()
+
             except Empty:
                 continue
             except Exception as e:
-                logger.error(f"Error in inference worker: {e}")
+                logger.error(f"Error in inference worker: {e}", exc_info=True)
                 time.sleep(0.1)
 
     def run(self):
@@ -504,6 +528,12 @@ class PersonIDSystem:
         self.repository.archive_old_tracks(
             hours=self.config.database.archive_tracks_after_hours
         )
+
+        # Cleanup old unidentified faces
+        if self.config.unidentified_faces.enabled:
+            self.repository.cleanup_old_unidentified_faces(
+                days=self.config.unidentified_faces.retention_days
+            )
 
         # Log status
         occupancy = self.global_tracker.get_occupancy()

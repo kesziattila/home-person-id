@@ -20,9 +20,11 @@ from src.config import Config, FaceRecognitionConfig, ReIDConfig
 from src.recognition.face_recognizer import FaceRecognizer
 from src.recognition.reid_extractor import ReIDExtractor, is_grayscale_image
 from src.recognition.reid_gallery import ReIDGalleryManager, DebugImageSaver
+from src.utils.image_utils import crop_with_margin
 
 if TYPE_CHECKING:
     from src.database.repository import Repository
+    from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 
 logger = logging.getLogger(__name__)
 
@@ -89,6 +91,7 @@ class IdentificationManager:
         enable_debug_images: bool = False,
         face_recognizer: Optional[FaceRecognizer] = None,
         reid_extractor: Optional[ReIDExtractor] = None,
+        unidentified_face_manager: Optional["UnidentifiedFaceManager"] = None,
     ):
         """Initialize identification manager.
 
@@ -98,12 +101,16 @@ class IdentificationManager:
             repository: Database repository - for production (loads gallery automatically)
             enable_debug_images: Whether to save debug images
             face_recognizer: Optional pre-initialized face recognizer (for testing/shared use)
+            unidentified_face_manager: Optional manager for capturing unidentified faces
             reid_extractor: Optional pre-initialized Re-ID extractor (for testing/shared use)
         """
         self.config = config
         self.face_config = config.face_recognition
         self.reid_config = config.reid
         self.repository = repository
+
+        # Unidentified face manager
+        self._unidentified_face_manager = unidentified_face_manager
 
         # Face gallery - either pre-loaded or from database
         self._face_gallery = face_gallery or []
@@ -355,6 +362,7 @@ class IdentificationManager:
         person_crop: np.ndarray,
         local_track_id: int,
         num_persons: int,
+        camera_id: Optional[str] = None,
     ) -> bool:
         """Try face recognition on a track.
 
@@ -363,15 +371,12 @@ class IdentificationManager:
             person_crop: Person crop image
             local_track_id: Local tracker ID (for Re-ID gallery)
             num_persons: Number of persons in frame
+            camera_id: Camera ID for unidentified face capture
 
         Returns:
             True if face identified
         """
         if not self.face_recognizer:
-            return False
-
-        gallery = self.face_gallery
-        if not gallery:
             return False
 
         if person_crop.size == 0:
@@ -398,17 +403,19 @@ class IdentificationManager:
         if face.embedding is None:
             return False
 
-        # Find best match
+        # Find best match in gallery (if gallery exists)
         best_score = 0.0
         best_name = None
         best_person_id = None
 
-        for pid, name, emb in gallery:
-            score = self.face_recognizer.compare_embeddings(face.embedding, emb)
-            if score > best_score:
-                best_score = score
-                best_name = name
-                best_person_id = pid
+        gallery = self.face_gallery
+        if gallery:
+            for pid, name, emb in gallery:
+                score = self.face_recognizer.compare_embeddings(face.embedding, emb)
+                if score > best_score:
+                    best_score = score
+                    best_name = name
+                    best_person_id = pid
 
         # Store face info even if below threshold
         if best_name:
@@ -430,6 +437,20 @@ class IdentificationManager:
                     local_track_id, person_crop, best_name, num_persons
                 )
             return True
+
+        # Below threshold - submit to unidentified face manager
+        if self._unidentified_face_manager and camera_id and face.embedding is not None:
+            face_crop, face_bbox = crop_with_margin(person_crop, face.bbox, margin_ratio=0.3)
+            if face_crop.size > 0:
+                self._unidentified_face_manager.submit(
+                    camera_id=camera_id,
+                    face_crop=face_crop,
+                    embedding=face.embedding,
+                    face_bbox=face_bbox,
+                    track_id=track_id,
+                    best_match_person_id=best_person_id,
+                    best_match_score=best_score if best_score > 0 else None,
+                )
 
         return False
 

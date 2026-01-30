@@ -342,7 +342,8 @@ class GlobalTrackManager:
                         local_track.bbox,
                         num_persons_in_frame=num_persons,
                         precomputed_reid=(local_track.last_reid_embedding, local_track.last_reid_quality)
-                        if local_track.last_reid_embedding is not None else None
+                        if local_track.last_reid_embedding is not None else None,
+                        camera_id=camera_id,
                     )
 
         # Process lost local tracks
@@ -418,6 +419,7 @@ class GlobalTrackManager:
                 local_track.last_crop,
                 local_track.bbox,
                 num_persons_in_frame=num_persons,
+                camera_id=camera_id,
             )
 
         # Save to database

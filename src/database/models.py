@@ -15,6 +15,7 @@ from sqlalchemy import (
     String,
     Text,
     create_engine,
+    text,
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import relationship, sessionmaker
@@ -158,6 +159,40 @@ class CameraOverlap(Base):
         return f"<CameraOverlap(cam1='{self.camera1_id}', cam2='{self.camera2_id}')>"
 
 
+class UnidentifiedFace(Base):
+    """Unidentified face detection for manual review."""
+
+    __tablename__ = "unidentified_faces"
+
+    id = Column(Integer, primary_key=True)
+    camera_id = Column(String(64), nullable=False)
+    track_id = Column(String(64), nullable=True)
+
+    # Best match info
+    best_match_person_id = Column(Integer, ForeignKey("persons.id"), nullable=True)
+    best_match_score = Column(Float, nullable=True)
+
+    # Face data
+    embedding = Column(LargeBinary, nullable=False)  # 512-dim float32 vector
+    image_path = Column(String(512), nullable=False)
+
+    # Quality metrics
+    quality_score = Column(Float, nullable=False)
+    blur_score = Column(Float, nullable=True)
+    face_size = Column(Integer, nullable=True)  # Face bbox width in pixels
+
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+    reviewed = Column(Boolean, default=False)
+    dismissed = Column(Boolean, default=False)
+
+    # Relationships
+    best_match_person = relationship("Person")
+
+    def __repr__(self):
+        return f"<UnidentifiedFace(id={self.id}, camera='{self.camera_id}', score={self.best_match_score})>"
+
+
 def init_database(db_path: str) -> tuple:
     """Initialize database and return engine and session maker.
 
@@ -172,7 +207,18 @@ def init_database(db_path: str) -> tuple:
     else:
         url = f"sqlite:///{db_path}"
 
-    engine = create_engine(url, echo=False)
+    # Configure SQLite for multi-threaded access:
+    # - check_same_thread=False: Allow connections from any thread
+    # - SQLite's WAL mode provides better concurrency for readers/writers
+    connect_args = {"check_same_thread": False}
+    engine = create_engine(url, echo=False, connect_args=connect_args)
+
+    # Enable WAL mode for better concurrent access
+    with engine.connect() as conn:
+        conn.execute(text("PRAGMA journal_mode=WAL"))
+        conn.execute(text("PRAGMA busy_timeout=5000"))  # Wait up to 5s on locks
+        conn.commit()
+
     Base.metadata.create_all(engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return engine, SessionLocal

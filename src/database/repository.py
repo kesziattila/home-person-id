@@ -16,6 +16,7 @@ from src.database.models import (
     Person,
     Track,
     TrackSighting,
+    UnidentifiedFace,
     init_database,
 )
 
@@ -375,3 +376,327 @@ class Repository:
                 session.commit()
                 session.refresh(sighting)
             return sighting
+
+    # ==================== Unidentified Face Operations ====================
+
+    def add_unidentified_face(
+        self,
+        camera_id: str,
+        embedding: np.ndarray,
+        image_path: str,
+        quality_score: float,
+        track_id: Optional[str] = None,
+        best_match_person_id: Optional[int] = None,
+        best_match_score: Optional[float] = None,
+        blur_score: Optional[float] = None,
+        face_size: Optional[int] = None,
+    ) -> UnidentifiedFace:
+        """Add an unidentified face for manual review.
+
+        Args:
+            camera_id: Camera where face was detected
+            embedding: 512-dim face embedding
+            image_path: Path to saved face image
+            quality_score: Computed quality score (0-1)
+            track_id: Optional track ID
+            best_match_person_id: ID of best matching person (if any)
+            best_match_score: Similarity score to best match
+            blur_score: Laplacian variance (higher = sharper)
+            face_size: Face bounding box width in pixels
+
+        Returns:
+            Created UnidentifiedFace object
+        """
+        with self.get_session() as session:
+            embedding_bytes = embedding.astype(np.float32).tobytes()
+
+            face = UnidentifiedFace(
+                camera_id=camera_id,
+                track_id=track_id,
+                best_match_person_id=best_match_person_id,
+                best_match_score=best_match_score,
+                embedding=embedding_bytes,
+                image_path=image_path,
+                quality_score=quality_score,
+                blur_score=blur_score,
+                face_size=face_size,
+            )
+            session.add(face)
+            session.commit()
+            session.refresh(face)
+            logger.debug(f"Added unidentified face {face.id} from {camera_id}")
+            return face
+
+    def get_unidentified_faces(
+        self,
+        camera_id: Optional[str] = None,
+        reviewed: Optional[bool] = None,
+        dismissed: Optional[bool] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> list[UnidentifiedFace]:
+        """Query unidentified faces with filters.
+
+        Args:
+            camera_id: Filter by camera
+            reviewed: Filter by reviewed status
+            dismissed: Filter by dismissed status
+            limit: Maximum results
+            offset: Skip first N results
+
+        Returns:
+            List of matching UnidentifiedFace objects
+        """
+        with self.get_session() as session:
+            query = session.query(UnidentifiedFace)
+
+            if camera_id:
+                query = query.filter(UnidentifiedFace.camera_id == camera_id)
+            if reviewed is not None:
+                query = query.filter(UnidentifiedFace.reviewed == reviewed)
+            if dismissed is not None:
+                query = query.filter(UnidentifiedFace.dismissed == dismissed)
+
+            return (
+                query.order_by(UnidentifiedFace.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+                .all()
+            )
+
+    def get_unidentified_face(self, face_id: int) -> Optional[UnidentifiedFace]:
+        """Get unidentified face by ID."""
+        with self.get_session() as session:
+            return (
+                session.query(UnidentifiedFace)
+                .filter(UnidentifiedFace.id == face_id)
+                .first()
+            )
+
+    def get_unidentified_face_embedding(self, face_id: int) -> Optional[np.ndarray]:
+        """Get embedding for an unidentified face.
+
+        Returns:
+            Embedding as numpy array, or None if not found
+        """
+        with self.get_session() as session:
+            face = (
+                session.query(UnidentifiedFace)
+                .filter(UnidentifiedFace.id == face_id)
+                .first()
+            )
+            if face:
+                return np.frombuffer(face.embedding, dtype=np.float32)
+            return None
+
+    def get_recent_unidentified_embeddings(
+        self, camera_id: str, limit: int = 20
+    ) -> list[np.ndarray]:
+        """Get recent embeddings for diversity check.
+
+        Args:
+            camera_id: Camera to check
+            limit: Maximum embeddings to return
+
+        Returns:
+            List of embedding arrays
+        """
+        with self.get_session() as session:
+            faces = (
+                session.query(UnidentifiedFace)
+                .filter(
+                    UnidentifiedFace.camera_id == camera_id,
+                    UnidentifiedFace.dismissed == False,
+                )
+                .order_by(UnidentifiedFace.created_at.desc())
+                .limit(limit)
+                .all()
+            )
+            return [np.frombuffer(f.embedding, dtype=np.float32) for f in faces]
+
+    def update_unidentified_face(
+        self,
+        face_id: int,
+        reviewed: Optional[bool] = None,
+        dismissed: Optional[bool] = None,
+    ) -> Optional[UnidentifiedFace]:
+        """Update unidentified face status.
+
+        Args:
+            face_id: Face ID
+            reviewed: Mark as reviewed
+            dismissed: Mark as dismissed
+
+        Returns:
+            Updated UnidentifiedFace or None if not found
+        """
+        with self.get_session() as session:
+            face = (
+                session.query(UnidentifiedFace)
+                .filter(UnidentifiedFace.id == face_id)
+                .first()
+            )
+            if not face:
+                return None
+
+            if reviewed is not None:
+                face.reviewed = reviewed
+            if dismissed is not None:
+                face.dismissed = dismissed
+
+            session.commit()
+            session.refresh(face)
+            return face
+
+    def delete_unidentified_face(self, face_id: int) -> bool:
+        """Delete an unidentified face.
+
+        Args:
+            face_id: Face ID to delete
+
+        Returns:
+            True if deleted, False if not found
+        """
+        with self.get_session() as session:
+            face = (
+                session.query(UnidentifiedFace)
+                .filter(UnidentifiedFace.id == face_id)
+                .first()
+            )
+            if face:
+                session.delete(face)
+                session.commit()
+                logger.debug(f"Deleted unidentified face {face_id}")
+                return True
+            return False
+
+    def cleanup_unidentified_faces_for_camera(
+        self, camera_id: str, max_count: int
+    ) -> int:
+        """Keep only the newest N unidentified faces per camera.
+
+        Args:
+            camera_id: Camera ID
+            max_count: Maximum faces to keep
+
+        Returns:
+            Number of faces deleted
+        """
+        with self.get_session() as session:
+            # Get faces to keep (newest first)
+            keep_faces = (
+                session.query(UnidentifiedFace.id)
+                .filter(UnidentifiedFace.camera_id == camera_id)
+                .order_by(UnidentifiedFace.created_at.desc())
+                .limit(max_count)
+                .all()
+            )
+            keep_ids = [f.id for f in keep_faces]
+
+            # Delete older faces
+            if keep_ids:
+                count = (
+                    session.query(UnidentifiedFace)
+                    .filter(
+                        UnidentifiedFace.camera_id == camera_id,
+                        ~UnidentifiedFace.id.in_(keep_ids),
+                    )
+                    .delete(synchronize_session=False)
+                )
+            else:
+                # Keep none - delete all
+                count = (
+                    session.query(UnidentifiedFace)
+                    .filter(UnidentifiedFace.camera_id == camera_id)
+                    .delete()
+                )
+
+            session.commit()
+            if count > 0:
+                logger.info(f"Cleaned up {count} old unidentified faces from {camera_id}")
+            return count
+
+    def cleanup_old_unidentified_faces(self, days: int = 30) -> int:
+        """Delete unidentified faces older than N days.
+
+        Args:
+            days: Days to retain
+
+        Returns:
+            Number of faces deleted
+        """
+        with self.get_session() as session:
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            count = (
+                session.query(UnidentifiedFace)
+                .filter(UnidentifiedFace.created_at < cutoff)
+                .delete()
+            )
+            session.commit()
+            if count > 0:
+                logger.info(f"Deleted {count} old unidentified faces")
+            return count
+
+    def get_unidentified_faces_summary(self) -> dict[str, int]:
+        """Get count of unidentified faces by camera.
+
+        Returns:
+            Dictionary of camera_id -> count
+        """
+        with self.get_session() as session:
+            from sqlalchemy import func
+
+            results = (
+                session.query(
+                    UnidentifiedFace.camera_id,
+                    func.count(UnidentifiedFace.id).label("count"),
+                )
+                .filter(UnidentifiedFace.dismissed == False)
+                .group_by(UnidentifiedFace.camera_id)
+                .all()
+            )
+            return {r.camera_id: r.count for r in results}
+
+    def assign_unidentified_face_to_person(
+        self, face_id: int, person_id: int
+    ) -> Optional[FaceEmbedding]:
+        """Assign an unidentified face to a person.
+
+        Moves the embedding to the person's face gallery.
+
+        Args:
+            face_id: Unidentified face ID
+            person_id: Person to assign to
+
+        Returns:
+            Created FaceEmbedding or None if face not found
+        """
+        with self.get_session() as session:
+            face = (
+                session.query(UnidentifiedFace)
+                .filter(UnidentifiedFace.id == face_id)
+                .first()
+            )
+            if not face:
+                return None
+
+            # Get embedding as numpy array
+            embedding = np.frombuffer(face.embedding, dtype=np.float32)
+
+            # Create face embedding for person
+            face_emb = FaceEmbedding(
+                person_id=person_id,
+                embedding=face.embedding,  # Already bytes
+                source_image=face.image_path,
+            )
+            session.add(face_emb)
+
+            # Mark as reviewed and delete the unidentified face entry
+            session.delete(face)
+            session.commit()
+            session.refresh(face_emb)
+
+            logger.info(
+                f"Assigned unidentified face {face_id} to person {person_id}"
+            )
+            return face_emb

@@ -134,7 +134,16 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
 - Updates Re-ID gallery for cross-camera matching
 - Implements consecutive match requirement for stability
 - Transfers identity during camera handover
+- Captures unidentified faces for manual review (via `UnidentifiedFaceManager`)
 - **Testability**: Supports dependency injection of ML models and repository.
+
+**UnidentifiedFaceManager** (`unidentified_face_manager.py`)
+- Background thread manager for capturing faces below recognition threshold
+- Non-blocking `submit()` method for main thread
+- Computes quality score (size, blur via Laplacian variance, brightness)
+- Diversity check to avoid storing duplicate faces (cosine similarity)
+- Per-camera limit enforcement and automatic cleanup
+- Stores face crops to disk and metadata to database
 
 ### 5. Database (`src/database/`)
 
@@ -145,9 +154,11 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
 - TrackSighting: Track appearances on cameras
 - Event: Activity log (track_created, person_identified, etc.)
 - Camera, CameraOverlap: Configuration storage
+- UnidentifiedFace: Faces below recognition threshold for manual review
 
 **Repository** (`repository.py`)
 - Handles all SQLite/SQLAlchemy interactions
+- **Multi-threading**: Configured with `check_same_thread=False` and WAL mode for safe concurrent access
 - **Testability**: Supports `:memory:` databases for isolated unit testing.
 - CRUD operations for all models
 - Embedding serialization (numpy <-> blob)
@@ -179,12 +190,20 @@ See [TESTING_SCENARIOS.md](docs/TESTING_SCENARIOS.md) for detailed examples and 
 - Thread-safe using locks
 - Controlled via `--perf-report` command line argument
 
+**Image Utils** (`image_utils.py`)
+- `crop_with_margin(image, bbox, margin_ratio)`: Crop region with margin, returns (crop, adjusted_bbox)
+- `crop_bbox(image, bbox)`: Simple bbox crop with bounds checking
+- `crop_face_region(image, bbox, height_ratio)`: Crop upper portion for face detection
+- `encode_jpeg(image, quality, use_nvjpeg)`: JPEG encoding with optional hardware acceleration
+- Hardware-accelerated encoding via nvJPEG on Jetson
+
 ### 7. Configuration (`src/config.py`)
 
 Dataclasses for all configuration sections:
 - CameraConfig, CameraTopologyConfig
 - MotionConfig, TrackingConfig
 - ReIDConfig, FaceRecognitionConfig
+- UnidentifiedFacesConfig (capture faces below threshold for manual review)
 - MQTTConfig, DatabaseConfig, SnapshotConfig, APIConfig
 
 Loaded from YAML file via `load_config()`.
@@ -222,6 +241,11 @@ Loaded from YAML file via `load_config()`.
 - Tailwind CSS based responsive UI
 - Auto-discovers active cameras
 - Displays real-time annotated streams
+- **Tabs**:
+  - Live: Real-time camera streams with person detection overlays
+  - Events: Activity history with filtering
+  - Persons: Manage known persons (add, edit, delete, upload face images)
+  - Unidentified: Review faces below recognition threshold, assign to persons or dismiss
 
 ## Data Flow
 

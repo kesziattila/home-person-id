@@ -169,6 +169,29 @@ class FaceRecognitionConfig:
 
 
 @dataclass
+class UnidentifiedFacesConfig:
+    """Configuration for unidentified faces capture and review."""
+
+    enabled: bool = True
+    # Directory to store face images
+    images_path: str = "data/unidentified_faces"
+    # Maximum number of unidentified faces to keep per camera
+    max_per_camera: int = 20
+    # Minimum quality score (0-1) to save a face
+    min_quality_score: float = 0.3
+    # Minimum face size (pixels) for face bbox width
+    min_face_size: int = 60
+    # Minimum similarity threshold to have a best match (below face threshold but reasonable)
+    min_match_score: float = 0.3
+    # Embedding similarity threshold for diversity check (skip if too similar to existing)
+    embedding_similarity_threshold: float = 0.7
+    # Days to keep unidentified faces before cleanup
+    retention_days: int = 30
+    # Queue size for background processing
+    queue_size: int = 100
+
+
+@dataclass
 class MQTTConfig:
     """MQTT configuration for Home Assistant integration."""
 
@@ -228,6 +251,7 @@ class Config:
     tracking: TrackingConfig = field(default_factory=TrackingConfig)
     reid: ReIDConfig = field(default_factory=ReIDConfig)
     face_recognition: FaceRecognitionConfig = field(default_factory=FaceRecognitionConfig)
+    unidentified_faces: UnidentifiedFacesConfig = field(default_factory=UnidentifiedFacesConfig)
     mqtt: MQTTConfig = field(default_factory=MQTTConfig)
     api: APIConfig = field(default_factory=APIConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
@@ -293,6 +317,7 @@ def load_config(config_path: str | Path) -> Config:
     tracking = TrackingConfig(**data.get("tracking", {}))
     reid = ReIDConfig(**data.get("reid", {}))
     face_recognition = FaceRecognitionConfig(**data.get("face_recognition", {}))
+    unidentified_faces = UnidentifiedFacesConfig(**data.get("unidentified_faces", {}))
     mqtt = MQTTConfig(**data.get("mqtt", {}))
     api = APIConfig(**data.get("api", {}))
     database = DatabaseConfig(**data.get("database", {}))
@@ -308,6 +333,7 @@ def load_config(config_path: str | Path) -> Config:
         tracking=tracking,
         reid=reid,
         face_recognition=face_recognition,
+        unidentified_faces=unidentified_faces,
         mqtt=mqtt,
         api=api,
         database=database,

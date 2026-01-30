@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Home Person ID Preview</title>
+    <title>Home Person ID</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
         .stream-container {
@@ -22,25 +22,418 @@
             height: 100%;
             object-fit: contain;
         }
+        .tab-button {
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        .tab-button:hover {
+            background-color: rgba(255, 255, 255, 0.1);
+        }
+        .tab-button.active {
+            border-bottom-color: #3b82f6;
+            color: #3b82f6;
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        .modal {
+            display: none;
+        }
+        .modal.active {
+            display: flex;
+        }
+        .face-image {
+            width: 80px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: 0.375rem;
+            cursor: pointer;
+            transition: transform 0.2s;
+        }
+        .face-image:hover {
+            transform: scale(1.1);
+        }
+        .face-placeholder {
+            width: 80px;
+            height: 80px;
+            background-color: #374151;
+            border-radius: 0.375rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #9ca3af;
+            font-size: 0.75rem;
+        }
+        .upload-zone {
+            border: 2px dashed #4b5563;
+            border-radius: 0.5rem;
+            padding: 2rem;
+            text-align: center;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: #3b82f6;
+            background-color: rgba(59, 130, 246, 0.1);
+        }
     </style>
 </head>
 <body class="bg-gray-900 text-white min-h-screen">
     <nav class="bg-gray-800 p-4 shadow-lg">
         <div class="container mx-auto flex justify-between items-center">
-            <h1 class="text-xl font-bold">🏠 Home Person ID</h1>
+            <h1 class="text-xl font-bold">Home Person ID</h1>
             <div id="status-badge" class="px-3 py-1 rounded-full text-xs font-medium bg-green-500 text-green-950">
                 System Online
             </div>
         </div>
     </nav>
 
+    <!-- Tab Navigation -->
+    <div class="bg-gray-800 border-b border-gray-700">
+        <div class="container mx-auto flex space-x-2">
+            <button class="tab-button active" onclick="switchTab('streams')">Live Streams</button>
+            <button class="tab-button" onclick="switchTab('persons')">Persons</button>
+            <button class="tab-button" onclick="switchTab('unidentified')">Unidentified</button>
+            <button class="tab-button" onclick="switchTab('events')">Events</button>
+            <button class="tab-button" onclick="switchTab('tracks')">Active Tracks</button>
+        </div>
+    </div>
+
     <main class="container mx-auto p-6">
-        <div id="camera-grid" class="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <!-- Camera streams will be injected here -->
+        <!-- Streams Tab -->
+        <div id="tab-streams" class="tab-content active">
+            <div id="camera-grid" class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <!-- Camera streams will be injected here -->
+            </div>
+        </div>
+
+        <!-- Persons Tab -->
+        <div id="tab-persons" class="tab-content">
+            <div class="mb-4 flex justify-between items-center">
+                <div>
+                    <h2 class="text-2xl font-bold mb-2">Registered Persons</h2>
+                    <p class="text-gray-400 text-sm">Manage enrolled persons and their face images</p>
+                </div>
+                <button onclick="showAddPersonModal()" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm flex items-center gap-2">
+                    <span>+</span> Add Person
+                </button>
+            </div>
+            <div id="persons-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Person cards will be injected here -->
+            </div>
+        </div>
+
+        <!-- Unidentified Faces Tab -->
+        <div id="tab-unidentified" class="tab-content">
+            <div class="mb-4 flex justify-between items-center">
+                <div>
+                    <h2 class="text-2xl font-bold mb-2">Unidentified Faces</h2>
+                    <p class="text-gray-400 text-sm">Faces detected below the recognition threshold for manual review</p>
+                </div>
+                <div class="flex gap-2">
+                    <select id="unidentified-camera-filter" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm">
+                        <option value="">All Cameras</option>
+                    </select>
+                    <button onclick="loadUnidentifiedFaces()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">
+                        Refresh
+                    </button>
+                </div>
+            </div>
+            <div id="unidentified-summary" class="mb-4 text-sm text-gray-400"></div>
+            <div id="unidentified-grid" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-4">
+                <!-- Unidentified face cards will be injected here -->
+            </div>
+        </div>
+
+        <!-- Events Tab -->
+        <div id="tab-events" class="tab-content">
+            <div class="mb-4 flex justify-between items-center">
+                <div>
+                    <h2 class="text-2xl font-bold mb-2">Recent Events</h2>
+                    <p class="text-gray-400 text-sm">Detection and identification events from all cameras</p>
+                </div>
+                <div class="flex gap-2">
+                    <select id="event-hours" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm">
+                        <option value="1">Last 1 hour</option>
+                        <option value="6">Last 6 hours</option>
+                        <option value="24" selected>Last 24 hours</option>
+                        <option value="168">Last 7 days</option>
+                    </select>
+                    <button onclick="loadEvents()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">
+                        Refresh
+                    </button>
+                </div>
+            </div>
+            <div class="bg-gray-800 rounded-lg overflow-hidden">
+                <table class="w-full">
+                    <thead class="bg-gray-700">
+                        <tr>
+                            <th class="px-4 py-3 text-left text-xs font-medium uppercase">Time</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium uppercase">Type</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium uppercase">Camera</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium uppercase">Person</th>
+                            <th class="px-4 py-3 text-left text-xs font-medium uppercase">Confidence</th>
+                        </tr>
+                    </thead>
+                    <tbody id="events-table" class="divide-y divide-gray-700">
+                        <!-- Events will be injected here -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- Active Tracks Tab -->
+        <div id="tab-tracks" class="tab-content">
+            <div class="mb-4">
+                <h2 class="text-2xl font-bold mb-2">Active Tracks</h2>
+                <p class="text-gray-400 text-sm">Currently tracked persons across all cameras</p>
+            </div>
+            <div id="tracks-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Track cards will be injected here -->
+            </div>
         </div>
     </main>
 
+    <!-- Add Person Modal -->
+    <div id="add-person-modal" class="modal fixed inset-0 bg-black bg-opacity-75 items-center justify-center z-50 p-4">
+        <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full">
+            <h3 class="text-xl font-bold mb-4">Add New Person</h3>
+            <form id="add-person-form" onsubmit="createPerson(event)">
+                <div class="mb-4">
+                    <label class="block text-sm font-medium mb-2">Name *</label>
+                    <input type="text" id="new-person-name" required
+                           class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2 focus:outline-none focus:border-blue-500"
+                           placeholder="Enter person's name">
+                </div>
+                <div class="mb-4">
+                    <label class="block text-sm font-medium mb-2">Face Images (optional)</label>
+                    <div id="add-person-upload-zone" class="upload-zone"
+                         ondragover="handleDragOver(event, 'add-person-upload-zone')"
+                         ondragleave="handleDragLeave(event, 'add-person-upload-zone')"
+                         ondrop="handleDrop(event, 'add-person-files')"
+                         onclick="document.getElementById('add-person-files').click()">
+                        <input type="file" id="add-person-files" multiple accept="image/*" class="hidden"
+                               onchange="updateFileList('add-person-files', 'add-person-file-list')">
+                        <p class="text-gray-400">Drop images here or click to select</p>
+                        <p class="text-gray-500 text-sm mt-1">Supports: JPG, PNG</p>
+                    </div>
+                    <div id="add-person-file-list" class="mt-2 text-sm text-gray-400"></div>
+                </div>
+                <div class="flex gap-2">
+                    <button type="submit" class="flex-1 bg-green-600 hover:bg-green-700 px-4 py-2 rounded">
+                        Create Person
+                    </button>
+                    <button type="button" onclick="closeModal('add-person-modal')" class="flex-1 bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">
+                        Cancel
+                    </button>
+                </div>
+            </form>
+            <div id="add-person-status" class="mt-4 text-sm hidden"></div>
+        </div>
+    </div>
+
+    <!-- Person Detail Modal -->
+    <div id="person-detail-modal" class="modal fixed inset-0 bg-black bg-opacity-75 items-center justify-center z-50 p-4">
+        <div class="bg-gray-800 rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div class="flex justify-between items-start mb-4">
+                <div>
+                    <h3 id="person-detail-name" class="text-xl font-bold"></h3>
+                    <p id="person-detail-created" class="text-gray-400 text-sm"></p>
+                </div>
+                <button onclick="closeModal('person-detail-modal')" class="text-gray-400 hover:text-white text-2xl">&times;</button>
+            </div>
+
+            <!-- Face Images Gallery -->
+            <div class="mb-6">
+                <div class="flex justify-between items-center mb-3">
+                    <h4 class="font-semibold">Face Images</h4>
+                    <button onclick="showAddImagesSection()" class="bg-blue-600 hover:bg-blue-700 px-3 py-1 rounded text-sm">
+                        + Add Images
+                    </button>
+                </div>
+                <div id="person-images-gallery" class="flex flex-wrap gap-3">
+                    <!-- Images will be injected here -->
+                </div>
+            </div>
+
+            <!-- Add Images Section (hidden by default) -->
+            <div id="add-images-section" class="mb-6 hidden">
+                <h4 class="font-semibold mb-3">Upload New Images</h4>
+                <div id="person-upload-zone" class="upload-zone mb-3"
+                     ondragover="handleDragOver(event, 'person-upload-zone')"
+                     ondragleave="handleDragLeave(event, 'person-upload-zone')"
+                     ondrop="handleDrop(event, 'person-files')"
+                     onclick="document.getElementById('person-files').click()">
+                    <input type="file" id="person-files" multiple accept="image/*" class="hidden"
+                           onchange="updateFileList('person-files', 'person-file-list')">
+                    <p class="text-gray-400">Drop images here or click to select</p>
+                </div>
+                <div id="person-file-list" class="mb-3 text-sm text-gray-400"></div>
+                <div class="flex gap-2">
+                    <button onclick="uploadPersonImages()" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded text-sm">
+                        Upload Images
+                    </button>
+                    <button onclick="hideAddImagesSection()" class="bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded text-sm">
+                        Cancel
+                    </button>
+                </div>
+                <div id="upload-status" class="mt-2 text-sm hidden"></div>
+            </div>
+
+            <!-- Timeline Button -->
+            <div class="mb-4">
+                <button onclick="showPersonTimelineFromDetail()" class="w-full bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded">
+                    View Timeline
+                </button>
+            </div>
+
+            <!-- Delete Person -->
+            <div class="border-t border-gray-700 pt-4">
+                <button onclick="confirmDeletePerson()" class="text-red-500 hover:text-red-400 text-sm">
+                    Delete Person
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Image Preview Modal -->
+    <div id="image-preview-modal" class="modal fixed inset-0 bg-black bg-opacity-90 items-center justify-center z-50 p-4">
+        <div class="relative max-w-4xl w-full">
+            <button onclick="closeModal('image-preview-modal')" class="absolute top-0 right-0 text-white text-3xl p-4">&times;</button>
+            <img id="preview-image" class="max-w-full max-h-[80vh] mx-auto rounded-lg">
+            <div class="text-center mt-4">
+                <button onclick="deleteCurrentImage()" class="bg-red-600 hover:bg-red-700 px-4 py-2 rounded text-sm">
+                    Delete Image
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Assign Face Modal -->
+    <div id="assign-face-modal" class="modal fixed inset-0 bg-black bg-opacity-75 items-center justify-center z-50 p-4">
+        <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full">
+            <h3 class="text-xl font-bold mb-4">Assign Face to Person</h3>
+            <div class="mb-4">
+                <img id="assign-face-preview" class="w-32 h-32 object-cover rounded mx-auto mb-4">
+                <div id="assign-face-info" class="text-sm text-gray-400 text-center mb-4"></div>
+            </div>
+            <div class="mb-4">
+                <label class="block text-sm font-medium mb-2">Select Person</label>
+                <select id="assign-person-select" class="w-full bg-gray-700 border border-gray-600 rounded px-3 py-2">
+                    <option value="">-- Select a person --</option>
+                </select>
+            </div>
+            <div class="flex gap-2">
+                <button onclick="confirmAssignFace()" class="flex-1 bg-green-600 hover:bg-green-700 px-4 py-2 rounded">
+                    Assign
+                </button>
+                <button onclick="closeModal('assign-face-modal')" class="flex-1 bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">
+                    Cancel
+                </button>
+            </div>
+            <div id="assign-face-status" class="mt-4 text-sm hidden"></div>
+        </div>
+    </div>
+
     <script>
+        // Current state
+        let currentPersonId = null;
+        let currentImageId = null;
+        let currentUnidentifiedFaceId = null;
+
+        // Tab switching
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            event.target.classList.add('active');
+
+            document.querySelectorAll('.tab-content').forEach(content => {
+                content.classList.remove('active');
+            });
+            document.getElementById(`tab-${tabName}`).classList.add('active');
+
+            if (tabName === 'persons') loadPersons();
+            else if (tabName === 'unidentified') loadUnidentifiedFaces();
+            else if (tabName === 'events') loadEvents();
+            else if (tabName === 'tracks') loadActiveTracks();
+        }
+
+        // Modal functions
+        function showModal(modalId) {
+            document.getElementById(modalId).classList.add('active');
+        }
+
+        function closeModal(modalId) {
+            document.getElementById(modalId).classList.remove('active');
+        }
+
+        function showAddPersonModal() {
+            document.getElementById('new-person-name').value = '';
+            document.getElementById('add-person-files').value = '';
+            document.getElementById('add-person-file-list').innerHTML = '';
+            document.getElementById('add-person-status').classList.add('hidden');
+            showModal('add-person-modal');
+        }
+
+        // Format functions
+        function formatDateTime(isoString) {
+            const date = new Date(isoString);
+            return date.toLocaleString();
+        }
+
+        function formatRelativeTime(isoString) {
+            const date = new Date(isoString);
+            const now = new Date();
+            const diffSec = Math.floor((now - date) / 1000);
+
+            if (diffSec < 60) return `${diffSec}s ago`;
+            if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
+            if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+            return `${Math.floor(diffSec / 86400)}d ago`;
+        }
+
+        // File upload helpers
+        function handleDragOver(e, zoneId) {
+            e.preventDefault();
+            document.getElementById(zoneId).classList.add('dragover');
+        }
+
+        function handleDragLeave(e, zoneId) {
+            e.preventDefault();
+            document.getElementById(zoneId).classList.remove('dragover');
+        }
+
+        function handleDrop(e, inputId) {
+            e.preventDefault();
+            const input = document.getElementById(inputId);
+            const dt = e.dataTransfer;
+            input.files = dt.files;
+            const listId = inputId.replace('-files', '-file-list');
+            if (inputId === 'add-person-files') {
+                updateFileList('add-person-files', 'add-person-file-list');
+            } else {
+                updateFileList('person-files', 'person-file-list');
+            }
+            document.getElementById(inputId.replace('-files', '-upload-zone').replace('person-', 'person-')).classList.remove('dragover');
+        }
+
+        function updateFileList(inputId, listId) {
+            const input = document.getElementById(inputId);
+            const list = document.getElementById(listId);
+            if (input.files.length > 0) {
+                list.innerHTML = `Selected: ${Array.from(input.files).map(f => f.name).join(', ')}`;
+            } else {
+                list.innerHTML = '';
+            }
+        }
+
+        // Load cameras
         async function loadCameras() {
             try {
                 const response = await fetch('/api/v1/cameras');
@@ -57,8 +450,8 @@
                                 <h2 class="text-lg font-semibold px-1">${cameraId}</h2>
                             </div>
                             <div class="stream-container shadow-2xl">
-                                <img src="/api/v1/stream/${cameraId}" 
-                                     class="stream-img" 
+                                <img src="/api/v1/stream/${cameraId}"
+                                     class="stream-img"
                                      alt="Stream for ${cameraId}"
                                      onerror="this.src='https://via.placeholder.com/640x360?text=No+Stream+Available'">
                             </div>
@@ -73,11 +466,741 @@
             }
         }
 
+        // Load persons with enhanced display
+        async function loadPersons() {
+            try {
+                const response = await fetch('/api/v1/persons');
+                const persons = await response.json();
+                const grid = document.getElementById('persons-grid');
+                grid.innerHTML = '';
+
+                if (persons.length === 0) {
+                    grid.innerHTML = `
+                        <div class="col-span-full text-center py-20 text-gray-500">
+                            <p class="mb-4">No persons registered yet</p>
+                            <button onclick="showAddPersonModal()" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded">
+                                Add First Person
+                            </button>
+                        </div>`;
+                    return;
+                }
+
+                for (const person of persons) {
+                    // Fetch location
+                    let location = { status: 'unknown' };
+                    try {
+                        const locationResp = await fetch(`/api/v1/persons/${person.id}/location`);
+                        location = await locationResp.json();
+                    } catch (e) {}
+
+                    // Fetch first face image
+                    let firstImageHtml = '<div class="face-placeholder">No image</div>';
+                    try {
+                        const detailResp = await fetch(`/api/v1/persons/${person.id}/detail`);
+                        const detail = await detailResp.json();
+                        if (detail.images && detail.images.length > 0 && detail.images[0].has_image) {
+                            firstImageHtml = `<img src="/api/v1/faces/image/${detail.images[0].id}" class="face-image" alt="${person.name}">`;
+                        }
+                    } catch (e) {}
+
+                    const statusColor = location.status === 'active' ? 'bg-green-600' : 'bg-gray-600';
+                    const statusText = location.status === 'active' ? 'Active' : location.status === 'never_seen' ? 'Never Seen' : 'Inactive';
+
+                    const card = document.createElement('div');
+                    card.className = 'bg-gray-800 rounded-lg p-4 border border-gray-700 cursor-pointer hover:border-gray-500 transition-colors';
+                    card.onclick = () => showPersonDetail(person.id);
+                    card.innerHTML = `
+                        <div class="flex gap-4">
+                            <div class="flex-shrink-0">
+                                ${firstImageHtml}
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <div class="flex justify-between items-start mb-2">
+                                    <h3 class="text-lg font-semibold truncate">${person.name}</h3>
+                                    <span class="${statusColor} text-xs px-2 py-1 rounded-full">${statusText}</span>
+                                </div>
+                                <div class="space-y-1 text-sm text-gray-400">
+                                    <div>${person.face_count} face(s)</div>
+                                    ${location.current_camera_id ? `<div>${location.current_camera_id}</div>` : ''}
+                                    ${location.last_seen ? `<div>${formatRelativeTime(location.last_seen)}</div>` : ''}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                }
+            } catch (error) {
+                console.error('Error loading persons:', error);
+            }
+        }
+
+        // Show person detail modal
+        async function showPersonDetail(personId) {
+            currentPersonId = personId;
+            try {
+                const response = await fetch(`/api/v1/persons/${personId}/detail`);
+                const detail = await response.json();
+
+                document.getElementById('person-detail-name').textContent = detail.name;
+                document.getElementById('person-detail-created').textContent = `Created: ${formatDateTime(detail.created_at)}`;
+
+                // Load images gallery
+                const gallery = document.getElementById('person-images-gallery');
+                if (detail.images && detail.images.length > 0) {
+                    gallery.innerHTML = detail.images.map(img => {
+                        if (img.has_image) {
+                            return `
+                                <div class="relative group">
+                                    <img src="/api/v1/faces/image/${img.id}"
+                                         class="face-image"
+                                         onclick="previewImage(${img.id})"
+                                         alt="Face">
+                                    <div class="absolute -top-2 -right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <button onclick="event.stopPropagation(); deleteImage(${personId}, ${img.id})"
+                                                class="bg-red-600 hover:bg-red-700 text-white rounded-full w-6 h-6 text-xs">
+                                            &times;
+                                        </button>
+                                    </div>
+                                </div>
+                            `;
+                        } else {
+                            return `
+                                <div class="face-placeholder relative group">
+                                    <span class="text-xs">No file</span>
+                                    <div class="absolute -top-2 -right-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                        <button onclick="event.stopPropagation(); deleteImage(${personId}, ${img.id})"
+                                                class="bg-red-600 hover:bg-red-700 text-white rounded-full w-6 h-6 text-xs">
+                                            &times;
+                                        </button>
+                                    </div>
+                                </div>
+                            `;
+                        }
+                    }).join('');
+                } else {
+                    gallery.innerHTML = '<p class="text-gray-500 text-sm">No face images stored</p>';
+                }
+
+                // Reset add images section
+                hideAddImagesSection();
+
+                showModal('person-detail-modal');
+            } catch (error) {
+                console.error('Error loading person detail:', error);
+                alert('Failed to load person details');
+            }
+        }
+
+        // Add images section toggle
+        function showAddImagesSection() {
+            document.getElementById('add-images-section').classList.remove('hidden');
+            document.getElementById('person-files').value = '';
+            document.getElementById('person-file-list').innerHTML = '';
+            document.getElementById('upload-status').classList.add('hidden');
+        }
+
+        function hideAddImagesSection() {
+            document.getElementById('add-images-section').classList.add('hidden');
+        }
+
+        // Create new person
+        async function createPerson(e) {
+            e.preventDefault();
+            const name = document.getElementById('new-person-name').value.trim();
+            const files = document.getElementById('add-person-files').files;
+            const statusDiv = document.getElementById('add-person-status');
+
+            if (!name) {
+                statusDiv.textContent = 'Please enter a name';
+                statusDiv.className = 'mt-4 text-sm text-red-500';
+                statusDiv.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                // Create person
+                statusDiv.textContent = 'Creating person...';
+                statusDiv.className = 'mt-4 text-sm text-blue-400';
+                statusDiv.classList.remove('hidden');
+
+                const createResp = await fetch('/api/v1/persons', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name })
+                });
+
+                if (!createResp.ok) {
+                    const error = await createResp.json();
+                    throw new Error(error.detail || 'Failed to create person');
+                }
+
+                const person = await createResp.json();
+
+                // Upload images if any
+                if (files.length > 0) {
+                    statusDiv.textContent = 'Uploading images...';
+
+                    const formData = new FormData();
+                    for (const file of files) {
+                        formData.append('files', file);
+                    }
+
+                    const uploadResp = await fetch(`/api/v1/persons/${person.id}/images`, {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    if (uploadResp.ok) {
+                        const result = await uploadResp.json();
+                        statusDiv.textContent = `Person created! ${result.message}`;
+                        statusDiv.className = 'mt-4 text-sm text-green-500';
+                    } else {
+                        statusDiv.textContent = 'Person created but image upload failed';
+                        statusDiv.className = 'mt-4 text-sm text-yellow-500';
+                    }
+                } else {
+                    statusDiv.textContent = 'Person created successfully!';
+                    statusDiv.className = 'mt-4 text-sm text-green-500';
+                }
+
+                // Refresh and close after delay
+                setTimeout(() => {
+                    closeModal('add-person-modal');
+                    loadPersons();
+                }, 1500);
+
+            } catch (error) {
+                statusDiv.textContent = error.message;
+                statusDiv.className = 'mt-4 text-sm text-red-500';
+            }
+        }
+
+        // Upload images to existing person
+        async function uploadPersonImages() {
+            const files = document.getElementById('person-files').files;
+            const statusDiv = document.getElementById('upload-status');
+
+            if (files.length === 0) {
+                statusDiv.textContent = 'Please select images to upload';
+                statusDiv.className = 'mt-2 text-sm text-red-500';
+                statusDiv.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                statusDiv.textContent = 'Uploading...';
+                statusDiv.className = 'mt-2 text-sm text-blue-400';
+                statusDiv.classList.remove('hidden');
+
+                const formData = new FormData();
+                for (const file of files) {
+                    formData.append('files', file);
+                }
+
+                const response = await fetch(`/api/v1/persons/${currentPersonId}/images`, {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    statusDiv.textContent = result.message;
+                    statusDiv.className = 'mt-2 text-sm text-green-500';
+
+                    // Refresh the person detail view
+                    setTimeout(() => {
+                        showPersonDetail(currentPersonId);
+                    }, 1000);
+                } else {
+                    statusDiv.textContent = result.detail || 'Upload failed';
+                    statusDiv.className = 'mt-2 text-sm text-red-500';
+                }
+            } catch (error) {
+                statusDiv.textContent = 'Upload failed: ' + error.message;
+                statusDiv.className = 'mt-2 text-sm text-red-500';
+            }
+        }
+
+        // Preview image
+        function previewImage(imageId) {
+            currentImageId = imageId;
+            document.getElementById('preview-image').src = `/api/v1/faces/image/${imageId}`;
+            showModal('image-preview-modal');
+        }
+
+        // Delete current preview image
+        async function deleteCurrentImage() {
+            if (currentImageId && currentPersonId) {
+                await deleteImage(currentPersonId, currentImageId);
+                closeModal('image-preview-modal');
+            }
+        }
+
+        // Delete image
+        async function deleteImage(personId, imageId) {
+            if (!confirm('Are you sure you want to delete this face image?')) return;
+
+            try {
+                const response = await fetch(`/api/v1/persons/${personId}/images/${imageId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    showPersonDetail(personId);
+                } else {
+                    alert('Failed to delete image');
+                }
+            } catch (error) {
+                alert('Error deleting image: ' + error.message);
+            }
+        }
+
+        // Delete person
+        async function confirmDeletePerson() {
+            const name = document.getElementById('person-detail-name').textContent;
+            if (!confirm(`Are you sure you want to delete "${name}"? This action cannot be undone.`)) return;
+
+            try {
+                const response = await fetch(`/api/v1/persons/${currentPersonId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    closeModal('person-detail-modal');
+                    loadPersons();
+                } else {
+                    alert('Failed to delete person');
+                }
+            } catch (error) {
+                alert('Error deleting person: ' + error.message);
+            }
+        }
+
+        // Show timeline from detail modal
+        function showPersonTimelineFromDetail() {
+            const name = document.getElementById('person-detail-name').textContent;
+            closeModal('person-detail-modal');
+            showPersonTimeline(currentPersonId, name);
+        }
+
+        // Show person timeline
+        async function showPersonTimeline(personId, personName) {
+            try {
+                const hours = 24;
+                const response = await fetch(`/api/v1/persons/${personId}/timeline?since_hours=${hours}`);
+                const timeline = await response.json();
+
+                let content = `<div class="mb-4"><h3 class="text-xl font-bold">${personName} - Timeline (Last 24h)</h3></div>`;
+
+                if (timeline.sightings.length === 0) {
+                    content += '<p class="text-gray-400">No activity in the last 24 hours</p>';
+                } else {
+                    content += '<div class="space-y-3">';
+                    timeline.sightings.forEach(s => {
+                        const duration = s.duration_sec ? ` (${Math.floor(s.duration_sec / 60)}m ${Math.floor(s.duration_sec % 60)}s)` : ' (ongoing)';
+                        content += `
+                            <div class="bg-gray-700 rounded p-3">
+                                <div class="font-semibold">${s.camera_id}</div>
+                                <div class="text-sm text-gray-300 mt-1">
+                                    <div>Entered: ${formatDateTime(s.entered_at)}</div>
+                                    ${s.exited_at ? `<div>Exited: ${formatDateTime(s.exited_at)}</div>` : '<div>Still active</div>'}
+                                    <div>Duration: ${duration}</div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    content += '</div>';
+                }
+
+                const modal = document.createElement('div');
+                modal.className = 'fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4';
+                modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
+                modal.innerHTML = `
+                    <div class="bg-gray-800 rounded-lg p-6 max-w-2xl w-full max-h-[80vh] overflow-y-auto">
+                        ${content}
+                        <button onclick="this.closest('.fixed').remove()"
+                                class="mt-4 w-full bg-gray-700 hover:bg-gray-600 px-4 py-2 rounded">
+                            Close
+                        </button>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            } catch (error) {
+                console.error('Error loading timeline:', error);
+                alert('Failed to load timeline');
+            }
+        }
+
+        // ==================== Unidentified Faces ====================
+
+        // Load unidentified faces
+        async function loadUnidentifiedFaces() {
+            try {
+                // Update camera filter options
+                await updateUnidentifiedCameraFilter();
+
+                // Get filter value
+                const cameraFilter = document.getElementById('unidentified-camera-filter').value;
+                let url = '/api/v1/unidentified-faces?dismissed=false&limit=100';
+                if (cameraFilter) {
+                    url += `&camera_id=${encodeURIComponent(cameraFilter)}`;
+                }
+
+                const response = await fetch(url);
+                const faces = await response.json();
+                const grid = document.getElementById('unidentified-grid');
+                grid.innerHTML = '';
+
+                // Update summary
+                const summaryResp = await fetch('/api/v1/unidentified-faces/summary');
+                const summary = await summaryResp.json();
+                document.getElementById('unidentified-summary').textContent =
+                    `Total: ${summary.total} faces across ${Object.keys(summary.by_camera).length} camera(s)`;
+
+                if (faces.length === 0) {
+                    grid.innerHTML = `
+                        <div class="col-span-full text-center py-20 text-gray-500">
+                            <p>No unidentified faces to review</p>
+                            <p class="text-sm mt-2">Faces that fall below the recognition threshold will appear here</p>
+                        </div>`;
+                    return;
+                }
+
+                for (const face of faces) {
+                    const card = document.createElement('div');
+                    card.className = 'bg-gray-800 rounded-lg overflow-hidden border border-gray-700 hover:border-gray-500 transition-colors';
+
+                    // Best match display
+                    let matchInfo = '<span class="text-gray-500">No match</span>';
+                    if (face.best_match_person_name && face.best_match_score) {
+                        const scorePercent = (face.best_match_score * 100).toFixed(0);
+                        const scoreColor = face.best_match_score > 0.5 ? 'text-yellow-400' : 'text-gray-400';
+                        matchInfo = `<span class="${scoreColor}">${face.best_match_person_name} (${scorePercent}%)</span>`;
+                    }
+
+                    // Quality indicator
+                    const qualityPercent = (face.quality_score * 100).toFixed(0);
+                    const qualityColor = face.quality_score > 0.6 ? 'bg-green-600' : face.quality_score > 0.4 ? 'bg-yellow-600' : 'bg-red-600';
+
+                    card.innerHTML = `
+                        <div class="aspect-square bg-gray-900 relative">
+                            <img src="/api/v1/unidentified-faces/${face.id}/image"
+                                 class="w-full h-full object-cover cursor-pointer"
+                                 onclick="previewUnidentifiedFace(${face.id})"
+                                 onerror="this.src='https://via.placeholder.com/200?text=No+Image'">
+                            <div class="absolute top-2 right-2 ${qualityColor} text-xs px-2 py-1 rounded">
+                                Q: ${qualityPercent}%
+                            </div>
+                        </div>
+                        <div class="p-3">
+                            <div class="text-xs text-gray-400 mb-1">${face.camera_id}</div>
+                            <div class="text-xs text-gray-500 mb-2">${formatRelativeTime(face.created_at)}</div>
+                            <div class="text-sm mb-3">${matchInfo}</div>
+                            <div class="flex gap-2">
+                                ${face.best_match_person_id ? `
+                                    <button onclick="quickAssignFace(${face.id}, ${face.best_match_person_id})"
+                                            class="flex-1 bg-green-600 hover:bg-green-700 px-2 py-1 rounded text-xs"
+                                            title="Confirm as ${face.best_match_person_name}">
+                                        Confirm
+                                    </button>
+                                ` : ''}
+                                <button onclick="showAssignFaceModal(${face.id})"
+                                        class="flex-1 bg-blue-600 hover:bg-blue-700 px-2 py-1 rounded text-xs">
+                                    Assign
+                                </button>
+                                <button onclick="dismissFace(${face.id})"
+                                        class="flex-1 bg-gray-600 hover:bg-gray-500 px-2 py-1 rounded text-xs">
+                                    Dismiss
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                }
+            } catch (error) {
+                console.error('Error loading unidentified faces:', error);
+            }
+        }
+
+        // Update camera filter dropdown
+        async function updateUnidentifiedCameraFilter() {
+            try {
+                const summaryResp = await fetch('/api/v1/unidentified-faces/summary');
+                const summary = await summaryResp.json();
+                const select = document.getElementById('unidentified-camera-filter');
+                const currentValue = select.value;
+
+                // Keep the first option (All Cameras)
+                select.innerHTML = '<option value="">All Cameras</option>';
+
+                for (const [cameraId, count] of Object.entries(summary.by_camera)) {
+                    const option = document.createElement('option');
+                    option.value = cameraId;
+                    option.textContent = `${cameraId} (${count})`;
+                    select.appendChild(option);
+                }
+
+                // Restore previous selection if still valid
+                if (currentValue && summary.by_camera[currentValue]) {
+                    select.value = currentValue;
+                }
+            } catch (error) {
+                console.error('Error updating camera filter:', error);
+            }
+        }
+
+        // Preview unidentified face in modal
+        function previewUnidentifiedFace(faceId) {
+            document.getElementById('preview-image').src = `/api/v1/unidentified-faces/${faceId}/image`;
+            currentUnidentifiedFaceId = faceId;
+            showModal('image-preview-modal');
+        }
+
+        // Show assign face modal
+        async function showAssignFaceModal(faceId) {
+            currentUnidentifiedFaceId = faceId;
+
+            try {
+                // Get face details
+                const faceResp = await fetch(`/api/v1/unidentified-faces/${faceId}`);
+                const face = await faceResp.json();
+
+                // Set preview image
+                document.getElementById('assign-face-preview').src = `/api/v1/unidentified-faces/${faceId}/image`;
+
+                // Set info
+                let infoText = `Camera: ${face.camera_id}`;
+                if (face.best_match_person_name) {
+                    infoText += ` | Best match: ${face.best_match_person_name} (${(face.best_match_score * 100).toFixed(0)}%)`;
+                }
+                document.getElementById('assign-face-info').textContent = infoText;
+
+                // Load persons for dropdown
+                const personsResp = await fetch('/api/v1/persons');
+                const persons = await personsResp.json();
+                const select = document.getElementById('assign-person-select');
+                select.innerHTML = '<option value="">-- Select a person --</option>';
+
+                for (const person of persons) {
+                    const option = document.createElement('option');
+                    option.value = person.id;
+                    option.textContent = person.name;
+                    // Pre-select best match if available
+                    if (face.best_match_person_id === person.id) {
+                        option.selected = true;
+                    }
+                    select.appendChild(option);
+                }
+
+                // Reset status
+                document.getElementById('assign-face-status').classList.add('hidden');
+
+                showModal('assign-face-modal');
+            } catch (error) {
+                console.error('Error loading face details:', error);
+                alert('Failed to load face details');
+            }
+        }
+
+        // Confirm assign face
+        async function confirmAssignFace() {
+            const personId = document.getElementById('assign-person-select').value;
+            const statusDiv = document.getElementById('assign-face-status');
+
+            if (!personId) {
+                statusDiv.textContent = 'Please select a person';
+                statusDiv.className = 'mt-4 text-sm text-red-500';
+                statusDiv.classList.remove('hidden');
+                return;
+            }
+
+            try {
+                statusDiv.textContent = 'Assigning...';
+                statusDiv.className = 'mt-4 text-sm text-blue-400';
+                statusDiv.classList.remove('hidden');
+
+                const response = await fetch(`/api/v1/unidentified-faces/${currentUnidentifiedFaceId}/assign`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ person_id: parseInt(personId) })
+                });
+
+                const result = await response.json();
+
+                if (response.ok) {
+                    statusDiv.textContent = result.message;
+                    statusDiv.className = 'mt-4 text-sm text-green-500';
+
+                    setTimeout(() => {
+                        closeModal('assign-face-modal');
+                        loadUnidentifiedFaces();
+                    }, 1000);
+                } else {
+                    statusDiv.textContent = result.detail || 'Failed to assign face';
+                    statusDiv.className = 'mt-4 text-sm text-red-500';
+                }
+            } catch (error) {
+                statusDiv.textContent = 'Error: ' + error.message;
+                statusDiv.className = 'mt-4 text-sm text-red-500';
+            }
+        }
+
+        // Quick assign (confirm best match)
+        async function quickAssignFace(faceId, personId) {
+            if (!confirm('Confirm this face assignment?')) return;
+
+            try {
+                const response = await fetch(`/api/v1/unidentified-faces/${faceId}/assign`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ person_id: personId })
+                });
+
+                if (response.ok) {
+                    loadUnidentifiedFaces();
+                } else {
+                    const result = await response.json();
+                    alert(result.detail || 'Failed to assign face');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
+        // Dismiss face
+        async function dismissFace(faceId) {
+            try {
+                const response = await fetch(`/api/v1/unidentified-faces/${faceId}/dismiss`, {
+                    method: 'POST'
+                });
+
+                if (response.ok) {
+                    loadUnidentifiedFaces();
+                } else {
+                    const result = await response.json();
+                    alert(result.detail || 'Failed to dismiss face');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
+        // Delete unidentified face
+        async function deleteUnidentifiedFace(faceId) {
+            if (!confirm('Delete this face permanently?')) return;
+
+            try {
+                const response = await fetch(`/api/v1/unidentified-faces/${faceId}`, {
+                    method: 'DELETE'
+                });
+
+                if (response.ok) {
+                    loadUnidentifiedFaces();
+                } else {
+                    const result = await response.json();
+                    alert(result.detail || 'Failed to delete face');
+                }
+            } catch (error) {
+                alert('Error: ' + error.message);
+            }
+        }
+
+        // Load events
+        async function loadEvents() {
+            try {
+                const hours = document.getElementById('event-hours').value;
+                const response = await fetch(`/api/v1/events?since_hours=${hours}&limit=100`);
+                const events = await response.json();
+                const tbody = document.getElementById('events-table');
+                tbody.innerHTML = '';
+
+                if (events.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-gray-500">No events found</td></tr>';
+                    return;
+                }
+
+                events.forEach(event => {
+                    const row = document.createElement('tr');
+                    row.className = 'hover:bg-gray-700';
+
+                    const personDisplay = event.person_name || (event.person_id ? `ID:${event.person_id}` : '-');
+                    const confidenceDisplay = event.confidence ? (event.confidence * 100).toFixed(0) + '%' : '-';
+
+                    row.innerHTML = `
+                        <td class="px-4 py-3 text-sm">${formatDateTime(event.timestamp)}</td>
+                        <td class="px-4 py-3 text-sm">${event.event_type}</td>
+                        <td class="px-4 py-3 text-sm">${event.camera_id}</td>
+                        <td class="px-4 py-3 text-sm">${personDisplay}</td>
+                        <td class="px-4 py-3 text-sm">${confidenceDisplay}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+            } catch (error) {
+                console.error('Error loading events:', error);
+            }
+        }
+
+        // Load active tracks
+        async function loadActiveTracks() {
+            try {
+                const response = await fetch('/api/v1/tracks/active');
+                const tracks = await response.json();
+                const grid = document.getElementById('tracks-grid');
+                grid.innerHTML = '';
+
+                if (tracks.length === 0) {
+                    grid.innerHTML = '<div class="col-span-full text-center py-20 text-gray-500">No active tracks</div>';
+                    return;
+                }
+
+                tracks.forEach(track => {
+                    const personDisplay = track.person_name || 'Unidentified';
+                    const durationMin = Math.floor(track.duration_sec / 60);
+                    const durationSec = Math.floor(track.duration_sec % 60);
+
+                    const card = document.createElement('div');
+                    card.className = 'bg-gray-800 rounded-lg p-4 border border-gray-700';
+                    card.innerHTML = `
+                        <div class="flex justify-between items-start mb-3">
+                            <h3 class="text-lg font-semibold">${personDisplay}</h3>
+                            <span class="bg-blue-600 text-xs px-2 py-1 rounded-full">Active</span>
+                        </div>
+                        <div class="space-y-1 text-sm text-gray-400">
+                            <div>${track.track_id}</div>
+                            <div>${track.camera_id}</div>
+                            <div>${durationMin}m ${durationSec}s</div>
+                            <div>Last seen: ${formatRelativeTime(track.last_seen)}</div>
+                        </div>
+                    `;
+                    grid.appendChild(card);
+                });
+            } catch (error) {
+                console.error('Error loading tracks:', error);
+            }
+        }
+
+        // Close modals on escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                document.querySelectorAll('.modal.active').forEach(modal => {
+                    modal.classList.remove('active');
+                });
+            }
+        });
+
         // Initial load
         loadCameras();
 
-        // Refresh camera list every 5 seconds in case new ones appear
+        // Auto-refresh
         setInterval(loadCameras, 5000);
+        setInterval(() => {
+            const activeTab = document.querySelector('.tab-content.active').id;
+            if (activeTab === 'tab-persons') loadPersons();
+            else if (activeTab === 'tab-unidentified') loadUnidentifiedFaces();
+            else if (activeTab === 'tab-events') loadEvents();
+            else if (activeTab === 'tab-tracks') loadActiveTracks();
+        }, 10000);
     </script>
 </body>
 </html>

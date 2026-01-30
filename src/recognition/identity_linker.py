@@ -16,12 +16,18 @@ from typing import Optional
 
 import numpy as np
 
+from typing import TYPE_CHECKING
+
 from src.config import Config, FaceRecognitionConfig, ReIDConfig
 from src.database.repository import Repository
 from src.recognition.face_recognizer import FaceRecognizer
 from src.recognition.identification_manager import IdentificationManager
 from src.recognition.reid_extractor import ReIDExtractor, EmbeddingGallery
 from src.utils.profiler import profiler
+from src.utils.image_utils import crop_face_region, crop_with_margin
+
+if TYPE_CHECKING:
+    from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +123,7 @@ class IdentityLinker:
         enable_debug_images: bool = True,
         face_recognizer: Optional[FaceRecognizer] = None,
         reid_extractor: Optional[ReIDExtractor] = None,
+        unidentified_face_manager: Optional["UnidentifiedFaceManager"] = None,
     ):
         """Initialize identity linker.
 
@@ -127,10 +134,12 @@ class IdentityLinker:
             enable_debug_images: Whether to save debug images
             face_recognizer: Optional pre-initialized face recognizer (for testing)
             reid_extractor: Optional pre-initialized Re-ID extractor (for testing)
+            unidentified_face_manager: Optional manager for capturing unidentified faces
         """
         self.face_config = face_config
         self.reid_config = reid_config
         self.repository = repository
+        self._unidentified_face_manager = unidentified_face_manager
 
         # Create a minimal config for IdentificationManager
         self._config = self._create_config(face_config, reid_config)
@@ -142,6 +151,7 @@ class IdentityLinker:
             enable_debug_images=enable_debug_images,
             face_recognizer=face_recognizer,
             reid_extractor=reid_extractor,
+            unidentified_face_manager=unidentified_face_manager,
         )
 
         # Track identity states (production-specific, with consecutive match tracking)
@@ -262,6 +272,7 @@ class IdentityLinker:
         force_face_check: bool = False,
         num_persons_in_frame: int = 1,
         precomputed_reid: Optional[tuple[np.ndarray, float]] = None,
+        camera_id: Optional[str] = None,
     ) -> IdentificationResult:
         """Process a track for identification.
 
@@ -275,6 +286,7 @@ class IdentityLinker:
             force_face_check: Force face recognition even if recently checked
             num_persons_in_frame: Number of persons detected in frame
             precomputed_reid: Optional pre-computed Re-ID (embedding, quality)
+            camera_id: Camera ID for unidentified face capture
 
         Returns:
             IdentificationResult with identification status
@@ -320,7 +332,7 @@ class IdentityLinker:
 
         if should_check_face and self.face_config.enabled:
             state.last_face_check = current_time
-            face_result = self._try_face_identification(state, frame, bbox, person_crop, num_persons_in_frame)
+            face_result = self._try_face_identification(state, frame, bbox, person_crop, num_persons_in_frame, camera_id)
 
             if face_result.is_confirmed:
                 # Update with reid_info for rendering before returning
@@ -357,20 +369,19 @@ class IdentityLinker:
         bbox: tuple[float, float, float, float],
         person_crop: np.ndarray,
         num_persons_in_frame: int,
+        camera_id: Optional[str] = None,
     ) -> IdentificationResult:
         """Try to identify track using face recognition.
 
         Uses IdentificationManager for core logic, adds consecutive match tracking.
         """
-        gallery = self._id_manager.face_gallery
-        if not gallery or not self._id_manager.face_recognizer:
+        if not self._id_manager.face_recognizer:
             return IdentificationResult()
 
-        # Crop face region from person bbox (upper portion)
-        x1, y1, x2, y2 = map(int, bbox)
-        h = y2 - y1
-        face_region = frame[y1 : y1 + int(h * 0.5), x1:x2]
+        gallery = self._id_manager.face_gallery
 
+        # Crop face region from person bbox (upper portion)
+        face_region = crop_face_region(frame, bbox, height_ratio=0.5)
         if face_region.size == 0:
             return IdentificationResult()
 
@@ -399,21 +410,41 @@ class IdentityLinker:
 
         state.face_embedding = embedding
 
-        # Match against gallery
+        # Match against gallery (track best match regardless of threshold)
         best_match_id = None
         best_match_name = None
         best_score = 0.0
 
-        with profiler.measure("FaceRecognizer.compare"):
-            for person_id, name, gallery_embedding in gallery:
-                similarity = face_recognizer.compare_embeddings(embedding, gallery_embedding)
-                if similarity > self.face_config.similarity_threshold and similarity > best_score:
-                    best_match_id = person_id
-                    best_match_name = name
-                    best_score = similarity
+        if gallery:
+            with profiler.measure("FaceRecognizer.compare"):
+                for person_id, name, gallery_embedding in gallery:
+                    similarity = face_recognizer.compare_embeddings(embedding, gallery_embedding)
+                    if similarity > best_score:
+                        best_match_id = person_id
+                        best_match_name = name
+                        best_score = similarity
 
-        if best_match_id is None:
-            return IdentificationResult()
+        # Check if match is above threshold
+        if best_score < self.face_config.similarity_threshold:
+            # Submit to unidentified face manager
+            if self._unidentified_face_manager and camera_id:
+                face_crop, face_bbox = crop_with_margin(
+                    face_region, best_face.bbox, margin_ratio=0.3
+                )
+                if face_crop.size > 0:
+                    self._unidentified_face_manager.submit(
+                        camera_id=camera_id,
+                        face_crop=face_crop,
+                        embedding=embedding,
+                        face_bbox=face_bbox,
+                        track_id=state.global_track_id,
+                        best_match_person_id=best_match_id,
+                        best_match_score=best_score if best_score > 0 else None,
+                    )
+
+            return IdentificationResult(
+                face_info=(best_match_name, best_score) if best_match_name else None
+            )
 
         # Consecutive match tracking for stability
         if state.candidate_person_id == best_match_id:

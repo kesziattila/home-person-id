@@ -96,8 +96,18 @@ A real-time web dashboard is available for monitoring all camera streams:
 - **Unified View**: See all cameras in a single responsive grid.
 - **Detailed Metadata**: Displays same tracking info as CLI preview (Face/Re-ID confidence).
 - **Zero-Config**: Automatically discovers cameras from system configuration.
+- **Person Management**: Add, edit, and delete known persons with face image upload.
+- **Unidentified Faces**: Review faces that fall below recognition threshold, assign to persons or dismiss.
 
 Default access: `http://localhost:8000`
+
+### 6. Unidentified Faces Feature
+When a face is detected but doesn't match any known person (below similarity threshold):
+- Face is automatically captured with quality scoring (size, blur, brightness)
+- Best-match person and confidence are recorded for quick review
+- Diversity check prevents storing duplicate faces
+- Per-camera limits keep storage manageable (configurable)
+- Web UI provides one-click assignment to existing persons
 
 ## Testing
 
@@ -145,14 +155,19 @@ home-person-id/
 │   │   ├── face_recognizer.py   # InsightFace face detection/recognition
 │   │   ├── reid_extractor.py    # OSNet Re-ID feature extraction
 │   │   ├── reid_gallery.py      # Shared Re-ID gallery manager
-│   │   └── identity_linker.py   # Links recognition to tracks
+│   │   ├── identity_linker.py   # Links recognition to tracks
+│   │   └── unidentified_face_manager.py  # Captures unidentified faces
 │   └── database/
 │       ├── models.py            # SQLAlchemy ORM models
 │       └── repository.py        # Database CRUD operations
+│   ├── utils/
+│   │   ├── image_utils.py       # Crop utilities and JPEG encoding
+│   │   └── profiler.py          # Performance profiling
 ├── data/
 │   ├── database.db              # SQLite database (created on first run)
 │   ├── faces/                   # Reference face images
 │   ├── snapshots/               # Event snapshots
+│   ├── unidentified_faces/      # Captured unidentified faces for review
 │   └── debug/reid/              # Debug images for Re-ID troubleshooting
 ├── models/                      # ML model weights (downloaded on first run)
 ├── requirements.txt
@@ -338,6 +353,11 @@ See `config/config.yaml` for all options. Key settings:
 | `face_recognition.similarity_threshold` | Face match threshold | 0.6 |
 | `face_recognition.min_face_size` | Minimum face size (pixels) | 40 |
 | `face_recognition.detection_interval` | Frames between face checks | 10 |
+| `unidentified_faces.enabled` | Capture unidentified faces | true |
+| `unidentified_faces.max_per_camera` | Max faces to keep per camera | 20 |
+| `unidentified_faces.min_quality_score` | Min quality score (0-1) | 0.3 |
+| `unidentified_faces.min_face_size` | Min face size for capture (pixels) | 60 |
+| `unidentified_faces.retention_days` | Days to keep before cleanup | 30 |
 
 ## Re-ID Gallery Behavior
 

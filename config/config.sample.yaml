@@ -258,6 +258,43 @@ face_recognition:
   trt_max_workspace_size: 0
 
 # =============================================================================
+# UNIDENTIFIED FACES
+# =============================================================================
+# Capture faces that fall below the recognition threshold for manual review.
+# Useful for: adding new people, reviewing false negatives, improving recognition.
+
+unidentified_faces:
+  # Enable/disable unidentified faces capture
+  enabled: true
+
+  # Directory for storing face images
+  images_path: "data/unidentified_faces"
+
+  # Maximum faces to keep per camera (oldest are deleted)
+  max_per_camera: 20
+
+  # Minimum quality score (0-1) to save a face
+  # Quality is based on: face size, blur, brightness
+  min_quality_score: 0.3
+
+  # Minimum face size (pixels) for bbox width
+  min_face_size: 60
+
+  # Minimum match score to record a best match suggestion
+  # Faces with scores below this won't have a suggested person
+  min_match_score: 0.3
+
+  # Embedding similarity threshold for diversity check
+  # Skips faces too similar to already stored ones
+  embedding_similarity_threshold: 0.7
+
+  # Days to keep unidentified faces before auto-cleanup
+  retention_days: 30
+
+  # Queue size for background processing
+  queue_size: 100
+
+# =============================================================================
 # MQTT (Home Assistant Integration)
 # =============================================================================
 # Publish person detection events to MQTT for Home Assistant.

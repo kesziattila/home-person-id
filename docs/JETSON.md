@@ -103,6 +103,7 @@ cp config/config.jetson.yaml config/config.yaml
 ### 8. CUDA-Accelerated Motion Detection
 
 To use CUDA-accelerated motion detection, you need an OpenCV build with CUDA support. The system OpenCV on JetPack usually includes this.
+If not, install it based on instructions here: https://github.com/Qengineering/Install-OpenCV-Jetson-Nano/tree/main
 
 - **Requirement**: OpenCV compiled with `WITH_CUDA=ON`.
 - **Configuration**: Set `motion.use_cuda: true` in `config.yaml`.
