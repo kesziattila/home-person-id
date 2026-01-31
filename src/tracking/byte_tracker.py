@@ -70,8 +70,11 @@ def linear_assignment(cost_matrix: np.ndarray) -> tuple[list, list, list]:
         row_ind, col_ind = linear_sum_assignment(cost_matrix)
         matched_indices = list(zip(row_ind, col_ind))
 
-    unmatched_a = [i for i in range(cost_matrix.shape[0]) if i not in [m[0] for m in matched_indices]]
-    unmatched_b = [i for i in range(cost_matrix.shape[1]) if i not in [m[1] for m in matched_indices]]
+    # Use sets for O(1) lookup instead of O(N) list search
+    matched_set_a = {m[0] for m in matched_indices}
+    matched_set_b = {m[1] for m in matched_indices}
+    unmatched_a = [i for i in range(cost_matrix.shape[0]) if i not in matched_set_a]
+    unmatched_b = [i for i in range(cost_matrix.shape[1]) if i not in matched_set_b]
 
     return matched_indices, unmatched_a, unmatched_b
 
@@ -234,13 +237,13 @@ class ByteTracker:
         lost_track_ids = []
         removed_track_ids = []
 
-        # Predict new locations of existing trackers
-        predicted_boxes = []
-        for tracker in self._trackers:
-            box = tracker.predict()
-            predicted_boxes.append(box)
-
-        predicted_boxes = np.array(predicted_boxes) if predicted_boxes else np.empty((0, 4))
+        # Predict new locations of existing trackers (pre-allocate array)
+        if self._trackers:
+            predicted_boxes = np.empty((len(self._trackers), 4), dtype=np.float64)
+            for i, tracker in enumerate(self._trackers):
+                predicted_boxes[i] = tracker.predict()
+        else:
+            predicted_boxes = np.empty((0, 4), dtype=np.float64)
 
         # Split detections into high and low confidence
         high_conf_mask = dets[:, 4] >= self.config.track_thresh if len(dets) > 0 else []

@@ -1128,7 +1128,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
             # Cleanup
             id_manager.cleanup_expired()
 
-            # Arrange grid
+            # Arrange grid (pre-allocate final array to avoid intermediates)
             if displays:
                 n = len(displays)
                 cols = min(n, 2)
@@ -1136,22 +1136,14 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
                 max_h = max(d.shape[0] for d in displays)
                 max_w = max(d.shape[1] for d in displays)
 
-                padded = []
-                for d in displays:
-                    if d.shape[0] < max_h or d.shape[1] < max_w:
-                        pad = np.zeros((max_h, max_w, 3), dtype=np.uint8)
-                        pad[:d.shape[0], :d.shape[1]] = d
-                        padded.append(pad)
-                    else:
-                        padded.append(d)
+                # Pre-allocate final grid (zeros for empty cells and padding)
+                grid = np.zeros((rows * max_h, cols * max_w, 3), dtype=np.uint8)
 
-                grid_rows = []
-                for r in range(rows):
-                    row = padded[r * cols:(r + 1) * cols]
-                    while len(row) < cols:
-                        row.append(np.zeros((max_h, max_w, 3), dtype=np.uint8))
-                    grid_rows.append(np.hstack(row))
-                grid = np.vstack(grid_rows)
+                # Copy each display directly into its grid position
+                for i, d in enumerate(displays):
+                    r, c = divmod(i, cols)
+                    h, w = d.shape[:2]
+                    grid[r * max_h:r * max_h + h, c * max_w:c * max_w + w] = d
 
                 # Status bar
                 pending = len(global_tracker._pending_handovers)

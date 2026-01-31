@@ -104,10 +104,11 @@ class EmbeddingGallery:
         if not self.embeddings:
             return 0.0
 
-        similarities = []
-        for emb in self.embeddings:
-            sim = cosine_similarity(query_embedding, emb.embedding)
-            similarities.append(sim)
+        # Vectorized cosine similarity computation
+        gallery = np.array([e.embedding for e in self.embeddings])
+        query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-8)
+        gallery_norm = gallery / (np.linalg.norm(gallery, axis=1, keepdims=True) + 1e-8)
+        similarities = gallery_norm @ query_norm
 
         return float(np.median(similarities))
 
@@ -128,6 +129,10 @@ class ReIDExtractor:
     Extracts 512-dimensional appearance features from person crops
     for cross-camera person matching.
     """
+
+    # Shared immutable zero embedding to avoid repeated allocations
+    _ZERO_EMBEDDING: np.ndarray = np.zeros(512, dtype=np.float32)
+    _ZERO_EMBEDDING.flags.writeable = False  # Prevent accidental modification
 
     def __init__(self, config: ReIDConfig):
         """Initialize Re-ID extractor.
@@ -277,15 +282,15 @@ class ReIDExtractor:
         h, w = crop.shape[:2]
         if h < self.config.min_crop_height or w < 30:
             if return_quality:
-                return np.zeros(512, dtype=np.float32), 0.0
-            return np.zeros(512, dtype=np.float32)
+                return self._ZERO_EMBEDDING, 0.0
+            return self._ZERO_EMBEDDING
 
         # Skip grayscale/IR images - Re-ID relies on color features
         if is_grayscale_image(crop):
             logger.debug("Skipping Re-ID extraction for grayscale/IR image")
             if return_quality:
-                return np.zeros(512, dtype=np.float32), 0.0
-            return np.zeros(512, dtype=np.float32)
+                return self._ZERO_EMBEDDING, 0.0
+            return self._ZERO_EMBEDDING
 
         # Compute quality score based on crop size and aspect ratio
         quality = self._compute_quality(crop)
@@ -394,12 +399,12 @@ class ReIDExtractor:
         for i, crop in enumerate(crops):
             h, w = crop.shape[:2]
             if h < self.config.min_crop_height or w < 30:
-                results.append((np.zeros(512, dtype=np.float32), 0.0))
+                results.append((self._ZERO_EMBEDDING, 0.0))
                 continue
 
             # Skip grayscale/IR images
             if is_grayscale_image(crop):
-                results.append((np.zeros(512, dtype=np.float32), 0.0))
+                results.append((self._ZERO_EMBEDDING, 0.0))
                 continue
 
             quality = self._compute_quality(crop)
@@ -442,7 +447,7 @@ class ReIDExtractor:
             if i in result_dict:
                 final_results.append(result_dict[i])
             else:
-                final_results.append((np.zeros(512, dtype=np.float32), 0.0))
+                final_results.append((self._ZERO_EMBEDDING, 0.0))
 
         return final_results
 
