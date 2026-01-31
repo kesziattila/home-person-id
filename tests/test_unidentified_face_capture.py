@@ -62,6 +62,8 @@ class TestUnidentifiedFaceCapture:
 
         recognizer.detect_faces.return_value = mock_result
         recognizer.compare_embeddings.return_value = 0.3  # Below threshold
+        # Mock batch comparison to return array of similarities
+        recognizer.compare_embeddings_batch.return_value = np.array([0.3])
 
         return recognizer
 
@@ -187,6 +189,7 @@ class TestUnidentifiedFaceCapture:
         """Test that face is identified when above threshold."""
         # Make compare_embeddings return high score
         mock_face_recognizer.compare_embeddings.return_value = 0.8  # Above 0.6 threshold
+        mock_face_recognizer.compare_embeddings_batch.return_value = np.array([0.8])
 
         manager = IdentificationManager(
             config=config,

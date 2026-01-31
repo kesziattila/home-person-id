@@ -417,12 +417,14 @@ class IdentityLinker:
 
         if gallery:
             with profiler.measure("FaceRecognizer.compare"):
-                for person_id, name, gallery_embedding in gallery:
-                    similarity = face_recognizer.compare_embeddings(embedding, gallery_embedding)
-                    if similarity > best_score:
-                        best_match_id = person_id
-                        best_match_name = name
-                        best_score = similarity
+                # Vectorized comparison for better performance
+                gallery_embeddings = np.array([emb for _, _, emb in gallery])
+                similarities = face_recognizer.compare_embeddings_batch(
+                    embedding, gallery_embeddings
+                )
+                best_idx = int(np.argmax(similarities))
+                best_score = float(similarities[best_idx])
+                best_match_id, best_match_name, _ = gallery[best_idx]
 
         # Check if match is above threshold
         if best_score < self.face_config.similarity_threshold:

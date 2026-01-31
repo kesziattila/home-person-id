@@ -410,12 +410,14 @@ class IdentificationManager:
 
         gallery = self.face_gallery
         if gallery:
-            for pid, name, emb in gallery:
-                score = self.face_recognizer.compare_embeddings(face.embedding, emb)
-                if score > best_score:
-                    best_score = score
-                    best_name = name
-                    best_person_id = pid
+            # Vectorized comparison for better performance
+            gallery_embeddings = np.array([emb for _, _, emb in gallery])
+            similarities = self.face_recognizer.compare_embeddings_batch(
+                face.embedding, gallery_embeddings
+            )
+            best_idx = int(np.argmax(similarities))
+            best_score = float(similarities[best_idx])
+            best_person_id, best_name, _ = gallery[best_idx]
 
         # Store face info even if below threshold
         if best_name:

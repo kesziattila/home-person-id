@@ -161,9 +161,17 @@ class PersonDetector:
 
         try:
             from ultralytics import YOLO
+            import torch
+
+            # Enable CUDA optimizations if available
+            if torch.cuda.is_available():
+                # Enable cuDNN autotuner for faster convolutions
+                torch.backends.cudnn.benchmark = True
+                # Reduce memory fragmentation
+                torch.cuda.empty_cache()
 
             logger.info(f"Loading YOLO model: {self._model_path}")
-            self._model = YOLO(self._model_path)
+            self._model = YOLO(self._model_path, task="detect")
 
             if self.device:
                 self._model.to(self.device)
@@ -207,20 +215,22 @@ class PersonDetector:
         detections = []
         for result in results:
             boxes = result.boxes
-            if boxes is None:
+            if boxes is None or len(boxes) == 0:
                 continue
 
-            for i in range(len(boxes)):
-                bbox = boxes.xyxy[i].cpu().numpy()
-                confidence = float(boxes.conf[i].cpu().numpy())
-                class_id = int(boxes.cls[i].cpu().numpy())
+            # Batch transfer from GPU to CPU (single transfer instead of per-detection)
+            all_bboxes = boxes.xyxy.cpu().numpy()
+            all_confs = boxes.conf.cpu().numpy()
+            all_classes = boxes.cls.cpu().numpy().astype(int)
 
-                if class_id == PERSON_CLASS_ID:
+            for i in range(len(boxes)):
+                if all_classes[i] == PERSON_CLASS_ID:
+                    bbox = all_bboxes[i]
                     detections.append(
                         Detection(
                             bbox=(bbox[0], bbox[1], bbox[2], bbox[3]),
-                            confidence=confidence,
-                            class_id=class_id,
+                            confidence=float(all_confs[i]),
+                            class_id=int(all_classes[i]),
                         )
                     )
 

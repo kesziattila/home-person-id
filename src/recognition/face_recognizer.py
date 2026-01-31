@@ -192,13 +192,34 @@ class FaceRecognizer:
             Cosine similarity score (0-1, higher is more similar)
         """
         # Normalize embeddings
-        e1 = embedding1 / np.linalg.norm(embedding1)
-        e2 = embedding2 / np.linalg.norm(embedding2)
+        e1 = embedding1 / (np.linalg.norm(embedding1) + 1e-8)
+        e2 = embedding2 / (np.linalg.norm(embedding2) + 1e-8)
 
         # Cosine similarity
         similarity = np.dot(e1, e2)
 
         return float(similarity)
+
+    def compare_embeddings_batch(
+        self, query_embedding: np.ndarray, gallery_embeddings: np.ndarray
+    ) -> np.ndarray:
+        """Compare query embedding against multiple gallery embeddings (vectorized).
+
+        Args:
+            query_embedding: Query embedding (512-dim)
+            gallery_embeddings: Gallery embeddings (N, 512)
+
+        Returns:
+            Array of cosine similarity scores
+        """
+        # Normalize query once
+        query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-8)
+        # Normalize gallery
+        gallery_norms = gallery_embeddings / (
+            np.linalg.norm(gallery_embeddings, axis=1, keepdims=True) + 1e-8
+        )
+        # Vectorized dot product
+        return gallery_norms @ query_norm
 
     def find_best_match(
         self,

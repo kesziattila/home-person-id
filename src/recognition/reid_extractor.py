@@ -161,6 +161,11 @@ class ReIDExtractor:
             self._device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             logger.info(f"Re-ID using device: {self._device}")
 
+            # Enable CUDA optimizations if available
+            if torch.cuda.is_available():
+                # Enable cuDNN autotuner for faster convolutions
+                torch.backends.cudnn.benchmark = True
+
             model_path = self.config.model
 
             # Check for ONNX model (TensorRT/CUDA/CPU via onnxruntime)
@@ -365,8 +370,18 @@ class ReIDExtractor:
         # Filter providers to only those available
         providers = [p for p in providers if (p[0] if isinstance(p, tuple) else p) in available_providers]
 
+        # Session options for memory optimization
+        sess_options = ort.SessionOptions()
+        sess_options.enable_mem_pattern = True  # Enable memory pattern optimization
+        sess_options.enable_cpu_mem_arena = True  # Enable CPU memory arena
+        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+
         try:
-            self._model = ort.InferenceSession(model_path, providers=providers)
+            self._model = ort.InferenceSession(
+                model_path,
+                sess_options=sess_options,
+                providers=providers
+            )
             self._is_ort = True
             logger.info(f"Re-ID model loaded successfully using {self._model.get_providers()[0]}")
         except Exception as e:
