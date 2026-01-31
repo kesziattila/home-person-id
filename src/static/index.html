@@ -135,10 +135,20 @@
                     <h2 class="text-2xl font-bold mb-2">Unidentified Faces</h2>
                     <p class="text-gray-400 text-sm">Faces detected below the recognition threshold for manual review</p>
                 </div>
-                <div class="flex gap-2">
+                <div class="flex flex-wrap gap-2 items-center">
                     <select id="unidentified-camera-filter" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm">
                         <option value="">All Cameras</option>
                     </select>
+                    <select id="unidentified-quality-filter" onchange="loadUnidentifiedFaces()" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm">
+                        <option value="0">All Quality</option>
+                        <option value="0.4">40%+</option>
+                        <option value="0.5">50%+</option>
+                        <option value="0.6">60%+</option>
+                    </select>
+                    <label class="flex items-center gap-2 text-sm cursor-pointer">
+                        <input type="checkbox" id="unidentified-learning-filter" onchange="loadUnidentifiedFaces()" class="rounded">
+                        <span>Learning only</span>
+                    </label>
                     <button onclick="loadUnidentifiedFaces()" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">
                         Refresh
                     </button>
@@ -398,13 +408,27 @@
         }
 
         function formatRelativeTime(isoString) {
-            const date = new Date(isoString);
+            // Server returns UTC times without 'Z' suffix - add it if missing
+            let utcString = isoString;
+            if (!isoString.endsWith('Z') && !isoString.includes('+') && !isoString.includes('-', 10)) {
+                utcString = isoString + 'Z';
+            }
+            const date = new Date(utcString);
             const now = new Date();
             const diffSec = Math.floor((now - date) / 1000);
 
+            if (diffSec < 0) return 'just now';  // Handle slight clock skew
             if (diffSec < 60) return `${diffSec}s ago`;
-            if (diffSec < 3600) return `${Math.floor(diffSec / 60)}m ago`;
-            if (diffSec < 86400) return `${Math.floor(diffSec / 3600)}h ago`;
+            if (diffSec < 3600) {
+                const mins = Math.floor(diffSec / 60);
+                const secs = diffSec % 60;
+                return secs > 0 ? `${mins}m ${secs}s ago` : `${mins}m ago`;
+            }
+            if (diffSec < 86400) {
+                const hours = Math.floor(diffSec / 3600);
+                const mins = Math.floor((diffSec % 3600) / 60);
+                return mins > 0 ? `${hours}h ${mins}m ago` : `${hours}h ago`;
+            }
             return `${Math.floor(diffSec / 86400)}d ago`;
         }
 
@@ -850,23 +874,35 @@
                 // Update camera filter options
                 await updateUnidentifiedCameraFilter();
 
-                // Get filter value
+                // Get filter values
                 const cameraFilter = document.getElementById('unidentified-camera-filter').value;
+                const qualityFilter = parseFloat(document.getElementById('unidentified-quality-filter').value) || 0;
+                const learningOnly = document.getElementById('unidentified-learning-filter').checked;
+
                 let url = '/api/v1/unidentified-faces?dismissed=false&limit=100';
                 if (cameraFilter) {
                     url += `&camera_id=${encodeURIComponent(cameraFilter)}`;
                 }
 
                 const response = await fetch(url);
-                const faces = await response.json();
+                let faces = await response.json();
                 const grid = document.getElementById('unidentified-grid');
                 grid.innerHTML = '';
+
+                // Apply client-side filters
+                if (qualityFilter > 0) {
+                    faces = faces.filter(f => (f.quality_score || 0) >= qualityFilter);
+                }
+                if (learningOnly) {
+                    faces = faces.filter(f => isGoodForLearning(f.quality_score || 0, f.blur_score || 0));
+                }
 
                 // Update summary
                 const summaryResp = await fetch('/api/v1/unidentified-faces/summary');
                 const summary = await summaryResp.json();
+                const filterInfo = qualityFilter > 0 || learningOnly ? ` (showing ${faces.length} filtered)` : '';
                 document.getElementById('unidentified-summary').textContent =
-                    `Total: ${summary.total} faces across ${Object.keys(summary.by_camera).length} camera(s)`;
+                    `Total: ${summary.total} faces across ${Object.keys(summary.by_camera).length} camera(s)${filterInfo}`;
 
                 if (faces.length === 0) {
                     grid.innerHTML = `
@@ -1221,9 +1257,17 @@
         // Initial load
         loadCameras();
 
-        // Auto-refresh
+        // Check if any modal is open
+        function isAnyModalOpen() {
+            return document.querySelector('.modal.active') !== null;
+        }
+
+        // Auto-refresh (skip if modal is open)
         setInterval(loadCameras, 5000);
         setInterval(() => {
+            // Don't refresh if a modal is open - it would close the modal
+            if (isAnyModalOpen()) return;
+
             const activeTab = document.querySelector('.tab-content.active').id;
             if (activeTab === 'tab-persons') loadPersons();
             else if (activeTab === 'tab-unidentified') loadUnidentifiedFaces();
