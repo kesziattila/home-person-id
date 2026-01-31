@@ -487,13 +487,25 @@ class IdentificationManager:
     # ==================== Utility ====================
 
     def get_person_name(self, person_id: int) -> Optional[str]:
-        """Get person name by ID."""
+        """Get person name by ID (cached to avoid repeated DB queries)."""
+        # Check cache first
+        if not hasattr(self, '_person_name_cache'):
+            self._person_name_cache: dict[int, str] = {}
+
+        if person_id in self._person_name_cache:
+            return self._person_name_cache[person_id]
+
+        # Query database
         if self.repository:
             person = self.repository.get_person(person_id)
-            return person.name if person else None
+            if person:
+                self._person_name_cache[person_id] = person.name
+                return person.name
+            return None
 
         # Search in gallery
         for pid, name, _ in self._face_gallery:
             if pid == person_id:
+                self._person_name_cache[person_id] = name
                 return name
         return None
