@@ -39,3 +39,4 @@ torchvision>=0.15.0
 # Development
 pytest>=7.0.0
 httpx>=0.28.0                  # Required for FastAPI TestClient
+pynvml  # GPU memory tracking (includes TensorRT)

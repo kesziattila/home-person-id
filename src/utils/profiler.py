@@ -16,9 +16,11 @@ class MemorySnapshot:
     name: str
     timestamp: float
     python_heap_mb: float
-    cuda_allocated_mb: float
-    cuda_reserved_mb: float
+    cuda_allocated_mb: float  # PyTorch allocations only
+    cuda_reserved_mb: float   # PyTorch reserved
     process_rss_mb: float = 0.0  # Actual process memory (RSS)
+    gpu_used_mb: float = 0.0  # Total GPU memory used (includes TensorRT)
+    gpu_total_mb: float = 0.0  # Total GPU memory available
     tracemalloc_snapshot: Optional[Any] = None  # tracemalloc.Snapshot
 
 
@@ -97,6 +99,21 @@ class MemoryProfiler:
         # Get CUDA memory if available
         cuda_allocated_mb = 0.0
         cuda_reserved_mb = 0.0
+        gpu_used_mb = 0.0
+        gpu_total_mb = 0.0
+
+        # Try pynvml first (tracks ALL GPU memory including TensorRT)
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            gpu_used_mb = mem_info.used / (1024 * 1024)
+            gpu_total_mb = mem_info.total / (1024 * 1024)
+        except (ImportError, Exception):
+            pass
+
+        # Get PyTorch-tracked memory (subset of total GPU memory)
         try:
             import torch
             if torch.cuda.is_available():
@@ -117,6 +134,8 @@ class MemoryProfiler:
             cuda_allocated_mb=cuda_allocated_mb,
             cuda_reserved_mb=cuda_reserved_mb,
             process_rss_mb=process_rss_mb,
+            gpu_used_mb=gpu_used_mb,
+            gpu_total_mb=gpu_total_mb,
             tracemalloc_snapshot=tm_snapshot,
         )
 
@@ -222,8 +241,15 @@ class MemoryProfiler:
 
         lines.append(f"\nProcess RSS:  {current.process_rss_mb:.1f} MB ({rss_diff:+.1f} MB)  <- actual memory usage")
         lines.append(f"Python heap:  {current.python_heap_mb:.1f} MB ({python_diff:+.1f} MB)  <- tracked allocations")
-        lines.append(f"CUDA alloc:   {current.cuda_allocated_mb:.1f} MB ({cuda_diff:+.1f} MB)")
-        lines.append(f"CUDA reserved: {current.cuda_reserved_mb:.1f} MB")
+
+        # GPU memory (includes TensorRT, ONNX Runtime, etc.)
+        if current.gpu_total_mb > 0:
+            gpu_diff = current.gpu_used_mb - baseline.gpu_used_mb
+            gpu_pct = (current.gpu_used_mb / current.gpu_total_mb) * 100
+            lines.append(f"GPU memory:   {current.gpu_used_mb:.1f} / {current.gpu_total_mb:.1f} MB ({gpu_pct:.1f}%, {gpu_diff:+.1f} MB)  <- includes TensorRT")
+
+        # PyTorch-specific (usually small when using TensorRT)
+        lines.append(f"PyTorch CUDA: {current.cuda_allocated_mb:.1f} MB (reserved: {current.cuda_reserved_mb:.1f} MB)")
 
         # Data structure sizes
         ds_sizes = self.get_data_structure_sizes()
@@ -270,28 +296,36 @@ class MemoryProfiler:
     def get_init_memory_report(self) -> str:
         """Get report of memory used by initialization.
 
-        Call this after model loading to see CUDA memory footprint.
+        Call this after model loading to see GPU memory footprint (including TensorRT).
         """
         lines = ["\n=== Initialization Memory Footprint ==="]
 
+        # Get total GPU memory (includes TensorRT) via pynvml
+        try:
+            import pynvml
+            pynvml.nvmlInit()
+            handle = pynvml.nvmlDeviceGetHandleByIndex(0)
+            mem_info = pynvml.nvmlDeviceGetMemoryInfo(handle)
+            gpu_used = mem_info.used / (1024 * 1024)
+            gpu_total = mem_info.total / (1024 * 1024)
+            gpu_pct = (gpu_used / gpu_total) * 100
+            lines.append(f"GPU memory:     {gpu_used:.1f} / {gpu_total:.1f} MB ({gpu_pct:.1f}%)  <- includes TensorRT")
+        except (ImportError, Exception) as e:
+            lines.append(f"GPU memory:     (pynvml not available: {e})")
+
+        # PyTorch-tracked memory (usually small when using TensorRT)
         try:
             import torch
             if torch.cuda.is_available():
                 allocated = torch.cuda.memory_allocated() / (1024 * 1024)
                 reserved = torch.cuda.memory_reserved() / (1024 * 1024)
-                lines.append(f"CUDA allocated: {allocated:.1f} MB")
-                lines.append(f"CUDA reserved:  {reserved:.1f} MB")
-
-                # Get per-device info if multiple GPUs
-                for i in range(torch.cuda.device_count()):
-                    alloc = torch.cuda.memory_allocated(i) / (1024 * 1024)
-                    lines.append(f"  GPU {i}: {alloc:.1f} MB")
+                lines.append(f"PyTorch CUDA:   {allocated:.1f} MB (reserved: {reserved:.1f} MB)")
         except ImportError:
-            lines.append("PyTorch not available")
+            pass
 
         if tracemalloc.is_tracing():
             current, peak = tracemalloc.get_traced_memory()
-            lines.append(f"Python heap: {current / (1024*1024):.1f} MB (peak: {peak / (1024*1024):.1f} MB)")
+            lines.append(f"Python heap:    {current / (1024*1024):.1f} MB (peak: {peak / (1024*1024):.1f} MB)")
 
         lines.append("=" * 40 + "\n")
         return "\n".join(lines)

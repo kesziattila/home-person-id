@@ -44,3 +44,4 @@ click>=8.0.0
 # - torch (PyTorch)
 # - torchvision
 # - onnxruntime-gpu
+pynvml  # GPU memory tracking (includes TensorRT)
