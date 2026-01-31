@@ -121,6 +121,10 @@ class GlobalTrackManager:
         # Store last known bbox for each local track (for zone-based handover)
         self._last_bboxes: dict[tuple[str, int], tuple[float, float, float, float]] = {}
 
+        # Index of recently-lost track IDs for O(1) lookup in Re-ID matching
+        # Avoids O(N) iteration over all tracks
+        self._recently_lost_tracks: set[str] = set()
+
     def _load_next_track_id(self) -> int:
         """Load the next track ID from database to avoid duplicates.
 
@@ -278,6 +282,7 @@ class GlobalTrackManager:
                 global_track = self._tracks[global_track_id]
                 global_track.update_location(camera_id, local_track_id)
                 global_track.state = TrackState.TRACKED
+                self._recently_lost_tracks.discard(global_track_id)
 
                 # Transfer identity via linker
                 self.identity_linker.transfer_identity(global_track_id, global_track_id)
@@ -301,6 +306,7 @@ class GlobalTrackManager:
                     global_track = self._tracks[global_track_id]
                     global_track.update_location(camera_id, local_track_id)
                     global_track.state = TrackState.TRACKED
+                    self._recently_lost_tracks.discard(global_track_id)
 
                     logger.info(f"Re-ID match: {global_track_id} reappeared on {camera_id}")
 
@@ -490,6 +496,7 @@ class GlobalTrackManager:
                         )
                         self._pending_handovers.append(pending)
                         global_track.state = TrackState.LOST
+                        self._recently_lost_tracks.add(global_track_id)
                         logger.debug(
                             f"Track {global_track_id} pending zone handover from {camera_id} "
                             f"in zone '{zone_name}' (potential cameras: {other_cameras})"
@@ -515,6 +522,7 @@ class GlobalTrackManager:
                 )
                 self._pending_handovers.append(pending)
                 global_track.state = TrackState.LOST
+                self._recently_lost_tracks.add(global_track_id)
                 logger.debug(
                     f"Track {global_track_id} pending handover from {camera_id} to {exit_zone}"
                 )
@@ -525,6 +533,7 @@ class GlobalTrackManager:
 
         # Mark as lost (may be re-identified via Re-ID later)
         global_track.state = TrackState.LOST
+        self._recently_lost_tracks.add(global_track_id)
 
         # Remove local-to-global mapping
         del self._local_to_global[(camera_id, local_track_id)]
@@ -702,18 +711,28 @@ class GlobalTrackManager:
         if local_track.last_crop is None:
             return None
 
-        # Get recently lost tracks
+        # Get recently lost tracks using the index (O(N) where N = lost tracks, not all tracks)
         candidate_track_ids = []
-        for global_track_id, global_track in self._tracks.items():
-            if (
-                global_track.state == TrackState.LOST
-            ):
-                # Check if track was lost recently
-                time_since_lost = (
-                    datetime.now() - global_track.last_seen
-                ).total_seconds()
-                if time_since_lost < self.reid_config.global_id_grace_period:
-                    candidate_track_ids.append(global_track_id)
+        expired_track_ids = []
+        current_time = datetime.now()
+
+        for global_track_id in self._recently_lost_tracks:
+            global_track = self._tracks.get(global_track_id)
+            if global_track is None or global_track.state != TrackState.LOST:
+                # Track was removed or re-matched, clean up index
+                expired_track_ids.append(global_track_id)
+                continue
+
+            time_since_lost = (current_time - global_track.last_seen).total_seconds()
+            if time_since_lost < self.reid_config.global_id_grace_period:
+                candidate_track_ids.append(global_track_id)
+            else:
+                # Track is too old for Re-ID matching, remove from index
+                expired_track_ids.append(global_track_id)
+
+        # Clean up expired entries from index
+        for track_id in expired_track_ids:
+            self._recently_lost_tracks.discard(track_id)
 
         if not candidate_track_ids:
             return None
@@ -742,6 +761,7 @@ class GlobalTrackManager:
                 # Mark the global track as truly lost
                 if pending.global_track_id in self._tracks:
                     self._tracks[pending.global_track_id].state = TrackState.REMOVED
+                    self._recently_lost_tracks.discard(pending.global_track_id)
 
         for pending in to_remove:
             self._pending_handovers.remove(pending)
@@ -829,6 +849,7 @@ class GlobalTrackManager:
         for track_id in to_remove:
             self.identity_linker.unregister_track(track_id)
             del self._tracks[track_id]
+            self._recently_lost_tracks.discard(track_id)
 
         if to_remove:
             logger.info(f"Cleaned up {len(to_remove)} old global tracks")

@@ -519,7 +519,9 @@ class PersonIDSystem:
         self.global_tracker.cleanup_old_tracks(
             max_age_hours=self.config.database.archive_tracks_after_hours
         )
-        self.identity_linker.cleanup_old_tracks(max_age_seconds=3600)
+        # Clean up track states more aggressively (10 minutes instead of 1 hour)
+        # to prevent unbounded growth of _track_states dictionary
+        self.identity_linker.cleanup_old_tracks(max_age_seconds=600)
 
         # Cleanup old events
         self.repository.cleanup_old_events(days=self.config.database.event_retention_days)
