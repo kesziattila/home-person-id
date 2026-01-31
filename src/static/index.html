@@ -347,6 +347,15 @@
         let currentImageId = null;
         let currentUnidentifiedFaceId = null;
 
+        // Quality thresholds for face learning
+        const LEARNING_QUALITY_THRESHOLD = 0.6;
+        const LEARNING_SHARPNESS_THRESHOLD = 0.5;
+
+        // Check if face quality is good enough for learning
+        function isGoodForLearning(quality, sharpness) {
+            return sharpness >= LEARNING_SHARPNESS_THRESHOLD && quality >= LEARNING_QUALITY_THRESHOLD;
+        }
+
         // Tab switching
         function switchTab(tabName) {
             document.querySelectorAll('.tab-button').forEach(btn => {
@@ -886,8 +895,7 @@
 
                     // Sharpness indicator (blur_score contains sharpness: higher = sharper)
                     const sharpness = face.blur_score || 0;
-                    const isGoodForLearning = sharpness >= 0.5 && face.quality_score >= 0.6;
-                    const learningBadge = isGoodForLearning
+                    const learningBadge = isGoodForLearning(face.quality_score, sharpness)
                         ? '<div class="absolute top-2 left-2 bg-green-600 text-xs px-2 py-1 rounded flex items-center gap-1"><span>✓</span> Learning</div>'
                         : '<div class="absolute top-2 left-2 bg-gray-600 text-xs px-2 py-1 rounded opacity-75">Review</div>';
 
@@ -988,9 +996,8 @@
                 // Set quality indicator (blur_score contains sharpness: higher = sharper)
                 const sharpness = face.blur_score || 0;
                 const quality = face.quality_score || 0;
-                const isGoodForLearning = sharpness >= 0.5 && quality >= 0.6;
                 const qualityDiv = document.getElementById('assign-face-quality');
-                if (isGoodForLearning) {
+                if (isGoodForLearning(quality, sharpness)) {
                     qualityDiv.innerHTML = `<span class="inline-block bg-green-600 text-xs px-3 py-1 rounded">✓ Good for learning</span>
                         <span class="text-xs text-gray-500 ml-2">Q:${(quality*100).toFixed(0)}% S:${(sharpness*100).toFixed(0)}%</span>`;
                 } else {
