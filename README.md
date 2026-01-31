@@ -291,6 +291,13 @@ To enable performance reporting, use the `--perf-report` flag:
 python -m src.main --perf-report
 ```
 
+To enable memory profiling (tracks Python heap, CUDA memory, and process RSS):
+```bash
+python -m src.main --mem-profile
+```
+
+See [Profiling](#profiling) section for details.
+
 Once running, the Web UI is available at `http://localhost:8000`. You can configure the host and port in `config.yaml`:
 
 ```yaml
@@ -360,6 +367,91 @@ See `config/config.yaml` for all options. Key settings:
 | `unidentified_faces.min_sharpness_score` | Min sharpness for blur rejection (0-1) | 0.4 |
 | `unidentified_faces.min_face_size` | Min face size for capture (pixels) | 60 |
 | `unidentified_faces.retention_days` | Days to keep before cleanup | 30 |
+
+## Profiling
+
+The system includes built-in profilers for debugging performance and memory issues.
+
+### Performance Profiler (`--perf-report`)
+
+Tracks execution time of key processing modules. Enable with:
+```bash
+python -m src.main --perf-report
+```
+
+Output (every 10 seconds):
+```
+--- Performance Report (last 10.0s) ---
+Module                         | Calls    | Avg (ms)   | Max (ms)   | Total (s)
+---------------------------------------------------------------------------
+GlobalTracker.process          | 50       | 45.23      | 67.89      | 2.261
+PersonDetector.detect          | 50       | 32.15      | 41.22      | 1.608
+MotionDetector.detect          | 150      | 8.34       | 12.45      | 1.251
+...
+```
+
+Add profiling to your own code:
+```python
+from src.utils.profiler import profiler
+
+def my_expensive_function():
+    with profiler.measure("MyModule.operation"):
+        # ... expensive computation ...
+        pass
+```
+
+### Memory Profiler (`--mem-profile`)
+
+Tracks Python heap (via tracemalloc), CUDA memory, and process RSS. Enable with:
+```bash
+python -m src.main --mem-profile
+```
+
+**Initialization Report** (printed after startup):
+```
+=== Memory Report (5.2s since baseline) ===
+
+Process RSS:  1234.5 MB (+1200.3 MB)  <- actual memory usage
+Python heap:  45.2 MB (+42.1 MB)  <- tracked allocations
+CUDA alloc:   890.0 MB (+890.0 MB)
+CUDA reserved: 1024.0 MB
+
+Data Structures:
+  GlobalTracker._tracks: 0 entries
+  IdentityLinker._track_states: 0 entries
+  IdentificationManager._identities: 0 entries
+```
+
+**Periodic Leak Checks** (every 60 seconds during cleanup):
+- Compares current memory to post-initialization baseline
+- Shows top memory growth locations (Python tracemalloc)
+- Reports data structure sizes to detect unbounded growth
+
+**Interpreting Results:**
+- **Process RSS**: Actual memory used by the process (what `htop` shows)
+- **Python heap**: Memory tracked by Python's allocator
+- **CUDA alloc**: GPU memory used by models and tensors
+- **CUDA reserved**: GPU memory reserved by PyTorch (may be higher than allocated)
+- **Data Structures**: Internal dict/list sizes that could grow unboundedly
+
+**Using Memory Profiler in Code:**
+```python
+from src.utils.profiler import memory_profiler, DataStructureSize
+
+# Take manual snapshots
+memory_profiler.take_snapshot("before_operation")
+# ... do something ...
+memory_profiler.take_snapshot("after_operation")
+print(memory_profiler.get_leak_report("before_operation", "after_operation"))
+
+# Track custom data structures
+def get_my_sizes():
+    return [
+        DataStructureSize("my_cache", len(my_cache)),
+        DataStructureSize("my_queue", len(my_queue)),
+    ]
+memory_profiler.register_data_structure(get_my_sizes)
+```
 
 ## Re-ID Gallery Behavior
 

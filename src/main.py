@@ -25,7 +25,7 @@ from src.tracking.zone_manager import ZoneManager
 from src.tracking.handover import HandoverManager
 from src.visualization.preview import PreviewBuffer
 from src.api.server import APIServer
-from src.utils.profiler import profiler
+from src.utils.profiler import profiler, memory_profiler, create_data_structure_tracker
 
 from queue import Queue, Empty
 from threading import Thread
@@ -68,15 +68,23 @@ class PersonIDSystem:
     6. Identity Linker handles face recognition + Re-ID
     """
 
-    def __init__(self, config_path: str, debug: bool = False):
+    def __init__(self, config_path: str, debug: bool = False, mem_profile: bool = False):
         """Initialize the system.
 
         Args:
             config_path: Path to configuration file
             debug: Enable debug output to stdout
+            mem_profile: Enable memory profiling
         """
         self.config = load_config(config_path)
         self._debug = debug
+        self._mem_profile = mem_profile
+
+        # Start memory profiling early to capture initialization
+        if self._mem_profile:
+            memory_profiler.enable_tracemalloc()
+            memory_profiler.take_snapshot("before_init")
+
         self._setup_logging()
 
         logger.info("Initializing Person ID System")
@@ -197,6 +205,27 @@ class PersonIDSystem:
         if self.person_detector:
             self.person_detector.warmup()
         self.identity_linker.warmup()
+
+        # Initialize memory profiling if enabled
+        if self._mem_profile:
+            logger.info("Memory profiling enabled")
+
+            # Take post-init snapshot and print initialization memory footprint
+            memory_profiler.take_snapshot("after_init")
+            print(memory_profiler.get_leak_report("before_init", "after_init"))
+
+            # Register data structure tracking
+            tracker_callback = create_data_structure_tracker(
+                global_tracker=self.global_tracker,
+                identity_linker=self.identity_linker,
+                id_manager=self.identity_linker._id_manager,
+            )
+            memory_profiler.register_data_structure(tracker_callback)
+
+            # Set baseline for ongoing leak detection
+            memory_profiler._baseline_name = "after_init"
+            memory_profiler._tracking_enabled = True
+            memory_profiler._last_check_time = time.time()
 
         # Start camera streams
         self.stream_manager.start()
@@ -537,6 +566,12 @@ class PersonIDSystem:
                 days=self.config.unidentified_faces.retention_days
             )
 
+        # Check for memory leaks if profiling enabled
+        if self._mem_profile:
+            report = memory_profiler.check_for_leaks(force=True)
+            if report:
+                print(report)
+
         # Log status
         occupancy = self.global_tracker.get_occupancy()
         logger.info(
@@ -565,6 +600,11 @@ def main():
         action="store_true",
         help="Print performance report every 10 seconds",
     )
+    parser.add_argument(
+        "--mem-profile",
+        action="store_true",
+        help="Enable memory profiling (tracks Python heap and CUDA memory)",
+    )
     args = parser.parse_args()
 
     # Configure profiler
@@ -583,7 +623,7 @@ def main():
     signal.signal(signal.SIGTERM, signal_handler)
 
     # Run system
-    system = PersonIDSystem(args.config, debug=args.debug)
+    system = PersonIDSystem(args.config, debug=args.debug, mem_profile=args.mem_profile)
     system.run()
 
 
