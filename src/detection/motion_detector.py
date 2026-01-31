@@ -20,8 +20,6 @@ class MotionResult:
 
     has_motion: bool
     motion_ratio: float  # Ratio of pixels with motion (0-1)
-    motion_mask: Optional[np.ndarray] = None  # Binary mask of motion areas
-    bounding_boxes: Optional[list[tuple[int, int, int, int]]] = None  # Motion regions
 
 
 class BaseMotionDetector(ABC):
@@ -47,12 +45,11 @@ class BaseMotionDetector(ABC):
         # Morphological kernel for noise reduction
         self._kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
 
-    def detect(self, frame: np.ndarray, return_mask: bool = False) -> MotionResult:
+    def detect(self, frame: np.ndarray) -> MotionResult:
         """Detect motion in a frame.
 
         Args:
             frame: BGR image from camera
-            return_mask: Whether to include the motion mask in result
 
         Returns:
             MotionResult with detection info
@@ -64,45 +61,15 @@ class BaseMotionDetector(ABC):
         target_width, target_height, scale = self._get_processing_size(h, w)
 
         # Implementation-specific processing
-        fg_mask, motion_ratio = self._process_frame(
-            frame, target_width, target_height, scale, return_mask
-        )
+        motion_ratio = self._process_frame(frame, target_width, target_height, scale)
 
         # Check if motion exceeds threshold and handle cooldown
         has_motion = self._handle_cooldown(motion_ratio > self.config.min_area_ratio)
 
-        result = MotionResult(
+        return MotionResult(
             has_motion=has_motion,
             motion_ratio=motion_ratio,
         )
-
-        if return_mask and fg_mask is not None:
-            if scale < 1.0:
-                inv_scale = 1.0 / scale
-                result.motion_mask = cv2.resize(
-                    fg_mask, (w, h), interpolation=cv2.INTER_NEAREST
-                )
-
-                # Find regions in the downscaled mask first
-                boxes = self._find_motion_regions(fg_mask)
-
-                # Rescale bounding boxes to original resolution
-                rescaled_boxes = []
-                for rx, ry, rw, rh in boxes:
-                    rescaled_boxes.append(
-                        (
-                            int(rx * inv_scale),
-                            int(ry * inv_scale),
-                            int(rw * inv_scale),
-                            int(rh * inv_scale),
-                        )
-                    )
-                result.bounding_boxes = rescaled_boxes
-            else:
-                result.motion_mask = fg_mask
-                result.bounding_boxes = self._find_motion_regions(fg_mask)
-
-        return result
 
     @abstractmethod
     def _process_frame(
@@ -111,12 +78,11 @@ class BaseMotionDetector(ABC):
         target_width: int,
         target_height: int,
         scale: float,
-        return_mask: bool,
-    ) -> tuple[Optional[np.ndarray], float]:
+    ) -> float:
         """Implementation-specific motion detection steps.
 
         Returns:
-            (fg_mask, motion_ratio)
+            motion_ratio: Ratio of pixels with motion (0-1)
         """
         pass
 
@@ -127,31 +93,6 @@ class BaseMotionDetector(ABC):
         Call this when camera view changes significantly.
         """
         pass
-
-    def _find_motion_regions(
-        self, mask: np.ndarray
-    ) -> list[tuple[int, int, int, int]]:
-        """Find bounding boxes of motion regions.
-
-        Args:
-            mask: Binary motion mask
-
-        Returns:
-            List of (x, y, w, h) bounding boxes
-        """
-        contours, _ = cv2.findContours(
-            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
-        )
-
-        boxes = []
-        min_area = 500  # Minimum contour area to consider
-
-        for contour in contours:
-            if cv2.contourArea(contour) > min_area:
-                x, y, w, h = cv2.boundingRect(contour)
-                boxes.append((x, y, w, h))
-
-        return boxes
 
     def _handle_cooldown(self, has_motion: bool) -> bool:
         """Handle motion cooldown logic.
@@ -211,8 +152,7 @@ class CPUMotionDetector(BaseMotionDetector):
         target_width: int,
         target_height: int,
         scale: float,
-        return_mask: bool,
-    ) -> tuple[Optional[np.ndarray], float]:
+    ) -> float:
         if scale < 1.0:
             proc_frame = cv2.resize(
                 frame, (target_width, target_height), interpolation=cv2.INTER_LINEAR
@@ -232,7 +172,7 @@ class CPUMotionDetector(BaseMotionDetector):
         motion_pixels = cv2.countNonZero(fg_mask)
         motion_ratio = motion_pixels / total_pixels
 
-        return fg_mask, motion_ratio
+        return motion_ratio
 
     def reset(self) -> None:
         self._bg_subtractor = cv2.createBackgroundSubtractorMOG2(
@@ -276,8 +216,7 @@ class CUDAMotionDetector(BaseMotionDetector):
         target_width: int,
         target_height: int,
         scale: float,
-        return_mask: bool,
-    ) -> tuple[Optional[np.ndarray], float]:
+    ) -> float:
         # GPU Processing path
         self._gpu_frame.upload(frame, stream=self._stream)
 
@@ -308,14 +247,7 @@ class CUDAMotionDetector(BaseMotionDetector):
         total_pixels = target_width * target_height
         motion_ratio = motion_pixels / total_pixels
 
-        # Download mask if needed
-        fg_mask = None
-        if return_mask or motion_ratio > self.config.min_area_ratio:
-            fg_mask = self._gpu_fg_mask.download(stream=self._stream)
-            # Wait for stream if we need the data now
-            self._stream.waitForCompletion()
-
-        return fg_mask, motion_ratio
+        return motion_ratio
 
     def reset(self) -> None:
         self._bg_subtractor = cv2.cuda.createBackgroundSubtractorMOG2(
@@ -377,21 +309,18 @@ class MotionDetectorManager:
 
         return self._detectors[camera_id]
 
-    def detect(
-        self, camera_id: str, frame: np.ndarray, return_mask: bool = False
-    ) -> MotionResult:
+    def detect(self, camera_id: str, frame: np.ndarray) -> MotionResult:
         """Detect motion in a frame from a specific camera.
 
         Args:
             camera_id: Camera identifier
             frame: BGR image from camera
-            return_mask: Whether to include motion mask
 
         Returns:
             MotionResult with detection info
         """
         detector = self.get_detector(camera_id)
-        return detector.detect(frame, return_mask=return_mask)
+        return detector.detect(frame)
 
     def reset(self, camera_id: Optional[str] = None) -> None:
         """Reset motion detector(s).
