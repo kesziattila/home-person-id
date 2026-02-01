@@ -105,6 +105,9 @@ motion:
   # REQUIRES: OpenCV compiled with CUDA support (cv2.cuda) and a compatible GPU.
   # System OpenCV on Jetson JetPack typically supports this.
   use_cuda: false
+  # Resize frame on CPU before GPU upload (only applies when use_cuda: true)
+  # Saves ~25MB GPU memory per 4K camera, trades slight CPU overhead for lower GPU memory
+  resize_on_cpu: false
 
 # =============================================================================
 # PERSON DETECTION (YOLO)

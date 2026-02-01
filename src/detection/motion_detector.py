@@ -200,8 +200,10 @@ class CUDAMotionDetector(BaseMotionDetector):
         # GPU mats for processing
         self._gpu_frame = cv2.cuda_GpuMat()
         self._gpu_fg_mask = cv2.cuda_GpuMat()
-        self._gpu_resized = cv2.cuda_GpuMat()
-        
+        # Only allocate resize buffer if doing GPU resize
+        self._gpu_resized = cv2.cuda_GpuMat() if not config.resize_on_cpu else None
+        self._resize_on_cpu = config.resize_on_cpu
+
         # CUDA version of morphological filters
         self._morph_filter = cv2.cuda.createMorphologyFilter(
             cv2.MORPH_OPEN, cv2.CV_8UC1, self._kernel
@@ -210,6 +212,9 @@ class CUDAMotionDetector(BaseMotionDetector):
             cv2.MORPH_CLOSE, cv2.CV_8UC1, self._kernel
         )
 
+        if self._resize_on_cpu:
+            logger.info("CUDA motion detector using CPU pre-resize (lower GPU memory)")
+
     def _process_frame(
         self,
         frame: np.ndarray,
@@ -217,17 +222,25 @@ class CUDAMotionDetector(BaseMotionDetector):
         target_height: int,
         scale: float,
     ) -> float:
-        # GPU Processing path
-        self._gpu_frame.upload(frame, stream=self._stream)
-
-        # Downscale frame for faster processing
-        if scale < 1.0:
-            self._gpu_resized = cv2.cuda.resize(
-                self._gpu_frame, (target_width, target_height), stream=self._stream
+        # Resize on CPU before upload to save GPU memory (~25MB per 4K camera)
+        if self._resize_on_cpu and scale < 1.0:
+            frame = cv2.resize(
+                frame, (target_width, target_height), interpolation=cv2.INTER_LINEAR
             )
-            proc_gpu_frame = self._gpu_resized
-        else:
+            self._gpu_frame.upload(frame, stream=self._stream)
             proc_gpu_frame = self._gpu_frame
+        else:
+            # GPU Processing path (original behavior)
+            self._gpu_frame.upload(frame, stream=self._stream)
+
+            # Downscale frame for faster processing on GPU
+            if scale < 1.0:
+                self._gpu_resized = cv2.cuda.resize(
+                    self._gpu_frame, (target_width, target_height), stream=self._stream
+                )
+                proc_gpu_frame = self._gpu_resized
+            else:
+                proc_gpu_frame = self._gpu_frame
 
         # Apply background subtraction
         self._gpu_fg_mask = self._bg_subtractor.apply(

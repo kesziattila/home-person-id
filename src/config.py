@@ -84,6 +84,9 @@ class MotionConfig:
     processing_height: int = 360
     # Use CUDA-accelerated motion detection (requires OpenCV with CUDA support)
     use_cuda: bool = False
+    # Resize frame on CPU before GPU upload (saves ~25MB GPU memory per camera)
+    # Trade-off: slightly higher CPU usage, lower GPU memory
+    resize_on_cpu: bool = False
 
 
 @dataclass

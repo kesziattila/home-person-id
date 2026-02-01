@@ -52,6 +52,8 @@ motion:
   # REQUIRES: OpenCV compiled with CUDA support (cv2.cuda) and a compatible GPU.
   # System OpenCV on Jetson JetPack typically supports this.
   use_cuda: true
+  # Resize on CPU before GPU upload - saves ~25MB GPU memory per 4K camera
+  resize_on_cpu: true
 
 # Person detection - YOLO
 # For TensorRT acceleration, export model first:
