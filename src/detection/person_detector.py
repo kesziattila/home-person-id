@@ -294,12 +294,12 @@ class TensorRTDetector:
         # Lazy initialization
         self._engine = None
         self._context = None
-        self._stream = None
-        self._bindings = None
         self._input_buffer = None
         self._output_buffer = None
         self._d_input = None
         self._d_output = None
+        self._cuda = None
+        self._cuda_context = None
 
     def _load_engine(self):
         """Load TensorRT engine."""
@@ -309,7 +309,6 @@ class TensorRTDetector:
         try:
             import tensorrt as trt
             import pycuda.driver as cuda
-            import pycuda.autoinit  # noqa: F401 - Required for CUDA context
         except ImportError as e:
             raise ImportError(
                 f"TensorRT native backend requires tensorrt and pycuda. "
@@ -318,8 +317,11 @@ class TensorRTDetector:
 
         logger.info(f"Loading TensorRT engine: {self.model_path}")
 
-        # Store cuda module reference for later use
+        # Initialize CUDA and create context
+        cuda.init()
         self._cuda = cuda
+        device = cuda.Device(0)
+        self._cuda_context = device.make_context()
 
         # Load engine
         trt_logger = trt.Logger(trt.Logger.WARNING)
@@ -330,12 +332,16 @@ class TensorRTDetector:
         self._engine = runtime.deserialize_cuda_engine(engine_data)
 
         if self._engine is None:
+            self._cuda_context.pop()
             raise RuntimeError(f"Failed to load TensorRT engine: {self.model_path}")
 
         self._context = self._engine.create_execution_context()
 
         # Get input/output shapes and allocate buffers
         self._setup_buffers(cuda)
+
+        # Pop context - will push when needed
+        self._cuda_context.pop()
 
         logger.info(
             f"TensorRT engine loaded: input={self._input_shape}, output={self._output_shape}"
@@ -529,8 +535,6 @@ class TensorRTDetector:
         Returns:
             DetectionResult containing all person detections
         """
-        import pycuda.driver as cuda
-
         self._load_engine()
 
         # Temporarily override confidence threshold if provided
@@ -538,8 +542,11 @@ class TensorRTDetector:
         if confidence_threshold is not None:
             self.confidence_threshold = confidence_threshold
 
+        # Push CUDA context for this thread
+        self._cuda_context.push()
+
         try:
-            # Preprocess
+            # Preprocess (CPU operation, no CUDA needed)
             input_tensor = self._preprocess(frame)
 
             # Copy input to device (synchronous)
@@ -558,7 +565,7 @@ class TensorRTDetector:
             # Copy output to host (synchronous)
             self._cuda.memcpy_dtoh(self._output_buffer, self._d_output)
 
-            # Postprocess
+            # Postprocess (CPU operation)
             detections = self._postprocess(
                 self._output_buffer.copy(), frame.shape[:2]
             )
@@ -570,6 +577,8 @@ class TensorRTDetector:
 
         finally:
             self.confidence_threshold = orig_conf
+            # Pop CUDA context
+            self._cuda_context.pop()
 
     def warmup(self, frame_shape: tuple[int, int, int] = (1080, 1920, 3)) -> None:
         """Warm up the engine with a dummy inference."""
