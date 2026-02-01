@@ -318,6 +318,9 @@ class TensorRTDetector:
 
         logger.info(f"Loading TensorRT engine: {self.model_path}")
 
+        # Store cuda module reference for later use
+        self._cuda = cuda
+
         # Load engine
         trt_logger = trt.Logger(trt.Logger.WARNING)
         with open(self.model_path, "rb") as f:
@@ -330,9 +333,8 @@ class TensorRTDetector:
             raise RuntimeError(f"Failed to load TensorRT engine: {self.model_path}")
 
         self._context = self._engine.create_execution_context()
-        self._stream = cuda.Stream()
 
-        # Get input/output shapes
+        # Get input/output shapes and allocate buffers
         self._setup_buffers(cuda)
 
         logger.info(
@@ -540,16 +542,21 @@ class TensorRTDetector:
             # Preprocess
             input_tensor = self._preprocess(frame)
 
-            # Copy input to device
+            # Copy input to device (synchronous)
             np.copyto(self._input_buffer, input_tensor)
-            cuda.memcpy_htod_async(self._d_input, self._input_buffer, self._stream)
+            self._cuda.memcpy_htod(self._d_input, self._input_buffer)
 
-            # Run inference (v3 API for TensorRT 10+)
-            self._context.execute_async_v3(stream_handle=self._stream.handle)
+            # Run inference - tensor addresses were set in _setup_buffers
+            # Use default stream (0) for synchronous execution
+            if not self._context.execute_async_v3(stream_handle=0):
+                logger.error("TensorRT inference failed")
+                return DetectionResult(detections=[], frame_shape=frame.shape)
 
-            # Copy output to host
-            cuda.memcpy_dtoh_async(self._output_buffer, self._d_output, self._stream)
-            self._stream.synchronize()
+            # Synchronize to ensure inference is complete
+            self._cuda.Context.synchronize()
+
+            # Copy output to host (synchronous)
+            self._cuda.memcpy_dtoh(self._output_buffer, self._d_output)
 
             # Postprocess
             detections = self._postprocess(
