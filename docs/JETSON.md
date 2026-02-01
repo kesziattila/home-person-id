@@ -259,6 +259,59 @@ face_recognition:
 | Re-ID | osnet_x1_0 (~350MB) | osnet_x0_25 (~150MB) |
 | **Total** | ~1.5GB | ~600MB |
 
+### Memory Tuning Options
+
+#### Face Recognition (`det_size`)
+
+The `det_size` parameter controls InsightFace detection input resolution:
+
+| det_size | GPU Memory | Use Case |
+|----------|-----------|----------|
+| 640 | ~900MB | Full-frame detection, small faces |
+| 480 | ~600MB | Balanced |
+| 320 | ~400MB | Person crops (recommended for Jetson) |
+
+```yaml
+face_recognition:
+  model: "buffalo_sc"    # Smaller model (~150MB vs buffalo_l ~750MB)
+  det_size: 320          # Reduce GPU memory
+  use_tensorrt: true     # Enable TensorRT acceleration
+  trt_max_workspace_size: 536870912  # 512MB workspace for engine optimization
+```
+
+**Note:** Only detection and recognition modules are loaded. Age/gender, landmarks, and 3D face models are skipped to save memory.
+
+**TensorRT Workspace:** The `trt_max_workspace_size` is a limit for temporary memory during engine building, not pre-allocated. Keep it high (512MB+) for optimal engine optimization. After the engine is cached, this setting has minimal impact.
+
+#### CUDA Motion Detection
+
+With 4 cameras at 4K→360p, CUDA motion detection uses ~160-200MB GPU memory.
+
+```yaml
+motion:
+  use_cuda: true
+  resize_on_cpu: true    # Saves ~25MB per 4K camera (optional)
+  processing_height: 360
+```
+
+#### YOLO Detection
+
+```yaml
+detection:
+  model: "yolov8n.engine"  # TensorRT engine for best performance
+  device: null             # Auto-detect (use "cpu" to force CPU for testing)
+```
+
+#### Typical Memory Budget (8GB Jetson)
+
+| Component | GPU Memory |
+|-----------|-----------|
+| CUDA Motion (4 cameras) | ~160-200MB |
+| YOLOv8n TensorRT | ~100-150MB |
+| Face Recognition (buffalo_sc, det_size=320) | ~400-500MB |
+| Re-ID (OSNet) | ~150-200MB |
+| **Total** | ~800MB-1GB |
+
 ---
 
 ## Performance Expectations

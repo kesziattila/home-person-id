@@ -353,6 +353,9 @@ See `config/config.yaml` for all options. Key settings:
 |---------|-------------|---------|
 | `motion.enabled` | Enable motion gate | true |
 | `motion.cooldown_sec` | Continue processing after motion stops | 5 |
+| `motion.use_cuda` | Use CUDA-accelerated motion detection | false |
+| `motion.resize_on_cpu` | Resize frames on CPU before GPU upload (saves GPU memory) | false |
+| `detection.device` | YOLO device: "cuda", "cpu", or null (auto) | null |
 | `tracking.track_thresh` | Detection confidence threshold | 0.5 |
 | `tracking.match_thresh` | IoU threshold for tracking (lower for fast movement) | 0.3 |
 | `reid.similarity_threshold` | Re-ID match threshold | 0.65 |
@@ -361,6 +364,9 @@ See `config/config.yaml` for all options. Key settings:
 | `face_recognition.similarity_threshold` | Face match threshold | 0.6 |
 | `face_recognition.min_face_size` | Minimum face size (pixels) | 40 |
 | `face_recognition.detection_interval` | Frames between face checks | 10 |
+| `face_recognition.det_size` | Detection input size (affects GPU memory) | 640 |
+| `face_recognition.use_tensorrt` | Enable TensorRT acceleration | false |
+| `face_recognition.trt_max_workspace_size` | TensorRT workspace limit (bytes, 0=default) | 0 |
 | `unidentified_faces.enabled` | Capture unidentified faces | true |
 | `unidentified_faces.max_per_camera` | Max faces to keep per camera | 20 |
 | `unidentified_faces.min_quality_score` | Min quality score (0-1) | 0.3 |
