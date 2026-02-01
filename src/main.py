@@ -105,6 +105,8 @@ class PersonIDSystem:
                 model_path=self.config.detection.model,
                 confidence_threshold=self.config.detection.confidence_threshold,
                 nms_iou_threshold=self.config.detection.nms_iou_threshold,
+                device=self.config.detection.device,
+                num_threads=self.config.detection.num_threads,
             )
 
         # Initialize tracking

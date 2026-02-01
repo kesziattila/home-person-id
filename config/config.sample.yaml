@@ -142,6 +142,10 @@ detection:
   # Set to limit CPU usage on multi-core systems
   num_threads: 0
 
+  # Device for YOLO inference: "cuda", "cpu", or null (auto-detect)
+  # Use "cpu" to force CPU inference for testing/benchmarking
+  device: null
+
   # Use hardware-accelerated JPEG encoding (pynvjpeg) on Jetson
   # Requires pynvjpeg installed (see docs/JETSON.md)
   use_nvjpeg: false

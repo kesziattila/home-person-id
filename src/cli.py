@@ -454,6 +454,7 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
             model_path=config.detection.model,
             confidence_threshold=config.detection.confidence_threshold,
             nms_iou_threshold=config.detection.nms_iou_threshold,
+            device=config.detection.device,
             num_threads=config.detection.num_threads,
         )
         detector.warmup()
@@ -948,6 +949,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
             model_path=config.detection.model,
             confidence_threshold=config.detection.confidence_threshold,
             nms_iou_threshold=config.detection.nms_iou_threshold,
+            device=config.detection.device,
             num_threads=config.detection.num_threads,
         )
         person_detector.warmup()

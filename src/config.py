@@ -106,6 +106,9 @@ class DetectionConfig:
     frame_skip: int = 1
     # Number of CPU threads for inference (0 = auto)
     num_threads: int = 0
+    # Device for YOLO inference: "cuda", "cpu", or None (auto-detect)
+    # Use "cpu" to force CPU inference for testing/comparison
+    device: Optional[str] = None
     # Use hardware-accelerated JPEG encoding (pynvjpeg) on Jetson
     use_nvjpeg: bool = False
 
