@@ -385,7 +385,8 @@ class TensorRTDetector:
             frame: BGR image (H, W, C)
 
         Returns:
-            Preprocessed tensor (1, C, H, W) float32 normalized to [0, 1]
+            Preprocessed tensor (1, C, H, W) normalized to [0, 1]
+            Dtype matches the model's input requirement (float32 or float16)
         """
         # Resize with letterboxing to maintain aspect ratio
         h, w = frame.shape[:2]
@@ -411,7 +412,10 @@ class TensorRTDetector:
         # BGR to RGB, HWC to CHW, normalize to [0, 1]
         rgb = cv2.cvtColor(letterboxed, cv2.COLOR_BGR2RGB)
         chw = rgb.transpose(2, 0, 1)  # HWC -> CHW
-        normalized = chw.astype(np.float32) / 255.0
+
+        # Match dtype to model's input requirement (FP16 or FP32)
+        target_dtype = self._input_buffer.dtype if self._input_buffer is not None else np.float32
+        normalized = chw.astype(target_dtype) / 255.0
 
         # Add batch dimension
         return normalized[np.newaxis, ...]
@@ -421,6 +425,10 @@ class TensorRTDetector:
     ) -> list[Detection]:
         """Postprocess YOLO output to detections.
 
+        Supports two formats:
+        1. Raw YOLO: (1, 84, 8400) - needs NMS
+        2. With NMS: (1, N, 6) - already filtered [x1,y1,x2,y2,conf,class]
+
         Args:
             output: Raw model output
             orig_shape: Original image shape (H, W)
@@ -428,18 +436,77 @@ class TensorRTDetector:
         Returns:
             List of Detection objects
         """
-        # YOLOv8 output shape: (1, 84, 8400) where 84 = 4 (xywh) + 80 (classes)
-        # Transpose to (8400, 84) for easier processing
+        # Remove batch dimension if present
         if len(output.shape) == 3:
-            output = output[0]  # Remove batch dimension
+            output = output[0]
+
+        # Detect output format based on shape
+        # NMS format: (N, 6) where 6 = [x1, y1, x2, y2, confidence, class_id]
+        # Raw format: (84, 8400) or (8400, 84)
+        if output.shape[-1] == 6:
+            return self._postprocess_nms_format(output, orig_shape)
+        else:
+            return self._postprocess_raw_format(output, orig_shape)
+
+    def _postprocess_nms_format(
+        self, output: np.ndarray, orig_shape: tuple[int, int]
+    ) -> list[Detection]:
+        """Postprocess YOLO output with baked-in NMS.
+
+        Format: (N, 6) = [x1, y1, x2, y2, confidence, class_id]
+        """
+        detections = []
+        orig_h, orig_w = orig_shape
+
+        for det in output:
+            x1, y1, x2, y2, conf, class_id = det
+
+            # Skip empty detections (padding)
+            if conf < self.confidence_threshold:
+                continue
+
+            # Filter for person class only
+            if int(class_id) != PERSON_CLASS_ID:
+                continue
+
+            # Scale coordinates from letterboxed input to original image
+            x1 = (x1 - self._pad_w) / self._scale
+            y1 = (y1 - self._pad_h) / self._scale
+            x2 = (x2 - self._pad_w) / self._scale
+            y2 = (y2 - self._pad_h) / self._scale
+
+            # Clip to image bounds
+            x1 = np.clip(x1, 0, orig_w)
+            y1 = np.clip(y1, 0, orig_h)
+            x2 = np.clip(x2, 0, orig_w)
+            y2 = np.clip(y2, 0, orig_h)
+
+            detections.append(
+                Detection(
+                    bbox=(float(x1), float(y1), float(x2), float(y2)),
+                    confidence=float(conf),
+                    class_id=PERSON_CLASS_ID,
+                )
+            )
+
+        return detections
+
+    def _postprocess_raw_format(
+        self, output: np.ndarray, orig_shape: tuple[int, int]
+    ) -> list[Detection]:
+        """Postprocess raw YOLO output (no NMS).
+
+        Format: (84, 8400) or (8400, 84) = [xywh + class_scores]
+        """
+        # Transpose if needed: (84, 8400) -> (8400, 84)
         if output.shape[0] < output.shape[1]:
-            output = output.T  # (84, 8400) -> (8400, 84)
+            output = output.T
 
         # Split into boxes and class scores
-        boxes = output[:, :4]  # xywh format (center x, center y, width, height)
+        boxes = output[:, :4]  # xywh format
         scores = output[:, 4:]  # class scores
 
-        # Get person class scores (class 0)
+        # Get person class scores
         person_scores = scores[:, PERSON_CLASS_ID]
 
         # Filter by confidence
@@ -452,19 +519,19 @@ class TensorRTDetector:
 
         # Convert xywh to xyxy
         xyxy = np.zeros_like(boxes)
-        xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2  # x1
-        xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2  # y1
-        xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2  # x2
-        xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2  # y2
+        xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
+        xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
+        xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2
+        xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2
 
-        # Remove letterbox padding and scale to original image
+        # Scale to original image
+        orig_h, orig_w = orig_shape
         xyxy[:, 0] = (xyxy[:, 0] - self._pad_w) / self._scale
         xyxy[:, 1] = (xyxy[:, 1] - self._pad_h) / self._scale
         xyxy[:, 2] = (xyxy[:, 2] - self._pad_w) / self._scale
         xyxy[:, 3] = (xyxy[:, 3] - self._pad_h) / self._scale
 
-        # Clip to image bounds
-        orig_h, orig_w = orig_shape
+        # Clip to bounds
         xyxy[:, 0] = np.clip(xyxy[:, 0], 0, orig_w)
         xyxy[:, 1] = np.clip(xyxy[:, 1], 0, orig_h)
         xyxy[:, 2] = np.clip(xyxy[:, 2], 0, orig_w)
@@ -473,7 +540,7 @@ class TensorRTDetector:
         # Apply NMS
         indices = self._nms(xyxy, person_scores, self.nms_iou_threshold)
 
-        # Create Detection objects
+        # Create detections
         detections = []
         for i in indices:
             detections.append(
