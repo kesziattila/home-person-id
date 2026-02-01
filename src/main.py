@@ -14,7 +14,7 @@ import numpy as np
 from src.config import load_config
 from src.database.repository import Repository
 from src.detection.motion_detector import MotionDetectorManager
-from src.detection.person_detector import PersonDetector, DetectionResult
+from src.detection.person_detector import PersonDetector, DetectionResult, create_person_detector
 from src.recognition.identity_linker import IdentityLinker
 from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 from src.stream.manager import StreamManager
@@ -101,12 +101,13 @@ class PersonIDSystem:
         self.motion_manager = MotionDetectorManager(self.config.motion)
         self.person_detector = None
         if self.config.detection.enabled:
-            self.person_detector = PersonDetector(
+            self.person_detector = create_person_detector(
                 model_path=self.config.detection.model,
                 confidence_threshold=self.config.detection.confidence_threshold,
                 nms_iou_threshold=self.config.detection.nms_iou_threshold,
                 device=self.config.detection.device,
                 num_threads=self.config.detection.num_threads,
+                use_tensorrt_native=self.config.detection.use_tensorrt_native,
             )
 
         # Initialize tracking

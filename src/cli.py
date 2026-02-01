@@ -436,7 +436,7 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
         click.echo(f"Camera '{camera}' not found", err=True)
         return
 
-    from src.detection.person_detector import PersonDetector
+    from src.detection.person_detector import create_person_detector
     from src.stream.rtsp_client import RTSPClient
     from src.tracking.zone_manager import ZoneManager
     from src.preview import (
@@ -450,12 +450,13 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
     detector = None
     if config.detection.enabled:
         click.echo("Warming up person detector...")
-        detector = PersonDetector(
+        detector = create_person_detector(
             model_path=config.detection.model,
             confidence_threshold=config.detection.confidence_threshold,
             nms_iou_threshold=config.detection.nms_iou_threshold,
             device=config.detection.device,
             num_threads=config.detection.num_threads,
+            use_tensorrt_native=config.detection.use_tensorrt_native,
         )
         detector.warmup()
 
@@ -880,7 +881,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
     import numpy as np
     from threading import Thread, Lock
 
-    from src.detection.person_detector import PersonDetector
+    from src.detection.person_detector import create_person_detector
     from src.stream.rtsp_client import RTSPClient
     from src.tracking.global_tracker import GlobalTrackManager
     from src.tracking.zone_manager import ZoneManager
@@ -945,12 +946,13 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
     person_detector = None
     if config.detection.enabled:
         click.echo("Warming up person detector...")
-        person_detector = PersonDetector(
+        person_detector = create_person_detector(
             model_path=config.detection.model,
             confidence_threshold=config.detection.confidence_threshold,
             nms_iou_threshold=config.detection.nms_iou_threshold,
             device=config.detection.device,
             num_threads=config.detection.num_threads,
+            use_tensorrt_native=config.detection.use_tensorrt_native,
         )
         person_detector.warmup()
 

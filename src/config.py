@@ -109,6 +109,9 @@ class DetectionConfig:
     # Device for YOLO inference: "cuda", "cpu", or None (auto-detect)
     # Use "cpu" to force CPU inference for testing/comparison
     device: Optional[str] = None
+    # Use TensorRT native backend (bypasses PyTorch/Ultralytics, lower memory)
+    # Only works with .engine or .trt model files
+    use_tensorrt_native: bool = False
     # Use hardware-accelerated JPEG encoding (pynvjpeg) on Jetson
     use_nvjpeg: bool = False
 

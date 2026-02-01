@@ -300,7 +300,14 @@ motion:
 detection:
   model: "yolov8n.engine"  # TensorRT engine for best performance
   device: null             # Auto-detect (use "cpu" to force CPU for testing)
+  use_tensorrt_native: false  # Set to true to bypass PyTorch (lower memory)
 ```
+
+**TensorRT Native Backend:** When `use_tensorrt_native: true` with `.engine` files:
+- Loads TensorRT engine directly without PyTorch/Ultralytics
+- Reduces CPU memory (no PyTorch runtime overhead)
+- Requires `tensorrt` and `pycuda` packages
+- Same inference accuracy, just different loading path
 
 #### Typical Memory Budget (8GB Jetson)
 

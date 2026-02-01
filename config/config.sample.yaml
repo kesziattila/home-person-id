@@ -146,6 +146,10 @@ detection:
   # Use "cpu" to force CPU inference for testing/benchmarking
   device: null
 
+  # Use TensorRT native backend (bypasses PyTorch/Ultralytics, lower memory)
+  # Only works with .engine or .trt model files. Requires tensorrt and pycuda.
+  use_tensorrt_native: false
+
   # Use hardware-accelerated JPEG encoding (pynvjpeg) on Jetson
   # Requires pynvjpeg installed (see docs/JETSON.md)
   use_nvjpeg: false

@@ -67,6 +67,7 @@ detection:
   frame_skip: 1                 # No need to skip on GPU
   num_threads: 0                # Auto (GPU handles it)
   device: null                  # null=auto, "cpu" to force CPU, "cuda" for GPU
+  use_tensorrt_native: false    # Use TensorRT directly (bypasses PyTorch, lower memory)
   use_nvjpeg: true              # Use hardware-accelerated JPEG encoding
 
 # Single-camera tracking
