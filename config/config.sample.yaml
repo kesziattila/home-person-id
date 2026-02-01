@@ -256,6 +256,10 @@ face_recognition:
   # Confirms Re-ID matches with higher-confidence face recognition
   reid_confirmation_interval: 30
 
+  # Detection input size (det_size x det_size). Smaller = less GPU memory.
+  # 640: ~900MB GPU, best range | 480: ~600MB | 320: ~400MB, good for person crops
+  det_size: 640
+
   # Use TensorRT acceleration on Jetson
   # Requires onnxruntime-gpu with TensorRT provider
   use_tensorrt: false

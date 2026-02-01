@@ -101,6 +101,7 @@ face_recognition:
   detection_interval: 10
   reid_confirmation_interval: 30
   multi_face_min_size: 20
+  det_size: 320                 # Smaller input saves GPU memory (320: ~400MB vs 640: ~900MB)
   use_tensorrt: true            # Enable TensorRT for Face recognition
   trt_max_workspace_size: 536870912  # 512MB for Face TensorRT
 

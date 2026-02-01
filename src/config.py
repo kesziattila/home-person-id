@@ -168,6 +168,9 @@ class FaceRecognitionConfig:
     # Interval for re-checking Re-ID identified tracks with face recognition
     # (to confirm identity with primary method). Set higher than detection_interval.
     reid_confirmation_interval: int = 30
+    # Detection input size (det_size x det_size). Smaller = less GPU memory but shorter detection range.
+    # 640: ~900MB GPU, full frame detection | 480: ~600MB | 320: ~400MB, good for person crops
+    det_size: int = 640
     # Use TensorRT acceleration on Jetson
     use_tensorrt: bool = False
     # Max memory for TensorRT engine (bytes), 0 = default (usually 1GB)

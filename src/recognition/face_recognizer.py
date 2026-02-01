@@ -99,8 +99,12 @@ class FaceRecognizer:
             self._app = FaceAnalysis(
                 name=self.config.model,
                 providers=providers,
+                # Only load detection + recognition, skip genderage/landmarks/3d
+                allowed_modules=["detection", "recognition"],
             )
-            self._app.prepare(ctx_id=0, det_size=(640, 640))
+            det_size = self.config.det_size
+            self._app.prepare(ctx_id=0, det_size=(det_size, det_size))
+            logger.info(f"InsightFace det_size: {det_size}x{det_size}")
 
             self._initialized = True
             logger.info("InsightFace model loaded successfully")
