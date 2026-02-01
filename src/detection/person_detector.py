@@ -343,28 +343,32 @@ class TensorRTDetector:
         """Allocate input/output buffers."""
         import tensorrt as trt
 
-        self._bindings = []
+        self._tensor_names = {}  # name -> (host_buffer, device_buffer)
 
         for i in range(self._engine.num_io_tensors):
             name = self._engine.get_tensor_name(i)
             shape = self._engine.get_tensor_shape(name)
             dtype = trt.nptype(self._engine.get_tensor_dtype(name))
-            size = int(np.prod(shape))
 
             # Allocate host and device memory
             host_mem = np.empty(shape, dtype=dtype)
             device_mem = cuda.mem_alloc(host_mem.nbytes)
 
-            self._bindings.append(int(device_mem))
+            self._tensor_names[name] = (host_mem, device_mem)
+
+            # Set tensor address for v3 API
+            self._context.set_tensor_address(name, int(device_mem))
 
             if self._engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
                 self._input_buffer = host_mem
                 self._d_input = device_mem
                 self._input_shape = shape
+                self._input_name = name
             else:
                 self._output_buffer = host_mem
                 self._d_output = device_mem
                 self._output_shape = shape
+                self._output_name = name
 
     def _preprocess(self, frame: np.ndarray) -> np.ndarray:
         """Preprocess frame for YOLO inference.
@@ -540,10 +544,8 @@ class TensorRTDetector:
             np.copyto(self._input_buffer, input_tensor)
             cuda.memcpy_htod_async(self._d_input, self._input_buffer, self._stream)
 
-            # Run inference
-            self._context.execute_async_v2(
-                bindings=self._bindings, stream_handle=self._stream.handle
-            )
+            # Run inference (v3 API for TensorRT 10+)
+            self._context.execute_async_v3(stream_handle=self._stream.handle)
 
             # Copy output to host
             cuda.memcpy_dtoh_async(self._output_buffer, self._d_output, self._stream)
