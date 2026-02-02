@@ -696,6 +696,7 @@ class ONNXRuntimeDetector:
         self._session = None
         self._input_name = None
         self._output_names = None
+        self._input_dtype = np.float32
 
         # Preprocessing state
         self._pad_h = 0
@@ -755,14 +756,22 @@ class ONNXRuntimeDetector:
             providers=providers,
         )
 
-        # Get input/output names
-        self._input_name = self._session.get_inputs()[0].name
+        # Get input/output info
+        input_info = self._session.get_inputs()[0]
+        self._input_name = input_info.name
         self._output_names = [o.name for o in self._session.get_outputs()]
+
+        # Determine input dtype (float16 or float32)
+        onnx_type = input_info.type
+        if "float16" in onnx_type or "half" in onnx_type.lower():
+            self._input_dtype = np.float16
+        else:
+            self._input_dtype = np.float32
 
         # Log which provider is being used
         active_provider = self._session.get_providers()[0]
         logger.info(f"ONNX Runtime using provider: {active_provider}")
-        logger.info(f"ONNX model loaded: input={self._input_name}, outputs={self._output_names}")
+        logger.info(f"ONNX model loaded: input={self._input_name} ({self._input_dtype.__name__}), outputs={self._output_names}")
 
     def _preprocess(self, frame: np.ndarray) -> np.ndarray:
         """Preprocess frame for YOLO inference.
@@ -797,7 +806,9 @@ class ONNXRuntimeDetector:
         # BGR to RGB, HWC to CHW, normalize to [0, 1]
         rgb = cv2.cvtColor(letterboxed, cv2.COLOR_BGR2RGB)
         chw = rgb.transpose(2, 0, 1)  # HWC -> CHW
-        normalized = chw.astype(np.float32) / 255.0
+
+        # Match dtype to model's input requirement (FP16 or FP32)
+        normalized = chw.astype(self._input_dtype) / 255.0
 
         # Add batch dimension
         return normalized[np.newaxis, ...]
@@ -818,6 +829,10 @@ class ONNXRuntimeDetector:
         Returns:
             List of Detection objects
         """
+        # Convert to float32 for postprocessing (if FP16)
+        if output.dtype == np.float16:
+            output = output.astype(np.float32)
+
         # Remove batch dimension if present
         if len(output.shape) == 3:
             output = output[0]
