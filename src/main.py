@@ -108,6 +108,7 @@ class PersonIDSystem:
                 device=self.config.detection.device,
                 num_threads=self.config.detection.num_threads,
                 use_tensorrt_native=self.config.detection.use_tensorrt_native,
+                use_onnxruntime=self.config.detection.use_onnxruntime,
             )
 
         # Initialize tracking
