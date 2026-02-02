@@ -662,8 +662,7 @@ class ONNXRuntimeDetector:
     """Person detector using ONNX Runtime with GPU acceleration.
 
     This implementation uses onnxruntime-gpu with CUDA and optional TensorRT
-    execution providers. It provides a good balance between memory usage and
-    inference speed.
+    execution providers. Uses IO binding to minimize host-device transfers.
 
     Supports .onnx model files. On first run with TensorRT provider, the model
     is converted to TensorRT engine and cached for subsequent runs.
@@ -697,6 +696,8 @@ class ONNXRuntimeDetector:
         self._input_name = None
         self._output_names = None
         self._input_dtype = np.float32
+        self._io_binding = None
+        self._ort = None  # onnxruntime module reference
 
         # Preprocessing state
         self._pad_h = 0
@@ -710,6 +711,7 @@ class ONNXRuntimeDetector:
 
         try:
             import onnxruntime as ort
+            self._ort = ort
         except ImportError:
             raise ImportError(
                 "ONNX Runtime backend requires onnxruntime-gpu. "
@@ -767,6 +769,9 @@ class ONNXRuntimeDetector:
             self._input_dtype = np.float16
         else:
             self._input_dtype = np.float32
+
+        # Create IO binding for GPU-side operations
+        self._io_binding = self._session.io_binding()
 
         # Log which provider is being used
         active_provider = self._session.get_providers()[0]
@@ -981,11 +986,27 @@ class ONNXRuntimeDetector:
             # Preprocess
             input_tensor = self._preprocess(frame)
 
-            # Run inference
-            outputs = self._session.run(
-                self._output_names,
-                {self._input_name: input_tensor},
+            # Create OrtValue on GPU from numpy array
+            input_ortvalue = self._ort.OrtValue.ortvalue_from_numpy(
+                input_tensor, device_type="cuda", device_id=0
             )
+
+            # Bind input
+            self._io_binding.bind_ortvalue_input(self._input_name, input_ortvalue)
+
+            # Bind outputs to GPU
+            for output_name in self._output_names:
+                self._io_binding.bind_output(output_name, device_type="cuda", device_id=0)
+
+            # Run inference with IO binding
+            self._session.run_with_iobinding(self._io_binding)
+
+            # Get outputs (transfers from GPU to CPU only here)
+            outputs = self._io_binding.copy_outputs_to_cpu()
+
+            # Clear bindings for next inference
+            self._io_binding.clear_binding_inputs()
+            self._io_binding.clear_binding_outputs()
 
             # Postprocess (use first output)
             detections = self._postprocess(outputs[0], frame.shape[:2])
