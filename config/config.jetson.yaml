@@ -68,7 +68,6 @@ detection:
   num_threads: 0                # Auto (GPU handles it)
   device: null                  # null=auto, "cpu" to force CPU, "cuda" for GPU
   use_tensorrt_native: false    # Use TensorRT directly (bypasses PyTorch, lowest memory)
-  use_onnxruntime: false        # Use ONNX Runtime (good balance of speed and memory)
   use_nvjpeg: true              # Use hardware-accelerated JPEG encoding
 
 # Single-camera tracking
@@ -95,17 +94,24 @@ reid:
 
 # Face recognition - InsightFace
 # Models: buffalo_sc (smallest), buffalo_s (small), buffalo_l (large/default)
+# For minimum memory, use TensorRT native backend (see use_tensorrt_native below)
 face_recognition:
   enabled: true
-  model: "buffalo_sc"           # Smallest model, saves ~600MB vs buffalo_l
+  model: "buffalo_l"            # Model name (only used with InsightFace backend)
   similarity_threshold: 0.6
   min_face_size: 60             # Slightly larger for smaller model
   detection_interval: 10
   reid_confirmation_interval: 30
   multi_face_min_size: 20
-  det_size: 320                 # Smaller input saves GPU memory (320: ~400MB vs 640: ~900MB)
-  use_tensorrt: true            # Enable TensorRT for Face recognition
-  trt_max_workspace_size: 536870912  # 512MB for Face TensorRT
+  det_size: 640                 # Detection input size
+  # Legacy ONNX Runtime TensorRT acceleration (higher memory usage)
+  use_tensorrt: false
+  trt_max_workspace_size: 0
+  # Native TensorRT backend (lowest memory, recommended)
+  # Convert models first: python tools/convert_insightface_to_trt.py
+  use_tensorrt_native: true
+  trt_det_model: "models/det_10g.engine"
+  trt_rec_model: "models/w600k_r50.engine"
 
 # MQTT (Home Assistant)
 mqtt:

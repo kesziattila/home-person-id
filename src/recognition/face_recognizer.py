@@ -1,7 +1,8 @@
-"""Face detection and recognition using InsightFace."""
+"""Face detection and recognition using InsightFace or TensorRT native backend."""
 
 import logging
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -9,6 +10,19 @@ import numpy as np
 from src.config import FaceRecognitionConfig
 
 logger = logging.getLogger(__name__)
+
+
+# Lazy import for TensorRT backend
+_tensorrt_face_module = None
+
+
+def _get_tensorrt_face_module():
+    """Lazy import TensorRT face module."""
+    global _tensorrt_face_module
+    if _tensorrt_face_module is None:
+        from src.recognition import tensorrt_face
+        _tensorrt_face_module = tensorrt_face
+    return _tensorrt_face_module
 
 
 @dataclass
@@ -50,7 +64,7 @@ class FaceDetectionResult:
 
 
 class FaceRecognizer:
-    """Face detector and recognizer using InsightFace."""
+    """Face detector and recognizer using InsightFace or TensorRT native backend."""
 
     def __init__(self, config: FaceRecognitionConfig):
         """Initialize face recognizer.
@@ -59,22 +73,63 @@ class FaceRecognizer:
             config: Face recognition configuration
         """
         self.config = config
-        self._app = None
+        self._app = None  # InsightFace backend
+        self._trt_recognizer = None  # TensorRT native backend
         self._initialized = False
+        self._use_tensorrt_native = config.use_tensorrt_native
 
     def _initialize(self):
-        """Initialize InsightFace model (lazy loading)."""
+        """Initialize face recognition model (lazy loading)."""
         if self._initialized:
             return
 
+        if self._use_tensorrt_native:
+            self._initialize_tensorrt_native()
+        else:
+            self._initialize_insightface()
+
+    def _initialize_tensorrt_native(self):
+        """Initialize TensorRT native backend."""
+        det_model = self.config.trt_det_model
+        rec_model = self.config.trt_rec_model
+
+        if not Path(det_model).exists():
+            raise FileNotFoundError(
+                f"TensorRT detection model not found: {det_model}\n"
+                f"Convert with: python tools/convert_insightface_to_trt.py"
+            )
+        if not Path(rec_model).exists():
+            raise FileNotFoundError(
+                f"TensorRT recognition model not found: {rec_model}\n"
+                f"Convert with: python tools/convert_insightface_to_trt.py"
+            )
+
+        logger.info(f"Loading TensorRT native face recognition")
+        logger.info(f"  Detection model: {det_model}")
+        logger.info(f"  Recognition model: {rec_model}")
+
+        trt_module = _get_tensorrt_face_module()
+        self._trt_recognizer = trt_module.TensorRTFaceRecognizer(
+            det_model_path=det_model,
+            rec_model_path=rec_model,
+            confidence_threshold=0.5,
+            nms_threshold=0.4,
+            det_size=self.config.det_size,
+            min_face_size=self.config.min_face_size,
+        )
+
+        self._initialized = True
+        logger.info("TensorRT native face recognition loaded")
+
+    def _initialize_insightface(self):
+        """Initialize InsightFace backend."""
         try:
-            import insightface
             from insightface.app import FaceAnalysis
 
             logger.info(f"Loading InsightFace model: {self.config.model}")
 
             providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            
+
             # Add TensorRT if enabled and available
             if self.config.use_tensorrt:
                 try:
@@ -89,7 +144,7 @@ class FaceRecognizer:
                         }
                         if self.config.trt_max_workspace_size > 0:
                             trt_options["trt_max_workspace_size"] = self.config.trt_max_workspace_size
-                        
+
                         providers.insert(0, ("TensorrtExecutionProvider", trt_options))
                     else:
                         logger.warning("TensorrtExecutionProvider not available for face recognition")
@@ -132,10 +187,43 @@ class FaceRecognizer:
         """
         self._initialize()
 
-        faces_data = self._app.get(frame)
-
         # Use provided min_face_size or fall back to config
         effective_min_size = min_face_size if min_face_size is not None else self.config.min_face_size
+
+        if self._use_tensorrt_native:
+            return self._detect_faces_tensorrt(frame, effective_min_size)
+        else:
+            return self._detect_faces_insightface(frame, effective_min_size)
+
+    def _detect_faces_tensorrt(
+        self, frame: np.ndarray, min_face_size: int
+    ) -> FaceDetectionResult:
+        """Detect faces using TensorRT native backend."""
+        trt_faces = self._trt_recognizer.detect_and_embed(frame)
+
+        faces = []
+        for trt_face in trt_faces:
+            # Check minimum face size
+            width = trt_face.bbox[2] - trt_face.bbox[0]
+            height = trt_face.bbox[3] - trt_face.bbox[1]
+            if min(width, height) < min_face_size:
+                continue
+
+            face = Face(
+                bbox=trt_face.bbox,
+                confidence=trt_face.confidence,
+                landmarks=trt_face.landmarks,
+                embedding=trt_face.embedding,
+            )
+            faces.append(face)
+
+        return FaceDetectionResult(faces=faces, frame_shape=frame.shape)
+
+    def _detect_faces_insightface(
+        self, frame: np.ndarray, min_face_size: int
+    ) -> FaceDetectionResult:
+        """Detect faces using InsightFace backend."""
+        faces_data = self._app.get(frame)
 
         faces = []
         for face_data in faces_data:
@@ -144,7 +232,7 @@ class FaceRecognizer:
             # Check minimum face size
             width = bbox[2] - bbox[0]
             height = bbox[3] - bbox[1]
-            if min(width, height) < effective_min_size:
+            if min(width, height) < min_face_size:
                 continue
 
             face = Face(
@@ -171,9 +259,35 @@ class FaceRecognizer:
         """
         self._initialize()
 
+        # If face already has embedding, return it
         if face is not None and face.embedding is not None:
             return face.embedding
 
+        if self._use_tensorrt_native:
+            return self._extract_embedding_tensorrt(frame, face)
+        else:
+            return self._extract_embedding_insightface(frame, face)
+
+    def _extract_embedding_tensorrt(
+        self, frame: np.ndarray, face: Optional[Face] = None
+    ) -> Optional[np.ndarray]:
+        """Extract embedding using TensorRT native backend."""
+        if face is not None and face.landmarks is not None:
+            # Align and extract using provided landmarks
+            trt_module = _get_tensorrt_face_module()
+            aligned = trt_module.align_face(frame, face.landmarks)
+            return self._trt_recognizer._embedder.extract(aligned)
+
+        # Detect and get embedding
+        trt_faces = self._trt_recognizer.detect_and_embed(frame)
+        if not trt_faces:
+            return None
+        return trt_faces[0].embedding
+
+    def _extract_embedding_insightface(
+        self, frame: np.ndarray, face: Optional[Face] = None
+    ) -> Optional[np.ndarray]:
+        """Extract embedding using InsightFace backend."""
         # Detect faces and get embedding
         faces_data = self._app.get(frame)
 
@@ -259,21 +373,26 @@ class FaceRecognizer:
 
     def warmup(self) -> None:
         """Warm up the model with dummy inferences.
-        
+
         Performs both detection and extraction to ensure all components are ready.
         """
         if not self.config.enabled:
             return
 
         self._initialize()
-        # Dummy frame (1080p)
-        dummy_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
-        
-        # Warmup detection
-        self.detect_faces(dummy_frame)
-        
-        # Warmup extraction (needs a crop that looks like a face-ish)
-        dummy_face_crop = np.zeros((200, 200, 3), dtype=np.uint8)
-        self.extract_embedding(dummy_face_crop)
-        
-        logger.info("Face recognizer warmed up (detection and extraction)")
+
+        if self._use_tensorrt_native:
+            self._trt_recognizer.warmup()
+            logger.info("TensorRT native face recognizer warmed up")
+        else:
+            # Dummy frame (1080p)
+            dummy_frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+            # Warmup detection
+            self.detect_faces(dummy_frame)
+
+            # Warmup extraction (needs a crop that looks like a face-ish)
+            dummy_face_crop = np.zeros((200, 200, 3), dtype=np.uint8)
+            self.extract_embedding(dummy_face_crop)
+
+            logger.info("InsightFace recognizer warmed up (detection and extraction)")

@@ -1,20 +1,17 @@
 """Person detection using YOLO.
 
-Supports three backends:
+Supports two backends:
 1. Ultralytics YOLO (default) - uses PyTorch, supports .pt and .engine files
-2. ONNX Runtime GPU - uses onnxruntime with CUDA/TensorRT, supports .onnx files
-3. TensorRT native - direct TensorRT inference, lowest memory, supports .engine/.trt files
+2. TensorRT native - direct TensorRT inference, lowest memory, supports .engine/.trt files
+   Requires YOLO model exported with nms=True (baked-in NMS)
 
 Backend selection:
-- use_onnxruntime=True with .onnx file -> ONNX Runtime (recommended for balance)
 - use_tensorrt_native=True with .engine/.trt file -> TensorRT native (lowest memory)
 - Otherwise -> Ultralytics/PyTorch (most compatible)
 """
 
 import logging
-from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -69,7 +66,7 @@ class Detection:
         x1, y1, x2, y2 = self.bbox
         return [x1, y1, x2 - x1, y2 - y1]
 
-
+# used by global tracker too...
 def compute_iou(
     box1: tuple[float, float, float, float],
     box2: tuple[float, float, float, float],
@@ -271,6 +268,9 @@ class TensorRTDetector:
     This implementation loads TensorRT engines directly without going through
     Ultralytics/PyTorch, reducing memory usage and startup time.
 
+    Requires YOLO model exported with nms=True for baked-in NMS.
+    Output format: (N, 6) = [x1, y1, x2, y2, confidence, class_id]
+
     Only supports .engine or .trt model files.
     """
 
@@ -278,7 +278,6 @@ class TensorRTDetector:
         self,
         model_path: str,
         confidence_threshold: float = 0.5,
-        nms_iou_threshold: float = 0.4,
         input_size: int = 640,
     ):
         """Initialize TensorRT detector.
@@ -286,602 +285,150 @@ class TensorRTDetector:
         Args:
             model_path: Path to TensorRT engine file (.engine or .trt)
             confidence_threshold: Minimum confidence for detections
-            nms_iou_threshold: IoU threshold for NMS
             input_size: Model input size (assumes square input)
         """
-        self.model_path = model_path
+        from src.inference.tensorrt_base import TensorRTDetectorBase
+
+        # Use composition with an inner implementation class
+        self._impl = _TensorRTPersonDetectorImpl(
+            model_path=model_path,
+            confidence_threshold=confidence_threshold,
+            input_size=input_size,
+        )
         self.confidence_threshold = confidence_threshold
-        self.nms_iou_threshold = nms_iou_threshold
-        self.input_size = input_size
-
-        # Lazy initialization
-        self._engine = None
-        self._context = None
-        self._input_buffer = None
-        self._output_buffer = None
-        self._d_input = None
-        self._d_output = None
-        self._cuda = None
-        self._cuda_context = None
-
-    def _load_engine(self):
-        """Load TensorRT engine."""
-        if self._engine is not None:
-            return
-
-        try:
-            import tensorrt as trt
-            import pycuda.driver as cuda
-        except ImportError as e:
-            raise ImportError(
-                f"TensorRT native backend requires tensorrt and pycuda. "
-                f"Install with: pip install tensorrt pycuda. Error: {e}"
-            )
-
-        logger.info(f"Loading TensorRT engine: {self.model_path}")
-
-        # Initialize CUDA and create context
-        cuda.init()
-        self._cuda = cuda
-        device = cuda.Device(0)
-        self._cuda_context = device.make_context()
-
-        # Load engine
-        trt_logger = trt.Logger(trt.Logger.WARNING)
-        with open(self.model_path, "rb") as f:
-            engine_data = f.read()
-
-        runtime = trt.Runtime(trt_logger)
-        self._engine = runtime.deserialize_cuda_engine(engine_data)
-
-        if self._engine is None:
-            self._cuda_context.pop()
-            raise RuntimeError(f"Failed to load TensorRT engine: {self.model_path}")
-
-        self._context = self._engine.create_execution_context()
-
-        # Get input/output shapes and allocate buffers
-        self._setup_buffers(cuda)
-
-        # Pop context - will push when needed
-        self._cuda_context.pop()
-
-        logger.info(
-            f"TensorRT engine loaded: input={self._input_shape}, output={self._output_shape}"
-        )
-
-    def _setup_buffers(self, cuda):
-        """Allocate input/output buffers."""
-        import tensorrt as trt
-
-        self._tensor_names = {}  # name -> (host_buffer, device_buffer)
-
-        for i in range(self._engine.num_io_tensors):
-            name = self._engine.get_tensor_name(i)
-            shape = self._engine.get_tensor_shape(name)
-            dtype = trt.nptype(self._engine.get_tensor_dtype(name))
-
-            # Allocate host and device memory
-            host_mem = np.empty(shape, dtype=dtype)
-            device_mem = cuda.mem_alloc(host_mem.nbytes)
-
-            self._tensor_names[name] = (host_mem, device_mem)
-
-            # Set tensor address for v3 API
-            self._context.set_tensor_address(name, int(device_mem))
-
-            if self._engine.get_tensor_mode(name) == trt.TensorIOMode.INPUT:
-                self._input_buffer = host_mem
-                self._d_input = device_mem
-                self._input_shape = shape
-                self._input_name = name
-            else:
-                self._output_buffer = host_mem
-                self._d_output = device_mem
-                self._output_shape = shape
-                self._output_name = name
-
-    def _preprocess(self, frame: np.ndarray) -> np.ndarray:
-        """Preprocess frame for YOLO inference.
-
-        Args:
-            frame: BGR image (H, W, C)
-
-        Returns:
-            Preprocessed tensor (1, C, H, W) normalized to [0, 1]
-            Dtype matches the model's input requirement (float32 or float16)
-        """
-        # Resize with letterboxing to maintain aspect ratio
-        h, w = frame.shape[:2]
-        scale = min(self.input_size / h, self.input_size / w)
-        new_h, new_w = int(h * scale), int(w * scale)
-
-        # Resize
-        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-        # Create letterboxed image (pad with gray)
-        letterboxed = np.full(
-            (self.input_size, self.input_size, 3), 114, dtype=np.uint8
-        )
-        pad_h = (self.input_size - new_h) // 2
-        pad_w = (self.input_size - new_w) // 2
-        letterboxed[pad_h : pad_h + new_h, pad_w : pad_w + new_w] = resized
-
-        # Store padding info for postprocessing
-        self._pad_h = pad_h
-        self._pad_w = pad_w
-        self._scale = scale
-
-        # BGR to RGB, HWC to CHW, normalize to [0, 1]
-        rgb = cv2.cvtColor(letterboxed, cv2.COLOR_BGR2RGB)
-        chw = rgb.transpose(2, 0, 1)  # HWC -> CHW
-
-        # Match dtype to model's input requirement (FP16 or FP32)
-        target_dtype = self._input_buffer.dtype if self._input_buffer is not None else np.float32
-        normalized = chw.astype(target_dtype) / 255.0
-
-        # Add batch dimension
-        return normalized[np.newaxis, ...]
-
-    def _postprocess(
-        self, output: np.ndarray, orig_shape: tuple[int, int]
-    ) -> list[Detection]:
-        """Postprocess YOLO output to detections.
-
-        Supports two formats:
-        1. Raw YOLO: (1, 84, 8400) - needs NMS
-        2. With NMS: (1, N, 6) - already filtered [x1,y1,x2,y2,conf,class]
-
-        Args:
-            output: Raw model output
-            orig_shape: Original image shape (H, W)
-
-        Returns:
-            List of Detection objects
-        """
-        # Remove batch dimension if present
-        if len(output.shape) == 3:
-            output = output[0]
-
-        # Detect output format based on shape
-        # NMS format: (N, 6) where 6 = [x1, y1, x2, y2, confidence, class_id]
-        # Raw format: (84, 8400) or (8400, 84)
-        if output.shape[-1] == 6:
-            return self._postprocess_nms_format(output, orig_shape)
-        else:
-            return self._postprocess_raw_format(output, orig_shape)
-
-    def _postprocess_nms_format(
-        self, output: np.ndarray, orig_shape: tuple[int, int]
-    ) -> list[Detection]:
-        """Postprocess YOLO output with baked-in NMS.
-
-        Format: (N, 6) = [x1, y1, x2, y2, confidence, class_id]
-        """
-        detections = []
-        orig_h, orig_w = orig_shape
-
-        for det in output:
-            x1, y1, x2, y2, conf, class_id = det
-
-            # Skip empty detections (padding)
-            if conf < self.confidence_threshold:
-                continue
-
-            # Filter for person class only
-            if int(class_id) != PERSON_CLASS_ID:
-                continue
-
-            # Scale coordinates from letterboxed input to original image
-            x1 = (x1 - self._pad_w) / self._scale
-            y1 = (y1 - self._pad_h) / self._scale
-            x2 = (x2 - self._pad_w) / self._scale
-            y2 = (y2 - self._pad_h) / self._scale
-
-            # Clip to image bounds
-            x1 = np.clip(x1, 0, orig_w)
-            y1 = np.clip(y1, 0, orig_h)
-            x2 = np.clip(x2, 0, orig_w)
-            y2 = np.clip(y2, 0, orig_h)
-
-            detections.append(
-                Detection(
-                    bbox=(float(x1), float(y1), float(x2), float(y2)),
-                    confidence=float(conf),
-                    class_id=PERSON_CLASS_ID,
-                )
-            )
-
-        return detections
-
-    def _postprocess_raw_format(
-        self, output: np.ndarray, orig_shape: tuple[int, int]
-    ) -> list[Detection]:
-        """Postprocess raw YOLO output (no NMS).
-
-        Format: (84, 8400) or (8400, 84) = [xywh + class_scores]
-        """
-        # Transpose if needed: (84, 8400) -> (8400, 84)
-        if output.shape[0] < output.shape[1]:
-            output = output.T
-
-        # Split into boxes and class scores
-        boxes = output[:, :4]  # xywh format
-        scores = output[:, 4:]  # class scores
-
-        # Get person class scores
-        person_scores = scores[:, PERSON_CLASS_ID]
-
-        # Filter by confidence
-        mask = person_scores >= self.confidence_threshold
-        boxes = boxes[mask]
-        person_scores = person_scores[mask]
-
-        if len(boxes) == 0:
-            return []
-
-        # Convert xywh to xyxy
-        xyxy = np.zeros_like(boxes)
-        xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
-        xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
-        xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2
-        xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2
-
-        # Scale to original image
-        orig_h, orig_w = orig_shape
-        xyxy[:, 0] = (xyxy[:, 0] - self._pad_w) / self._scale
-        xyxy[:, 1] = (xyxy[:, 1] - self._pad_h) / self._scale
-        xyxy[:, 2] = (xyxy[:, 2] - self._pad_w) / self._scale
-        xyxy[:, 3] = (xyxy[:, 3] - self._pad_h) / self._scale
-
-        # Clip to bounds
-        xyxy[:, 0] = np.clip(xyxy[:, 0], 0, orig_w)
-        xyxy[:, 1] = np.clip(xyxy[:, 1], 0, orig_h)
-        xyxy[:, 2] = np.clip(xyxy[:, 2], 0, orig_w)
-        xyxy[:, 3] = np.clip(xyxy[:, 3], 0, orig_h)
-
-        # Apply NMS
-        indices = self._nms(xyxy, person_scores, self.nms_iou_threshold)
-
-        # Create detections
-        detections = []
-        for i in indices:
-            detections.append(
-                Detection(
-                    bbox=(xyxy[i, 0], xyxy[i, 1], xyxy[i, 2], xyxy[i, 3]),
-                    confidence=float(person_scores[i]),
-                    class_id=PERSON_CLASS_ID,
-                )
-            )
-
-        return detections
-
-    def _nms(
-        self, boxes: np.ndarray, scores: np.ndarray, iou_threshold: float
-    ) -> list[int]:
-        """Non-maximum suppression.
-
-        Args:
-            boxes: Bounding boxes (N, 4) in xyxy format
-            scores: Confidence scores (N,)
-            iou_threshold: IoU threshold for suppression
-
-        Returns:
-            Indices of kept boxes
-        """
-        # Sort by score descending
-        order = scores.argsort()[::-1]
-
-        keep = []
-        while len(order) > 0:
-            i = order[0]
-            keep.append(i)
-
-            if len(order) == 1:
-                break
-
-            # Compute IoU with remaining boxes
-            remaining = order[1:]
-            ious = np.array(
-                [compute_iou(tuple(boxes[i]), tuple(boxes[j])) for j in remaining]
-            )
-
-            # Keep boxes with IoU below threshold
-            order = remaining[ious <= iou_threshold]
-
-        return keep
 
     def detect(
         self,
         frame: np.ndarray,
         confidence_threshold: Optional[float] = None,
     ) -> DetectionResult:
-        """Detect persons in a frame.
-
-        Args:
-            frame: BGR image from camera
-            confidence_threshold: Override default confidence threshold
-
-        Returns:
-            DetectionResult containing all person detections
-        """
-        self._load_engine()
-
-        # Temporarily override confidence threshold if provided
-        orig_conf = self.confidence_threshold
+        """Detect persons in a frame."""
         if confidence_threshold is not None:
-            self.confidence_threshold = confidence_threshold
-
-        # Push CUDA context for this thread
-        self._cuda_context.push()
-
-        try:
-            # Preprocess (CPU operation, no CUDA needed)
-            input_tensor = self._preprocess(frame)
-
-            # Copy input to device (synchronous)
-            np.copyto(self._input_buffer, input_tensor)
-            self._cuda.memcpy_htod(self._d_input, self._input_buffer)
-
-            # Run inference - tensor addresses were set in _setup_buffers
-            # Use default stream (0) for synchronous execution
-            if not self._context.execute_async_v3(stream_handle=0):
-                logger.error("TensorRT inference failed")
-                return DetectionResult(detections=[], frame_shape=frame.shape)
-
-            # Synchronize to ensure inference is complete
-            self._cuda.Context.synchronize()
-
-            # Copy output to host (synchronous)
-            self._cuda.memcpy_dtoh(self._output_buffer, self._d_output)
-
-            # Postprocess (CPU operation)
-            detections = self._postprocess(
-                self._output_buffer.copy(), frame.shape[:2]
-            )
-
-            return DetectionResult(
-                detections=detections,
-                frame_shape=frame.shape,
-            )
-
-        finally:
-            self.confidence_threshold = orig_conf
-            # Pop CUDA context
-            self._cuda_context.pop()
+            self._impl.confidence_threshold = confidence_threshold
+            result = self._impl.detect(frame)
+            self._impl.confidence_threshold = self.confidence_threshold
+            return result
+        return self._impl.detect(frame)
 
     def warmup(self, frame_shape: tuple[int, int, int] = (1080, 1920, 3)) -> None:
         """Warm up the engine with a dummy inference."""
-        self._load_engine()
-        dummy_frame = np.zeros(frame_shape, dtype=np.uint8)
-        self.detect(dummy_frame)
-        logger.info(f"TensorRT detector warmed up with shape {frame_shape}")
+        self._impl.warmup(frame_shape)
 
 
-class ONNXRuntimeDetector:
-    """Person detector using ONNX Runtime with GPU acceleration.
+class _TensorRTPersonDetectorImpl:
+    """Internal implementation using TensorRTDetectorBase.
 
-    This implementation uses onnxruntime-gpu with CUDA and optional TensorRT
-    execution providers. Uses IO binding to minimize host-device transfers.
-
-    Supports .onnx model files. On first run with TensorRT provider, the model
-    is converted to TensorRT engine and cached for subsequent runs.
+    Separated to maintain backward compatibility with TensorRTDetector API.
     """
 
     def __init__(
         self,
         model_path: str,
         confidence_threshold: float = 0.5,
-        nms_iou_threshold: float = 0.4,
         input_size: int = 640,
-        use_tensorrt: bool = True,
     ):
-        """Initialize ONNX Runtime detector.
+        from src.inference.tensorrt_base import TensorRTDetectorBase
 
-        Args:
-            model_path: Path to ONNX model file (.onnx)
-            confidence_threshold: Minimum confidence for detections
-            nms_iou_threshold: IoU threshold for NMS
-            input_size: Model input size (assumes square input)
-            use_tensorrt: Use TensorRT execution provider if available
-        """
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
-        self.nms_iou_threshold = nms_iou_threshold
         self.input_size = input_size
-        self.use_tensorrt = use_tensorrt
 
         # Lazy initialization
-        self._session = None
-        self._input_name = None
-        self._output_names = None
-        self._input_dtype = np.float32
-        self._io_binding = None
-        self._ort = None  # onnxruntime module reference
-
-        # Preprocessing state
+        self._base: Optional[TensorRTDetectorBase] = None
         self._pad_h = 0
         self._pad_w = 0
         self._scale = 1.0
 
-    def _load_model(self):
-        """Load ONNX model with GPU execution providers."""
-        if self._session is not None:
+    def _ensure_loaded(self):
+        """Ensure the base engine is loaded."""
+        if self._base is not None:
             return
 
-        try:
-            import onnxruntime as ort
-            self._ort = ort
-        except ImportError:
-            raise ImportError(
-                "ONNX Runtime backend requires onnxruntime-gpu. "
-                "Install with: pip install onnxruntime-gpu"
-            )
+        from src.inference.tensorrt_base import TensorRTDetectorBase
 
-        logger.info(f"Loading ONNX model: {self.model_path}")
+        class YOLODetector(TensorRTDetectorBase):
+            """YOLO-specific TensorRT detector."""
 
-        # Configure execution providers
-        providers = []
+            def __init__(inner_self, model_path, conf, nms, size):
+                super().__init__(model_path, conf, nms, size)
+                inner_self._output_shape = None
 
-        if self.use_tensorrt:
-            # TensorRT provider with engine caching
-            cache_dir = str(Path(self.model_path).parent / "trt_cache")
-            Path(cache_dir).mkdir(exist_ok=True)
+            def _validate_engine(inner_self):
+                """Validate YOLO NMS-baked output format."""
+                # Get output shape from first output
+                if inner_self._output_names:
+                    name = inner_self._output_names[0]
+                    _, _, shape = inner_self._buffers[name]
+                    inner_self._output_shape = shape
 
-            trt_options = {
-                "device_id": 0,
-                "trt_fp16_enable": True,
-                "trt_engine_cache_enable": True,
-                "trt_engine_cache_path": cache_dir,
-                "trt_max_workspace_size": 1 << 30,  # 1GB
-            }
-            providers.append(("TensorrtExecutionProvider", trt_options))
+                    if len(shape) >= 2 and shape[-1] != 6:
+                        raise RuntimeError(
+                            f"TensorRT engine has raw output format {shape}, "
+                            f"but NMS-baked format (N, 6) is required.\n"
+                            f"Please re-export your YOLO model with nms=True:\n"
+                            f"  yolo export model=your_model.pt format=engine nms=True half=True"
+                        )
 
-        # CUDA provider as fallback
-        cuda_options = {
-            "device_id": 0,
-            "arena_extend_strategy": "kSameAsRequested",
-            "cudnn_conv_algo_search": "DEFAULT",
-        }
-        providers.append(("CUDAExecutionProvider", cuda_options))
+                logger.info(f"YOLO TensorRT engine loaded: output_shape={inner_self._output_shape}")
 
-        # CPU fallback
-        providers.append("CPUExecutionProvider")
-
-        # Create session
-        sess_options = ort.SessionOptions()
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-
-        self._session = ort.InferenceSession(
+        self._base = YOLODetector(
             self.model_path,
-            sess_options=sess_options,
-            providers=providers,
+            self.confidence_threshold,
+            0.4,  # nms_threshold not used for YOLO with baked NMS
+            self.input_size,
         )
+        # Eagerly load engine to make buffers available
+        self._base._load_engine()
 
-        # Get input/output info
-        input_info = self._session.get_inputs()[0]
-        self._input_name = input_info.name
-        self._output_names = [o.name for o in self._session.get_outputs()]
+    def detect(self, frame: np.ndarray) -> DetectionResult:
+        """Detect persons in a frame."""
+        self._ensure_loaded()
 
-        # Determine input dtype (float16 or float32)
-        onnx_type = input_info.type
-        if "float16" in onnx_type or "half" in onnx_type.lower():
-            self._input_dtype = np.float16
-        else:
-            self._input_dtype = np.float32
+        # Preprocess
+        def normalize_yolo(chw: np.ndarray) -> np.ndarray:
+            input_host, _ = self._base._get_input_buffer()
+            return (chw.astype(input_host.dtype) / 255.0)
 
-        # Create IO binding for GPU-side operations
-        self._io_binding = self._session.io_binding()
-
-        # Log which provider is being used
-        active_provider = self._session.get_providers()[0]
-        logger.info(f"ONNX Runtime using provider: {active_provider}")
-        logger.info(f"ONNX model loaded: input={self._input_name} ({self._input_dtype.__name__}), outputs={self._output_names}")
-
-    def _preprocess(self, frame: np.ndarray) -> np.ndarray:
-        """Preprocess frame for YOLO inference.
-
-        Args:
-            frame: BGR image (H, W, C)
-
-        Returns:
-            Preprocessed tensor (1, C, H, W) float32 normalized to [0, 1]
-        """
-        # Resize with letterboxing to maintain aspect ratio
-        h, w = frame.shape[:2]
-        scale = min(self.input_size / h, self.input_size / w)
-        new_h, new_w = int(h * scale), int(w * scale)
-
-        # Resize
-        resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-
-        # Create letterboxed image (pad with gray)
-        letterboxed = np.full(
-            (self.input_size, self.input_size, 3), 114, dtype=np.uint8
+        input_tensor, scale, pad_h, pad_w = self._base._letterbox_preprocess(
+            frame, self.input_size, normalize_yolo
         )
-        pad_h = (self.input_size - new_h) // 2
-        pad_w = (self.input_size - new_w) // 2
-        letterboxed[pad_h : pad_h + new_h, pad_w : pad_w + new_w] = resized
-
-        # Store padding info for postprocessing
+        self._scale = scale
         self._pad_h = pad_h
         self._pad_w = pad_w
-        self._scale = scale
 
-        # BGR to RGB, HWC to CHW, normalize to [0, 1]
-        rgb = cv2.cvtColor(letterboxed, cv2.COLOR_BGR2RGB)
-        chw = rgb.transpose(2, 0, 1)  # HWC -> CHW
+        # Run inference
+        outputs = self._base._run_inference(input_tensor)
 
-        # Match dtype to model's input requirement (FP16 or FP32)
-        normalized = chw.astype(self._input_dtype) / 255.0
+        if not outputs:
+            return DetectionResult(detections=[], frame_shape=frame.shape)
 
-        # Add batch dimension
-        return normalized[np.newaxis, ...]
+        # Postprocess
+        detections = self._postprocess(outputs[0], frame.shape[:2])
 
-    def _postprocess(
-        self, output: np.ndarray, orig_shape: tuple[int, int]
-    ) -> list[Detection]:
-        """Postprocess YOLO output to detections.
+        return DetectionResult(detections=detections, frame_shape=frame.shape)
 
-        Supports two formats:
-        1. Raw YOLO: (1, 84, 8400) - needs NMS
-        2. With NMS: (1, N, 6) - already filtered [x1,y1,x2,y2,conf,class]
-
-        Args:
-            output: Raw model output
-            orig_shape: Original image shape (H, W)
-
-        Returns:
-            List of Detection objects
-        """
-        # Convert to float32 for postprocessing (if FP16)
-        if output.dtype == np.float16:
-            output = output.astype(np.float32)
-
-        # Remove batch dimension if present
+    def _postprocess(self, output: np.ndarray, orig_shape: tuple[int, int]) -> list[Detection]:
+        """Postprocess YOLO output with baked-in NMS."""
         if len(output.shape) == 3:
             output = output[0]
 
-        # Detect output format based on shape
-        # NMS format: (N, 6) where 6 = [x1, y1, x2, y2, confidence, class_id]
-        # Raw format: (84, 8400) or (8400, 84)
-        if output.shape[-1] == 6:
-            return self._postprocess_nms_format(output, orig_shape)
-        else:
-            return self._postprocess_raw_format(output, orig_shape)
-
-    def _postprocess_nms_format(
-        self, output: np.ndarray, orig_shape: tuple[int, int]
-    ) -> list[Detection]:
-        """Postprocess YOLO output with baked-in NMS.
-
-        Format: (N, 6) = [x1, y1, x2, y2, confidence, class_id]
-        """
         detections = []
         orig_h, orig_w = orig_shape
 
         for det in output:
             x1, y1, x2, y2, conf, class_id = det
 
-            # Skip empty detections (padding)
             if conf < self.confidence_threshold:
                 continue
 
-            # Filter for person class only
             if int(class_id) != PERSON_CLASS_ID:
                 continue
 
-            # Scale coordinates from letterboxed input to original image
-            x1 = (x1 - self._pad_w) / self._scale
-            y1 = (y1 - self._pad_h) / self._scale
-            x2 = (x2 - self._pad_w) / self._scale
-            y2 = (y2 - self._pad_h) / self._scale
-
-            # Clip to image bounds
-            x1 = np.clip(x1, 0, orig_w)
-            y1 = np.clip(y1, 0, orig_h)
-            x2 = np.clip(x2, 0, orig_w)
-            y2 = np.clip(y2, 0, orig_h)
+            # Scale coordinates
+            x1 = np.clip((x1 - self._pad_w) / self._scale, 0, orig_w)
+            y1 = np.clip((y1 - self._pad_h) / self._scale, 0, orig_h)
+            x2 = np.clip((x2 - self._pad_w) / self._scale, 0, orig_w)
+            y2 = np.clip((y2 - self._pad_h) / self._scale, 0, orig_h)
 
             detections.append(
                 Detection(
@@ -893,143 +440,12 @@ class ONNXRuntimeDetector:
 
         return detections
 
-    def _postprocess_raw_format(
-        self, output: np.ndarray, orig_shape: tuple[int, int]
-    ) -> list[Detection]:
-        """Postprocess raw YOLO output (no NMS).
-
-        Format: (84, 8400) or (8400, 84) = [xywh + class_scores]
-        """
-        # Transpose if needed: (84, 8400) -> (8400, 84)
-        if output.shape[0] < output.shape[1]:
-            output = output.T
-
-        # Split into boxes and class scores
-        boxes = output[:, :4]  # xywh format
-        scores = output[:, 4:]  # class scores
-
-        # Get person class scores
-        person_scores = scores[:, PERSON_CLASS_ID]
-
-        # Filter by confidence
-        mask = person_scores >= self.confidence_threshold
-        boxes = boxes[mask]
-        person_scores = person_scores[mask]
-
-        if len(boxes) == 0:
-            return []
-
-        # Convert xywh to xyxy
-        xyxy = np.zeros_like(boxes)
-        xyxy[:, 0] = boxes[:, 0] - boxes[:, 2] / 2
-        xyxy[:, 1] = boxes[:, 1] - boxes[:, 3] / 2
-        xyxy[:, 2] = boxes[:, 0] + boxes[:, 2] / 2
-        xyxy[:, 3] = boxes[:, 1] + boxes[:, 3] / 2
-
-        # Scale to original image
-        orig_h, orig_w = orig_shape
-        xyxy[:, 0] = (xyxy[:, 0] - self._pad_w) / self._scale
-        xyxy[:, 1] = (xyxy[:, 1] - self._pad_h) / self._scale
-        xyxy[:, 2] = (xyxy[:, 2] - self._pad_w) / self._scale
-        xyxy[:, 3] = (xyxy[:, 3] - self._pad_h) / self._scale
-
-        # Clip to bounds
-        xyxy[:, 0] = np.clip(xyxy[:, 0], 0, orig_w)
-        xyxy[:, 1] = np.clip(xyxy[:, 1], 0, orig_h)
-        xyxy[:, 2] = np.clip(xyxy[:, 2], 0, orig_w)
-        xyxy[:, 3] = np.clip(xyxy[:, 3], 0, orig_h)
-
-        # Apply NMS using OpenCV (faster than pure Python)
-        indices = cv2.dnn.NMSBoxes(
-            bboxes=xyxy.tolist(),
-            scores=person_scores.tolist(),
-            score_threshold=self.confidence_threshold,
-            nms_threshold=self.nms_iou_threshold,
-        )
-
-        # Create detections
-        detections = []
-        for i in indices:
-            idx = i[0] if isinstance(i, (list, np.ndarray)) else i
-            detections.append(
-                Detection(
-                    bbox=(xyxy[idx, 0], xyxy[idx, 1], xyxy[idx, 2], xyxy[idx, 3]),
-                    confidence=float(person_scores[idx]),
-                    class_id=PERSON_CLASS_ID,
-                )
-            )
-
-        return detections
-
-    def detect(
-        self,
-        frame: np.ndarray,
-        confidence_threshold: Optional[float] = None,
-    ) -> DetectionResult:
-        """Detect persons in a frame.
-
-        Args:
-            frame: BGR image from camera
-            confidence_threshold: Override default confidence threshold
-
-        Returns:
-            DetectionResult containing all person detections
-        """
-        self._load_model()
-
-        # Temporarily override confidence threshold if provided
-        orig_conf = self.confidence_threshold
-        if confidence_threshold is not None:
-            self.confidence_threshold = confidence_threshold
-
-        try:
-            # Preprocess
-            input_tensor = self._preprocess(frame)
-
-            # Create OrtValue on GPU from numpy array
-            input_ortvalue = self._ort.OrtValue.ortvalue_from_numpy(
-                input_tensor, device_type="cuda", device_id=0
-            )
-
-            # Bind input
-            self._io_binding.bind_ortvalue_input(self._input_name, input_ortvalue)
-
-            # Bind outputs to GPU
-            for output_name in self._output_names:
-                self._io_binding.bind_output(output_name, device_type="cuda", device_id=0)
-
-            # Run inference with IO binding
-            self._session.run_with_iobinding(self._io_binding)
-
-            # Get outputs (transfers from GPU to CPU only here)
-            outputs = self._io_binding.copy_outputs_to_cpu()
-
-            # Clear bindings for next inference
-            self._io_binding.clear_binding_inputs()
-            self._io_binding.clear_binding_outputs()
-
-            # Postprocess (use first output)
-            detections = self._postprocess(outputs[0], frame.shape[:2])
-
-            return DetectionResult(
-                detections=detections,
-                frame_shape=frame.shape,
-            )
-
-        finally:
-            self.confidence_threshold = orig_conf
-
     def warmup(self, frame_shape: tuple[int, int, int] = (1080, 1920, 3)) -> None:
-        """Warm up the model with a dummy inference.
-
-        Note: First inference with TensorRT provider may take longer as it
-        builds and caches the TensorRT engine.
-        """
-        self._load_model()
+        """Warm up the engine."""
+        self._ensure_loaded()
         dummy_frame = np.zeros(frame_shape, dtype=np.uint8)
-        logger.info("Running warmup inference (TensorRT engine build may take time)...")
         self.detect(dummy_frame)
-        logger.info(f"ONNX Runtime detector warmed up with shape {frame_shape}")
+        logger.info(f"TensorRT detector warmed up with shape {frame_shape}")
 
 
 def create_person_detector(
@@ -1039,32 +455,21 @@ def create_person_detector(
     device: Optional[str] = None,
     num_threads: int = 0,
     use_tensorrt_native: bool = False,
-    use_onnxruntime: bool = False,
 ):
     """Factory function to create the appropriate person detector.
 
     Args:
-        model_path: Path to model file (.pt, .onnx, .engine, .trt)
+        model_path: Path to model file (.pt, .engine, .trt)
         confidence_threshold: Minimum confidence for detections
-        nms_iou_threshold: IoU threshold for NMS
+        nms_iou_threshold: IoU threshold for NMS (Ultralytics only)
         device: Device for inference (PersonDetector only)
         num_threads: CPU threads (PersonDetector only)
         use_tensorrt_native: Force TensorRT native backend for .engine/.trt files
-        use_onnxruntime: Use ONNX Runtime backend for .onnx files
 
     Returns:
-        PersonDetector, ONNXRuntimeDetector, or TensorRTDetector instance
+        PersonDetector or TensorRTDetector instance
     """
     model_path = model_path or "yolov8n.pt"
-
-    # Use ONNX Runtime if explicitly requested and model is an ONNX file
-    if use_onnxruntime and model_path.endswith(".onnx"):
-        logger.info(f"Using ONNX Runtime backend for {model_path}")
-        return ONNXRuntimeDetector(
-            model_path=model_path,
-            confidence_threshold=confidence_threshold,
-            nms_iou_threshold=nms_iou_threshold,
-        )
 
     # Use TensorRT native if explicitly requested and model is an engine file
     if use_tensorrt_native and model_path.endswith((".engine", ".trt")):
@@ -1072,7 +477,6 @@ def create_person_detector(
         return TensorRTDetector(
             model_path=model_path,
             confidence_threshold=confidence_threshold,
-            nms_iou_threshold=nms_iou_threshold,
         )
 
     # Default to Ultralytics/PyTorch backend

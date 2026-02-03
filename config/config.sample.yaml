@@ -147,13 +147,9 @@ detection:
   device: null
 
   # Use TensorRT native backend (bypasses PyTorch/Ultralytics, lowest memory)
-  # Only works with .engine or .trt model files. Requires tensorrt and pycuda.
+  # Only works with .engine or .trt model files exported with nms=True.
+  # Requires tensorrt and pycuda.
   use_tensorrt_native: false
-
-  # Use ONNX Runtime backend (good balance of speed and memory)
-  # Only works with .onnx model files. Requires onnxruntime-gpu.
-  # First run converts to TensorRT engine (cached in trt_cache/ directory).
-  use_onnxruntime: false
 
   # Use hardware-accelerated JPEG encoding (pynvjpeg) on Jetson
   # Requires pynvjpeg installed (see docs/JETSON.md)
@@ -269,13 +265,36 @@ face_recognition:
   # 640: ~900MB GPU, best range | 480: ~600MB | 320: ~400MB, good for person crops
   det_size: 640
 
-  # Use TensorRT acceleration on Jetson
+  # Use TensorRT acceleration via ONNX Runtime on Jetson (legacy)
   # Requires onnxruntime-gpu with TensorRT provider
   use_tensorrt: false
 
   # Max memory for TensorRT engine workspace (bytes).
   # 0 = default (usually 1GB).
   trt_max_workspace_size: 0
+
+  # Use native TensorRT backend (lowest memory usage, recommended for Jetson)
+  # Requires pre-converted .engine files. Convert with:
+  #   python tools/convert_insightface_to_trt.py --det-size 640
+  # For low memory (Jetson), use det_size 320:
+  #   python tools/convert_insightface_to_trt.py --det-size 320
+  # NOTE: det_size here MUST match the --det-size used during conversion!
+  use_tensorrt_native: false
+
+  # TensorRT detection model path (det_10g.engine)
+  trt_det_model: "models/det_10g.engine"
+
+  # TensorRT recognition model path (w600k_r50.engine)
+  trt_rec_model: "models/w600k_r50.engine"
+
+# LOW MEMORY CONFIG (Jetson):
+# For Jetson or systems with limited GPU memory, use these settings:
+#   face_recognition:
+#     model: "buffalo_sc"         # Smallest InsightFace model (~150MB vs ~750MB)
+#     det_size: 320               # Smaller detection input (~400MB vs ~900MB GPU)
+#     use_tensorrt_native: true   # Native TensorRT (lowest memory)
+#     trt_det_model: "models/det_10g.engine"  # Convert with --det-size 320
+#     trt_rec_model: "models/w600k_r50.engine"
 
 # =============================================================================
 # UNIDENTIFIED FACES

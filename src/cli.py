@@ -457,8 +457,7 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
             device=config.detection.device,
             num_threads=config.detection.num_threads,
             use_tensorrt_native=config.detection.use_tensorrt_native,
-            use_onnxruntime=config.detection.use_onnxruntime,
-        )
+                    )
         detector.warmup()
 
     # Initialize zone manager
@@ -954,8 +953,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
             device=config.detection.device,
             num_threads=config.detection.num_threads,
             use_tensorrt_native=config.detection.use_tensorrt_native,
-            use_onnxruntime=config.detection.use_onnxruntime,
-        )
+                    )
         person_detector.warmup()
 
     click.echo("Warming up identification models...")

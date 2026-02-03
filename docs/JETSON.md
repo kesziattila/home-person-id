@@ -139,8 +139,8 @@ TensorRT is required for `.engine` models.
 # Activate your venv
 source venv/bin/activate
 
-# Export to TensorRT engine (FP16 for speed)
-yolo export model=yolov8n.pt format=engine device=0 half=True
+# Export to TensorRT engine (FP16 for speed, nms=True for baked-in NMS)
+yolo export model=yolov8n.pt format=engine device=0 half=True nms=True
 
 # This creates yolov8n.engine in the same directory
 # Move it to a known location:
@@ -149,7 +149,10 @@ mv yolov8n.engine models/
 # Update config.yaml:
 # detection:
 #   model: "models/yolov8n.engine"
+#   use_tensorrt_native: true  # Optional: bypass PyTorch for lower memory
 ```
+
+**Important:** When using `use_tensorrt_native: true`, the model MUST be exported with `nms=True` to bake NMS into the engine. Without this, you'll get an error about raw output format.
 
 If you get `ModuleNotFoundError: No module named 'tensorrt'`, follow these steps:
 
@@ -177,9 +180,50 @@ If you get `ModuleNotFoundError: No module named 'tensorrt'`, follow these steps
 | yolov8s.pt | 22MB | ~15 FPS |
 | yolov8s.engine (FP16) | ~40MB | ~30-40 FPS |
 
-### InsightFace (Optional)
+### InsightFace / Face Recognition
 
-InsightFace models use ONNX format which automatically uses CUDA on Jetson when `onnxruntime-gpu` is installed. To enable full TensorRT acceleration:
+There are two TensorRT options for face recognition:
+
+#### Option 1: Native TensorRT Backend (Recommended)
+
+The native TensorRT backend provides the lowest memory usage by loading TensorRT engines directly without ONNX Runtime overhead.
+
+1. **Convert InsightFace models to TensorRT:**
+   ```bash
+   source venv/bin/activate
+
+   # Convert with det_size matching your config (320 for low memory, 640 for better range)
+   PYTHONPATH=. python tools/convert_insightface_to_trt.py --det-size 320
+
+   # This creates:
+   #   models/det_10g.engine (face detection)
+   #   models/w600k_r50.engine (face embedding)
+   ```
+
+2. **Update config.yaml:**
+   ```yaml
+   face_recognition:
+     enabled: true
+     det_size: 320  # MUST match --det-size used during conversion
+     use_tensorrt_native: true
+     trt_det_model: "models/det_10g.engine"
+     trt_rec_model: "models/w600k_r50.engine"
+   ```
+
+3. **Test the conversion:**
+   ```bash
+   PYTHONPATH=. python tools/test_tensorrt_face.py --det-size 320
+   ```
+
+**Memory comparison:**
+| Backend | GPU Memory | Inference Speed |
+|---------|------------|-----------------|
+| InsightFace + ONNX Runtime | ~750MB | ~30ms |
+| Native TensorRT (det_size=320) | ~50MB | ~10ms |
+
+#### Option 2: ONNX Runtime with TensorRT Provider (Legacy)
+
+Uses ONNX Runtime's TensorRT execution provider. Higher memory but easier setup:
 
 1. **Update config.yaml:**
    ```yaml
@@ -311,13 +355,23 @@ detection:
 
 #### Typical Memory Budget (8GB Jetson)
 
+**With Native TensorRT (Recommended):**
 | Component | GPU Memory |
 |-----------|-----------|
 | CUDA Motion (4 cameras) | ~160-200MB |
-| YOLOv8n TensorRT | ~100-150MB |
+| YOLO TensorRT Native | ~100-150MB |
+| Face Recognition TensorRT Native (det_size=320) | ~50MB |
+| Re-ID (OSNet ONNX) | ~150-200MB |
+| **Total** | ~450-600MB |
+
+**With ONNX Runtime:**
+| Component | GPU Memory |
+|-----------|-----------|
+| CUDA Motion (4 cameras) | ~160-200MB |
+| YOLOv8n via PyTorch | ~300-400MB |
 | Face Recognition (buffalo_sc, det_size=320) | ~400-500MB |
 | Re-ID (OSNet) | ~150-200MB |
-| **Total** | ~800MB-1GB |
+| **Total** | ~1.0-1.3GB |
 
 ---
 
@@ -398,8 +452,30 @@ mv yolov8n.engine models/
 1. [ ] JetPack installed and CUDA working
 2. [ ] PyTorch installed from NVIDIA wheels (not pip)
 3. [ ] onnxruntime-gpu installed from NVIDIA wheels
-4. [ ] Other dependencies: `pip install -r requirements-jetson.txt`
-5. [ ] Config copied: `cp config/config.jetson.yaml config/config.yaml`
-6. [ ] Camera URLs configured in config.yaml
-7. [ ] (Optional) YOLO exported to TensorRT: `yolo export ...`
-8. [ ] Test: `python -m src.cli preview --camera <id>`
+4. [ ] TensorRT and pycuda installed: `pip install tensorrt pycuda`
+5. [ ] Other dependencies: `pip install -r requirements-jetson.txt`
+6. [ ] Config copied: `cp config/config.jetson.yaml config/config.yaml`
+7. [ ] Camera URLs configured in config.yaml
+8. [ ] (Recommended) Convert models for native TensorRT:
+   ```bash
+   # YOLO (with baked NMS)
+   yolo export model=yolov8n.pt format=engine nms=True half=True
+   mv yolov8n.engine models/
+
+   # Face recognition
+   PYTHONPATH=. python tools/convert_insightface_to_trt.py --det-size 320
+   ```
+9. [ ] Test: `python -m src.cli preview --camera <id>`
+
+## Testing TensorRT Models
+
+```bash
+# Test person detection
+PYTHONPATH=. python tools/test_tensorrt_detector.py
+
+# Test face detection (adjust det-size to match your model)
+PYTHONPATH=. python tools/test_tensorrt_face.py --det-size 320
+
+# Compare TensorRT vs InsightFace embeddings
+PYTHONPATH=. python tools/compare_embeddings.py --det-size 320
+```

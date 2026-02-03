@@ -110,12 +110,8 @@ class DetectionConfig:
     # Use "cpu" to force CPU inference for testing/comparison
     device: Optional[str] = None
     # Use TensorRT native backend (bypasses PyTorch/Ultralytics, lowest memory)
-    # Only works with .engine or .trt model files
+    # Only works with .engine or .trt model files exported with nms=True
     use_tensorrt_native: bool = False
-    # Use ONNX Runtime backend (good balance of memory and speed)
-    # Only works with .onnx model files
-    # First run converts to TensorRT engine (cached for future runs)
-    use_onnxruntime: bool = False
     # Use hardware-accelerated JPEG encoding (pynvjpeg) on Jetson
     use_nvjpeg: bool = False
 
@@ -178,10 +174,16 @@ class FaceRecognitionConfig:
     # Detection input size (det_size x det_size). Smaller = less GPU memory but shorter detection range.
     # 640: ~900MB GPU, full frame detection | 480: ~600MB | 320: ~400MB, good for person crops
     det_size: int = 640
-    # Use TensorRT acceleration on Jetson
+    # Use TensorRT acceleration via ONNX Runtime on Jetson (legacy)
     use_tensorrt: bool = False
     # Max memory for TensorRT engine (bytes), 0 = default (usually 1GB)
     trt_max_workspace_size: int = 0
+    # Use native TensorRT backend (lower memory, requires pre-converted .engine files)
+    use_tensorrt_native: bool = False
+    # Path to TensorRT detection engine (det_10g.engine)
+    trt_det_model: str = "models/det_10g.engine"
+    # Path to TensorRT recognition engine (w600k_r50.engine)
+    trt_rec_model: str = "models/w600k_r50.engine"
 
 
 @dataclass
