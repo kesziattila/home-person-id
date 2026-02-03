@@ -258,6 +258,27 @@ class PersonIDSystem:
         if self.unidentified_face_manager:
             self.unidentified_face_manager.stop()
         self.stream_manager.stop()
+
+        # Release inference backends and GPU resources
+        try:
+            if self.person_detector and hasattr(self.person_detector, "shutdown"):
+                self.person_detector.shutdown()
+        except Exception:
+            pass
+        try:
+            # Face recognizer and ReID extractor may hold TensorRT resources
+            fr = self.identity_linker.face_recognizer
+            if fr and hasattr(fr, "shutdown"):
+                fr.shutdown()
+        except Exception:
+            pass
+        try:
+            reid = self.identity_linker.reid_extractor
+            if reid and hasattr(reid, "shutdown"):
+                reid.shutdown()
+        except Exception:
+            pass
+
         logger.info("System stopped")
 
     def _inference_worker(self):

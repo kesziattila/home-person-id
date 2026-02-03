@@ -93,3 +93,4 @@ htmlcov/
 /.claude/
 /tests/test-images/sensitive/
 /.output.txt
+DEV_NOTES.md

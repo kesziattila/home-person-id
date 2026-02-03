@@ -396,3 +396,13 @@ class FaceRecognizer:
             self.extract_embedding(dummy_face_crop)
 
             logger.info("InsightFace recognizer warmed up (detection and extraction)")
+
+    def shutdown(self) -> None:
+        """Release resources for the active backend."""
+        if not getattr(self, "_initialized", False):
+            return
+        if self._use_tensorrt_native:
+            try:
+                self._trt_recognizer.shutdown()
+            except Exception:
+                pass

@@ -10,6 +10,7 @@ Subclasses implement model-specific preprocessing and postprocessing.
 """
 
 import logging
+import threading
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Optional
@@ -41,65 +42,94 @@ class TensorRTEngine(ABC):
             model_path: Path to TensorRT engine file (.engine or .trt)
         """
         self.model_path = model_path
+        self._lock = threading.Lock()
 
         # Lazy initialization
         self._engine = None
         self._context = None
         self._cuda = None
         self._cuda_context = None
+        self._stream = None
         self._buffers: dict[str, tuple[np.ndarray, object, tuple]] = {}  # name -> (host, device, shape)
         self._input_name: Optional[str] = None
         self._output_names: list[str] = []
 
+    def shutdown(self):
+        """Clean up CUDA resources."""
+        with self._lock:
+            if self._cuda_context:
+                try:
+                    self._cuda_context.pop()
+                except Exception:
+                    pass
+                self._cuda_context = None
+
+            if self._stream:
+                try:
+                    self._stream.synchronize()
+                except Exception:
+                    pass
+                self._stream = None
+
+            # Free device memory
+            for _, device_mem, _ in self._buffers.values():
+                if device_mem:
+                    # pycuda frees memory when the object goes out of scope
+                    pass
+
+            self._buffers = {}
+            self._engine = None
+            self._context = None
+            logger.info(f"TensorRT engine shut down: {self.model_path}")
+
     def _load_engine(self):
         """Load TensorRT engine (lazy loading)."""
-        if self._engine is not None:
-            return
+        with self._lock:
+            if self._engine is not None:
+                return
 
-        try:
-            import tensorrt as trt
-            import pycuda.driver as cuda
-        except ImportError as e:
-            raise ImportError(
-                f"TensorRT native backend requires tensorrt and pycuda. "
-                f"Install with: pip install tensorrt pycuda. Error: {e}"
-            )
+            try:
+                import tensorrt as trt
+                import pycuda.driver as cuda
+            except ImportError as e:
+                raise ImportError(
+                    f"TensorRT native backend requires tensorrt and pycuda. "
+                    f"Install with: pip install tensorrt pycuda. Error: {e}"
+                )
 
-        if not Path(self.model_path).exists():
-            raise FileNotFoundError(f"TensorRT engine not found: {self.model_path}")
+            if not Path(self.model_path).exists():
+                raise FileNotFoundError(f"TensorRT engine not found: {self.model_path}")
 
-        logger.info(f"Loading TensorRT engine: {self.model_path}")
+            logger.info(f"Loading TensorRT engine: {self.model_path}")
 
-        # Initialize CUDA and create context
-        cuda.init()
-        self._cuda = cuda
-        device = cuda.Device(0)
-        self._cuda_context = device.make_context()
+            # Initialize CUDA and create context
+            cuda.init()
+            self._cuda = cuda
+            device = cuda.Device(0)
+            self._cuda_context = device.make_context()
+            self._stream = cuda.Stream()
 
-        # Load engine
-        trt_logger = trt.Logger(trt.Logger.WARNING)
-        with open(self.model_path, "rb") as f:
-            engine_data = f.read()
+            # Load engine
+            trt_logger = trt.Logger(trt.Logger.WARNING)
+            with open(self.model_path, "rb") as f, trt.Runtime(trt_logger) as runtime:
+                self._engine = runtime.deserialize_cuda_engine(f.read())
 
-        runtime = trt.Runtime(trt_logger)
-        self._engine = runtime.deserialize_cuda_engine(engine_data)
+            if self._engine is None:
+                self._cuda_context.pop()
+                raise RuntimeError(f"Failed to load TensorRT engine: {self.model_path}")
 
-        if self._engine is None:
+            self._context = self._engine.create_execution_context()
+
+            # Setup buffers
+            self._setup_buffers(cuda, trt)
+
+            # Validate engine format (subclass-specific)
+            self._validate_engine()
+
+            # Pop context - will push when needed
             self._cuda_context.pop()
-            raise RuntimeError(f"Failed to load TensorRT engine: {self.model_path}")
 
-        self._context = self._engine.create_execution_context()
-
-        # Setup buffers
-        self._setup_buffers(cuda, trt)
-
-        # Validate engine format (subclass-specific)
-        self._validate_engine()
-
-        # Pop context - will push when needed
-        self._cuda_context.pop()
-
-        logger.info(f"TensorRT engine loaded: {self.model_path}")
+            logger.info(f"TensorRT engine loaded: {self.model_path}")
 
     def _get_input_height(self) -> int:
         """Get expected input height. Override for non-square inputs."""
@@ -190,32 +220,38 @@ class TensorRTEngine(ABC):
             List of output arrays (copied from device)
         """
         self._load_engine()
-        self._cuda_context.push()
+        
+        with self._lock:
+            self._cuda_context.push()
 
-        try:
-            # Copy input to device
-            input_host, input_device = self._get_input_buffer()
-            np.copyto(input_host, input_tensor)
-            self._cuda.memcpy_htod(input_device, input_host)
+            try:
+                # Copy input to device
+                input_host, input_device = self._get_input_buffer()
+                np.copyto(input_host, input_tensor)
+                self._cuda.memcpy_htod_async(input_device, input_host, self._stream)
 
-            # Run inference
-            if not self._context.execute_async_v3(stream_handle=0):
-                logger.error("TensorRT inference failed")
+                # Run inference
+                if not self._context.execute_async_v3(stream_handle=self._stream.handle):
+                    logger.error("TensorRT inference failed")
+                    return []
+
+                # Copy outputs to host
+                outputs = []
+                for name in self._output_names:
+                    host, device, _ = self._buffers[name]
+                    self._cuda.memcpy_dtoh_async(host, device, self._stream)
+                    outputs.append(host)
+
+                self._stream.synchronize()
+                
+                # Return copies to avoid buffer being overwritten by next inference
+                return [out.copy() for out in outputs]
+
+            except Exception as e:
+                logger.error(f"TensorRT inference failed: {e}")
                 return []
-
-            self._cuda.Context.synchronize()
-
-            # Copy outputs to host
-            outputs = []
-            for name in self._output_names:
-                host, device, _ = self._buffers[name]
-                self._cuda.memcpy_dtoh(host, device)
-                outputs.append(host.copy())
-
-            return outputs
-
-        finally:
-            self._cuda_context.pop()
+            finally:
+                self._cuda_context.pop()
 
     def _letterbox_preprocess(
         self,

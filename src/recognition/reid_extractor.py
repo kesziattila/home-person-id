@@ -520,3 +520,15 @@ class ReIDExtractor:
         self.extract(dummy)
 
         logger.info("Re-ID extractor warmed up")
+
+    def shutdown(self) -> None:
+        """Release resources for the active backend."""
+        if not getattr(self, "_initialized", False):
+            return
+        if getattr(self, "_is_tensorrt_native", False):
+            trt_embedder = getattr(self, "_trt_embedder", None)
+            if trt_embedder is not None:
+                try:
+                    trt_embedder.shutdown()
+                except Exception:
+                    pass

@@ -413,3 +413,14 @@ class TensorRTFaceRecognizer:
         self._detector.warmup()
         self._embedder.warmup()
         logger.info("TensorRT face recognizer warmed up")
+
+    def shutdown(self):
+        """Release TensorRT resources for both models."""
+        try:
+            self._detector.shutdown()
+        except Exception:
+            pass
+        try:
+            self._embedder.shutdown()
+        except Exception:
+            pass

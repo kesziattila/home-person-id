@@ -164,6 +164,16 @@ class PersonDetector:
             torch.set_num_threads(num_threads)
             logger.info(f"Set PyTorch threads to {num_threads}")
 
+    def shutdown(self) -> None:
+        """Release resources (no-op for Ultralytics backend)."""
+        # Ultralytics/Torch releases resources on object deletion; keep method for symmetry
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
     def _load_model(self):
         """Load the YOLO model (lazy loading)."""
         if self._model is not None:
@@ -314,6 +324,13 @@ class TensorRTDetector:
         """Warm up the engine with a dummy inference."""
         self._impl.warmup(frame_shape)
 
+    def shutdown(self) -> None:
+        """Release TensorRT resources."""
+        try:
+            self._impl.shutdown()
+        except Exception:
+            pass
+
 
 class _TensorRTPersonDetectorImpl:
     """Internal implementation using TensorRTDetectorBase.
@@ -446,6 +463,14 @@ class _TensorRTPersonDetectorImpl:
         dummy_frame = np.zeros(frame_shape, dtype=np.uint8)
         self.detect(dummy_frame)
         logger.info(f"TensorRT detector warmed up with shape {frame_shape}")
+
+    def shutdown(self) -> None:
+        """Shutdown and release CUDA/TRT resources."""
+        if self._base is not None:
+            try:
+                self._base.shutdown()
+            finally:
+                self._base = None
 
 
 def create_person_detector(
