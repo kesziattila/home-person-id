@@ -150,7 +150,7 @@ class PersonIDSystem:
         self._running = False
         self._frame_count = 0
         self._last_cleanup = time.time()
-        self._cleanup_interval = 300  # 5 minutes
+        self._cleanup_interval = 60  # 1 minute (was 5 minutes)
 
         # Initialize Web UI / API
         self.preview_buffer = PreviewBuffer()
@@ -232,6 +232,10 @@ class PersonIDSystem:
 
         # Start camera streams
         self.stream_manager.start()
+
+        # Run initial cleanup to archive any tracks left from previous run
+        logger.info("Running initial database cleanup...")
+        self.repository.archive_old_tracks(hours=0)  # Archive all active tracks on start
 
         # Start unidentified face manager
         if self.unidentified_face_manager:
@@ -549,6 +553,7 @@ class PersonIDSystem:
                 camera_id=to_cam,
                 event_type="track_handover",
                 track_id=track_id,
+                person_id=state.person_id if state else None,
                 extra_data={"from_camera": from_cam},
             )
 
@@ -578,6 +583,9 @@ class PersonIDSystem:
 
         # Cleanup old events
         self.repository.cleanup_old_events(days=self.config.database.event_retention_days)
+
+        # Cleanup old Re-ID embeddings
+        self.repository.cleanup_old_reid_embeddings(days=self.config.database.event_retention_days)
 
         # Archive old tracks in database
         self.repository.archive_old_tracks(

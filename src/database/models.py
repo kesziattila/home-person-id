@@ -35,6 +35,7 @@ class Person(Base):
 
     # Relationships
     face_embeddings = relationship("FaceEmbedding", back_populates="person", cascade="all, delete-orphan")
+    reid_embeddings = relationship("ReIDEmbedding", back_populates="person", cascade="all, delete-orphan")
     events = relationship("Event", back_populates="person")
     tracks = relationship("Track", back_populates="person")
 
@@ -55,9 +56,34 @@ class FaceEmbedding(Base):
 
     # Relationships
     person = relationship("Person", back_populates="face_embeddings")
+    events = relationship("Event", back_populates="face_embedding")
 
     def __repr__(self):
         return f"<FaceEmbedding(id={self.id}, person_id={self.person_id})>"
+
+
+class ReIDEmbedding(Base):
+    """Re-ID embedding for a person."""
+
+    __tablename__ = "reid_embeddings"
+
+    id = Column(Integer, primary_key=True)
+    person_id = Column(Integer, ForeignKey("persons.id"), nullable=True)
+    track_id = Column(String(64), ForeignKey("tracks.id"), nullable=True)
+    timestamp = Column(DateTime, default=datetime.utcnow)
+    camera_id = Column(String(64), nullable=False)
+    embedding = Column(LargeBinary, nullable=False)
+    quality = Column(Float, nullable=True)
+    visibility = Column(Float, nullable=True)
+    snapshot_path = Column(String(512), nullable=True)
+
+    # Relationships
+    person = relationship("Person", back_populates="reid_embeddings")
+    track = relationship("Track", back_populates="reid_embeddings")
+    events = relationship("Event", back_populates="reid_embedding")
+
+    def __repr__(self):
+        return f"<ReIDEmbedding(id={self.id}, person_id={self.person_id}, track_id='{self.track_id}')>"
 
 
 class Track(Base):
@@ -79,6 +105,7 @@ class Track(Base):
     person = relationship("Person", back_populates="tracks")
     sightings = relationship("TrackSighting", back_populates="track", cascade="all, delete-orphan")
     events = relationship("Event", back_populates="track")
+    reid_embeddings = relationship("ReIDEmbedding", back_populates="track")
 
     def __repr__(self):
         return f"<Track(id='{self.id}', person_id={self.person_id}, status='{self.status}')>"
@@ -116,6 +143,8 @@ class Event(Base):
     event_type = Column(String(64), nullable=False)  # 'track_created', 'person_identified', etc.
     track_id = Column(String(64), ForeignKey("tracks.id"), nullable=True)
     person_id = Column(Integer, ForeignKey("persons.id"), nullable=True)
+    face_embedding_id = Column(Integer, ForeignKey("face_embeddings.id"), nullable=True)
+    reid_embedding_id = Column(Integer, ForeignKey("reid_embeddings.id"), nullable=True)
     confidence = Column(Float)
     snapshot_path = Column(String(512))
     extra_data = Column(JSON, default=dict)  # Additional event metadata
@@ -123,6 +152,8 @@ class Event(Base):
     # Relationships
     track = relationship("Track", back_populates="events")
     person = relationship("Person", back_populates="events")
+    face_embedding = relationship("FaceEmbedding", back_populates="events")
+    reid_embedding = relationship("ReIDEmbedding", back_populates="events")
 
     def __repr__(self):
         return f"<Event(id={self.id}, type='{self.event_type}', camera='{self.camera_id}')>"

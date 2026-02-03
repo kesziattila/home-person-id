@@ -291,6 +291,26 @@ class IdentificationManager:
             identity.is_reid_identified = True
             identity.is_face_identified = False
             identity.identified_at = time.time()
+
+            # Emit reid_match event
+            if self.repository:
+                person = self.repository.get_person_by_name(match_result.person_name)
+                person_id = person.id if person else None
+                self.repository.create_event(
+                    camera_id="unknown",
+                    event_type="reid_match",
+                    track_id=track_id,
+                    person_id=person_id,
+                    confidence=match_result.score,
+                    reid_embedding_id=match_result.db_id,
+                    extra_data={
+                        "match_policy": "threshold",
+                        "threshold": self.reid_gallery_manager.similarity_threshold,
+                        "top1_score": match_result.best_score,
+                        "top1_person_id": person_id
+                    }
+                )
+
             return match_result.gallery_crop
 
         return None
@@ -425,6 +445,9 @@ class IdentificationManager:
 
         # Check if above threshold
         if best_score >= self.face_threshold:
+            previous_person_id = identity.person_id
+            was_reid_identified = identity.is_reid_identified
+
             identity.person_id = best_person_id
             identity.person_name = best_name
             identity.confidence = best_score
@@ -432,6 +455,42 @@ class IdentificationManager:
             identity.is_reid_identified = False
             identity.face_info = None
             identity.identified_at = time.time()
+
+            # Persist face embedding
+            face_embedding_id = None
+            if self.repository:
+                # We should ideally save the face crop and pass its path
+                # For now just add embedding
+                fb = self.repository.add_face_embedding(best_person_id, face.embedding)
+                face_embedding_id = fb.id
+
+            # Emit events
+            if self.repository:
+                # 1. face_match
+                self.repository.create_event(
+                    camera_id=camera_id or "unknown",
+                    event_type="face_match",
+                    track_id=track_id,
+                    person_id=best_person_id,
+                    confidence=best_score,
+                    face_embedding_id=face_embedding_id,
+                    extra_data={"threshold": self.face_threshold}
+                )
+
+                # 2. id_upgraded if applicable
+                if was_reid_identified and previous_person_id is not None:
+                    self.repository.create_event(
+                        camera_id=camera_id or "unknown",
+                        event_type="id_upgraded",
+                        track_id=track_id,
+                        person_id=best_person_id,
+                        extra_data={
+                            "from": "reid",
+                            "to": "face",
+                            "previous_person_id": previous_person_id,
+                            "new_person_id": best_person_id
+                        }
+                    )
 
             # Update Re-ID gallery with face-confirmed identity
             if self.reid_gallery_manager:

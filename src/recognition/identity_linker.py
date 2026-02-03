@@ -457,6 +457,9 @@ class IdentityLinker:
 
         min_consecutive = 2
         if state.consecutive_matches >= min_consecutive:
+            previous_person_id = state.person_id
+            was_reid_identified = (state.identified_by == "reid")
+            
             state.confirm_identity(best_match_id, best_score, "face")
 
             # Update database
@@ -465,6 +468,37 @@ class IdentityLinker:
                 person_id=best_match_id,
                 face_embedding=embedding,
             )
+            
+            # Persist face embedding
+            fb = self.repository.add_face_embedding(best_match_id, embedding)
+            face_embedding_id = fb.id
+
+            # Emit events
+            # 1. face_match
+            self.repository.create_event(
+                camera_id=camera_id or "unknown",
+                event_type="face_match",
+                track_id=state.global_track_id,
+                person_id=best_match_id,
+                confidence=best_score,
+                face_embedding_id=face_embedding_id,
+                extra_data={"threshold": self.face_config.similarity_threshold}
+            )
+
+            # 2. id_upgraded if applicable
+            if was_reid_identified and previous_person_id is not None:
+                self.repository.create_event(
+                    camera_id=camera_id or "unknown",
+                    event_type="id_upgraded",
+                    track_id=state.global_track_id,
+                    person_id=best_match_id,
+                    extra_data={
+                        "from": "reid",
+                        "to": "face",
+                        "previous_person_id": previous_person_id,
+                        "new_person_id": best_match_id
+                    }
+                )
 
             # Update shared Re-ID gallery
             if self.reid_gallery_manager and best_match_name:
@@ -497,6 +531,7 @@ class IdentityLinker:
         crop: np.ndarray,
         num_persons_in_frame: int = 1,
         precomputed_reid: Optional[tuple[np.ndarray, float]] = None,
+        camera_id: Optional[str] = None,
     ):
         """Update Re-ID embedding gallery for a track.
 
@@ -595,10 +630,45 @@ class IdentityLinker:
                     f"Re-ID gallery match: {new_track_id} -> {match_result.person_name} "
                     f"(sim={match_result.score:.2f})"
                 )
+                
+                # Emit reid_match event
+                if self.repository:
+                    person = self.repository.get_person_by_name(match_result.person_name)
+                    person_id = person.id if person else None
+                    self.repository.create_event(
+                        camera_id="unknown",
+                        event_type="reid_match",
+                        track_id=new_track_id,
+                        person_id=person_id,
+                        confidence=match_result.score,
+                        reid_embedding_id=match_result.db_id,
+                        extra_data={
+                            "match_policy": "gallery",
+                            "threshold": self.reid_config.similarity_threshold,
+                            "top1_score": match_result.best_score
+                        }
+                    )
                 return (None, match_result.score, match_result.person_name)
 
         if best_match_id is not None:
             logger.debug(f"Re-ID match: {new_track_id} -> {best_match_id} (sim={best_score:.2f})")
+            
+            # Emit reid_match event
+            if self.repository:
+                state = self._track_states.get(best_match_id)
+                person_id = state.person_id if state else None
+                self.repository.create_event(
+                    camera_id="unknown",
+                    event_type="reid_match",
+                    track_id=new_track_id,
+                    person_id=person_id,
+                    confidence=best_score,
+                    extra_data={
+                        "match_policy": "cross_camera",
+                        "matched_track_id": best_match_id,
+                        "threshold": self.reid_config.similarity_threshold
+                    }
+                )
             return (best_match_id, best_score, best_person_name)
 
         return None

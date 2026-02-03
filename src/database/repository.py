@@ -17,6 +17,7 @@ from src.database.models import (
     Track,
     TrackSighting,
     UnidentifiedFace,
+    ReIDEmbedding,
     init_database,
 )
 
@@ -256,12 +257,35 @@ class Repository:
 
     # ==================== Event Operations ====================
 
+    def _to_json_safe(self, obj):
+        """Recursively convert numpy types to native Python types for JSON.
+        
+        - np.generic scalars -> Python scalars
+        - np.ndarray -> list
+        - dict/list/tuple -> recurse
+        - others returned as-is
+        """
+        import numpy as np
+        if isinstance(obj, dict):
+            return {self._to_json_safe(k): self._to_json_safe(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [self._to_json_safe(x) for x in obj]
+        # numpy scalars
+        if isinstance(obj, np.generic):
+            return obj.item()
+        # numpy arrays
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return obj
+
     def create_event(
         self,
         camera_id: str,
         event_type: str,
         track_id: Optional[str] = None,
         person_id: Optional[int] = None,
+        face_embedding_id: Optional[int] = None,
+        reid_embedding_id: Optional[int] = None,
         confidence: Optional[float] = None,
         snapshot_path: Optional[str] = None,
         extra_data: Optional[dict] = None,
@@ -273,6 +297,8 @@ class Repository:
             event_type: Type of event
             track_id: Associated track ID
             person_id: Associated person ID
+            face_embedding_id: Associated face embedding ID
+            reid_embedding_id: Associated Re-ID embedding ID
             confidence: Detection/recognition confidence
             snapshot_path: Path to snapshot image
             extra_data: Additional metadata
@@ -281,14 +307,20 @@ class Repository:
             Created Event object
         """
         with self.get_session() as session:
+            # Sanitize JSON payloads and numeric values
+            safe_extra = self._to_json_safe(extra_data or {})
+            safe_conf = self._to_json_safe(confidence) if confidence is not None else None
+
             event = Event(
-                camera_id=camera_id,
-                event_type=event_type,
-                track_id=track_id,
+                camera_id=str(camera_id),
+                event_type=str(event_type),
+                track_id=str(track_id) if track_id is not None else None,
                 person_id=person_id,
-                confidence=confidence,
-                snapshot_path=snapshot_path,
-                extra_data=extra_data or {},
+                face_embedding_id=face_embedding_id,
+                reid_embedding_id=reid_embedding_id,
+                confidence=safe_conf,
+                snapshot_path=str(snapshot_path) if snapshot_path is not None else None,
+                extra_data=safe_extra,
             )
             session.add(event)
             session.commit()
@@ -331,6 +363,66 @@ class Repository:
             session.commit()
             if count > 0:
                 logger.info(f"Deleted {count} old events")
+            return count
+
+    # ==================== ReID Embedding Operations ====================
+
+    def add_reid_embedding(
+        self,
+        camera_id: str,
+        embedding: np.ndarray,
+        track_id: Optional[str] = None,
+        person_id: Optional[int] = None,
+        quality: Optional[float] = None,
+        visibility: Optional[float] = None,
+        snapshot_path: Optional[str] = None,
+    ) -> ReIDEmbedding:
+        """Add a Re-ID embedding.
+
+        Args:
+            camera_id: Camera ID
+            embedding: Re-ID embedding vector
+            track_id: Optional track ID
+            person_id: Optional person ID
+            quality: Quality score
+            visibility: Visibility score
+            snapshot_path: Path to snapshot
+
+        Returns:
+            Created ReIDEmbedding object
+        """
+        with self.get_session() as session:
+            reid_emb = ReIDEmbedding(
+                camera_id=camera_id,
+                track_id=track_id,
+                person_id=person_id,
+                embedding=embedding.astype(np.float32).tobytes(),
+                quality=quality,
+                visibility=visibility,
+                snapshot_path=snapshot_path,
+            )
+            session.add(reid_emb)
+            session.commit()
+            session.refresh(reid_emb)
+            return reid_emb
+
+    def get_reid_embeddings(self, person_id: int, limit: int = 100) -> list[ReIDEmbedding]:
+        """Get Re-ID embeddings for a person."""
+        with self.get_session() as session:
+            return (
+                session.query(ReIDEmbedding)
+                .filter(ReIDEmbedding.person_id == person_id)
+                .order_by(ReIDEmbedding.timestamp.desc())
+                .limit(limit)
+                .all()
+            )
+
+    def cleanup_old_reid_embeddings(self, days: int = 30) -> int:
+        """Delete Re-ID embeddings older than N days."""
+        with self.get_session() as session:
+            cutoff = datetime.utcnow() - timedelta(days=days)
+            count = session.query(ReIDEmbedding).filter(ReIDEmbedding.timestamp < cutoff).delete()
+            session.commit()
             return count
 
     # ==================== Track Sighting Operations ====================

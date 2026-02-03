@@ -434,6 +434,10 @@ class GlobalTrackManager:
             camera_id=camera_id,
             event_type="track_created",
             track_id=global_track_id,
+            extra_data={
+                "origin": "detection",
+                "local_track_id": local_track.track_id
+            }
         )
 
         logger.info(f"Created global track: {global_track_id} on {camera_id}")
@@ -752,7 +756,14 @@ class GlobalTrackManager:
         return None
 
     def _cleanup_pending_handovers(self, current_time: float):
-        """Remove expired pending handovers."""
+        """Remove expired pending handovers and retire stale LOST tracks.
+
+        - Pending handovers that exceed their per-zone timeout are converted to
+          REMOVED (finalized) and cleared from the pending list.
+        - Additionally, any LOST global track that hasn't reappeared within
+          the Re-ID grace period (reid.global_id_grace_period) is marked
+          REMOVED so it can be fully cleaned up by periodic cleanup.
+        """
         to_remove = []
         for pending in self._pending_handovers:
             # Use per-handover timeout (from zone config)
@@ -760,8 +771,39 @@ class GlobalTrackManager:
                 to_remove.append(pending)
                 # Mark the global track as truly lost
                 if pending.global_track_id in self._tracks:
-                    self._tracks[pending.global_track_id].state = TrackState.REMOVED
+                    track = self._tracks[pending.global_track_id]
+                    track.state = TrackState.REMOVED
                     self._recently_lost_tracks.discard(pending.global_track_id)
+
+                    # Emit track_lost event
+                    self.repository.create_event(
+                        camera_id=pending.from_camera,
+                        event_type="track_lost",
+                        track_id=pending.global_track_id,
+                        person_id=track.person_id,
+                        extra_data={
+                            "reason": "handover_timeout",
+                            "from_camera": pending.from_camera,
+                            "zone": pending.zone_name
+                        }
+                    )
+                        
+                    # Sync to database immediately so UI reflects it
+                    try:
+                        self.repository.update_track(pending.global_track_id, status="archived")
+                            
+                        # Emit track_archived event
+                        self.repository.create_event(
+                            camera_id=pending.from_camera,
+                            event_type="track_archived",
+                            track_id=pending.global_track_id,
+                            person_id=track.person_id,
+                            extra_data={
+                                "reason": "handover_timeout"
+                            }
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to update track status in DB: {e}")
 
         for pending in to_remove:
             self._pending_handovers.remove(pending)
@@ -769,6 +811,50 @@ class GlobalTrackManager:
                 f"Expired pending handover for {pending.global_track_id} "
                 f"in zone '{pending.zone_name}'"
             )
+
+        # Also retire LOST tracks that exceeded the grace period for reappearance
+        if self._tracks:
+            cutoff = datetime.now()
+            grace = self.reid_config.global_id_grace_period
+            for track_id, track in list(self._tracks.items()):
+                if track.state == TrackState.LOST:
+                    time_since_seen = (cutoff - track.last_seen).total_seconds()
+                    if time_since_seen > grace:
+                        track.state = TrackState.REMOVED
+                        self._recently_lost_tracks.discard(track_id)
+                        
+                        # Emit track_lost event
+                        self.repository.create_event(
+                            camera_id=track.current_camera_id or "unknown",
+                            event_type="track_lost",
+                            track_id=track_id,
+                            person_id=track.person_id,
+                            extra_data={
+                                "reason": "stale",
+                                "age_sec": time_since_seen
+                            }
+                        )
+
+                        # Sync to database immediately so UI reflects it
+                        try:
+                            self.repository.update_track(track_id, status="archived")
+                            
+                            # Emit track_archived event
+                            self.repository.create_event(
+                                camera_id=track.current_camera_id or "unknown",
+                                event_type="track_archived",
+                                track_id=track_id,
+                                person_id=track.person_id,
+                                extra_data={
+                                    "age_sec": time_since_seen
+                                }
+                            )
+                        except Exception as e:
+                            logger.warning(f"Failed to update track status in DB: {e}")
+                            
+                        logger.debug(
+                            f"Track {track_id} exceeded LOST grace ({time_since_seen:.1f}s > {grace:.1f}s), marked REMOVED and archived in DB"
+                        )
 
     def get_global_track(self, global_track_id: str) -> Optional[GlobalTrack]:
         """Get a global track by ID."""

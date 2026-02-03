@@ -30,8 +30,11 @@ class EventResponse(BaseModel):
     track_id: Optional[str] = None
     person_id: Optional[int] = None
     person_name: Optional[str] = None
+    face_embedding_id: Optional[int] = None
+    reid_embedding_id: Optional[int] = None
     confidence: Optional[float] = None
     snapshot_path: Optional[str] = None
+    extra_data: Optional[dict] = None
 
 
 class LocationResponse(BaseModel):
@@ -113,8 +116,11 @@ def create_events_router(repository: Repository) -> APIRouter:
                 track_id=event.track_id,
                 person_id=event.person_id,
                 person_name=person_name,
+                face_embedding_id=event.face_embedding_id,
+                reid_embedding_id=event.reid_embedding_id,
                 confidence=event.confidence,
                 snapshot_path=event.snapshot_path,
+                extra_data=event.extra_data,
             ))
 
         return result

@@ -226,12 +226,28 @@ class UnidentifiedFaceManager:
                 camera_id=task.camera_id,
                 embedding=task.embedding,
                 image_path=image_path,
-                quality_score=quality_score,
+                quality_score=float(quality_score),
                 track_id=task.track_id,
                 best_match_person_id=task.best_match_person_id,
-                best_match_score=task.best_match_score,
-                blur_score=sharpness_score,
-                face_size=face_width,
+                best_match_score=float(task.best_match_score) if task.best_match_score is not None else None,
+                blur_score=float(sharpness_score),
+                face_size=int(face_width),
+            )
+
+            # Emit event
+            self.repository.create_event(
+                camera_id=task.camera_id,
+                event_type="unidentified_face_saved",
+                track_id=task.track_id,
+                person_id=task.best_match_person_id,
+                confidence=float(task.best_match_score) if task.best_match_score is not None else None,
+                snapshot_path=image_path,
+                extra_data={
+                    "quality_score": float(quality_score),
+                    "face_id": int(face.id),
+                    "best_match_person_id": task.best_match_person_id,
+                    "best_match_score": float(task.best_match_score) if task.best_match_score is not None else None,
+                }
             )
 
             logger.info(

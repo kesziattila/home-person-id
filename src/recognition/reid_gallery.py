@@ -22,6 +22,7 @@ from src.recognition.reid_extractor import ReIDExtractor, cosine_similarity, is_
 
 if TYPE_CHECKING:
     from src.recognition.face_recognizer import FaceRecognizer
+    from src.database.repository import Repository
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +33,7 @@ class EmbeddingWithCrop:
     embedding: np.ndarray
     crop_path: Optional[str] = None  # Path to crop file on disk (not in memory)
     timestamp: float = field(default_factory=time.time)
+    db_id: Optional[int] = None  # Reference to reid_embeddings.id
 
     def load_crop(self) -> Optional[np.ndarray]:
         """Load crop image from disk."""
@@ -75,7 +77,7 @@ class GalleryEntry:
         cv2.imwrite(str(filepath), crop)
         return str(filepath)
 
-    def add_embedding(self, embedding: np.ndarray, crop: Optional[np.ndarray] = None):
+    def add_embedding(self, embedding: np.ndarray, crop: Optional[np.ndarray] = None, db_id: Optional[int] = None):
         """Add an embedding to the gallery entry."""
         # Save crop to disk instead of memory
         crop_path = self._save_crop_to_disk(crop) if crop is not None else None
@@ -83,6 +85,7 @@ class GalleryEntry:
         self.entries.append(EmbeddingWithCrop(
             embedding=embedding,
             crop_path=crop_path,
+            db_id=db_id,
         ))
         self.last_seen = time.time()
 
@@ -93,14 +96,14 @@ class GalleryEntry:
                 old_entry.delete_crop_file()
             self.entries = self.entries[-self.max_embeddings:]
 
-    def match(self, query_embedding: np.ndarray) -> tuple[float, Optional[np.ndarray]]:
+    def match(self, query_embedding: np.ndarray) -> tuple[float, Optional[np.ndarray], Optional[int]]:
         """Match a query embedding against all gallery embeddings.
 
         Returns:
-            Tuple of (max_similarity_score, best_matching_crop loaded from disk)
+            Tuple of (max_similarity_score, best_matching_crop loaded from disk, db_id)
         """
         if not self.entries:
-            return 0.0, None
+            return 0.0, None, None
 
         max_score = 0.0
         best_entry = None
@@ -112,7 +115,8 @@ class GalleryEntry:
 
         # Load crop from disk only for the best match
         best_crop = best_entry.load_crop() if best_entry else None
-        return max_score, best_crop
+        db_id = best_entry.db_id if best_entry else None
+        return max_score, best_crop, db_id
 
     def cleanup_crop_files(self):
         """Delete all crop files for this entry."""
@@ -142,6 +146,7 @@ class MatchResult:
     gallery_crop: Optional[np.ndarray] = None
     best_person_name: Optional[str] = None  # Best match even if below threshold
     best_score: float = 0.0
+    db_id: Optional[int] = None  # Reference to reid_embeddings.id of the matched embedding
 
 
 class ReIDGalleryManager:
@@ -165,6 +170,7 @@ class ReIDGalleryManager:
         max_embeddings_per_person: int = 10,
         crop_cache_path: Optional[str] = None,
         face_recognizer: Optional["FaceRecognizer"] = None,
+        repository: Optional["Repository"] = None,
         debug_saver: Optional['DebugImageSaver'] = None,
     ):
         """Initialize the gallery manager.
@@ -176,6 +182,7 @@ class ReIDGalleryManager:
             max_embeddings_per_person: Maximum embeddings to store per person
             crop_cache_path: Path for storing crop images on disk (reduces memory)
             face_recognizer: Optional face recognizer for multi-face detection
+            repository: Optional repository for database persistence
             debug_saver: Optional debug image saver
         """
         self.reid_extractor = reid_extractor
@@ -184,6 +191,7 @@ class ReIDGalleryManager:
         self.max_embeddings_per_person = max_embeddings_per_person
         self.crop_cache_path = crop_cache_path
         self.face_recognizer = face_recognizer
+        self.repository = repository
         self.debug_saver = debug_saver
 
         # Create crop cache directory if specified
@@ -342,8 +350,44 @@ class ReIDGalleryManager:
             )
 
         entry = self._gallery[person_name]
+        
+        # Get person_id from repository if available
+        person_id = None
+        if self.repository:
+            person = self.repository.get_person_by_name(person_name)
+            if person:
+                person_id = person.id
+
         for emb in embeddings:
-            entry.add_embedding(emb, crop)
+            db_id = None
+            if self.repository:
+                # Store embedding in database
+                # For now we use the track_id as source camera ID if available, 
+                # though it's not quite right. We'll pass None for camera_id for now
+                # or try to find it from data if we extend it.
+                reid_emb = self.repository.add_reid_embedding(
+                    camera_id="unknown", # We don't have camera_id here easily
+                    embedding=emb,
+                    track_id=f"global_{track_id}",
+                    person_id=person_id,
+                    snapshot_path=None # add_embedding will save its own crop
+                )
+                db_id = reid_emb.id
+                
+                # Emit event
+                self.repository.create_event(
+                    camera_id="unknown",
+                    event_type="reid_gallery_updated",
+                    track_id=f"global_{track_id}",
+                    person_id=person_id,
+                    reid_embedding_id=db_id,
+                    extra_data={
+                        "policy": "append",
+                        "gallery_count": len(entry.embeddings) + 1
+                    }
+                )
+
+            entry.add_embedding(emb, crop, db_id=db_id)
 
         entry.last_seen = time.time()  # Update last seen time when track is lost
 
@@ -394,11 +438,12 @@ class ReIDGalleryManager:
         best_crop = None
 
         for person_name, entry in self._gallery.items():
-            score, match_crop = entry.match(embedding)
+            score, match_crop, db_id = entry.match(embedding)
             if score > best_score:
                 best_score = score
                 best_name = person_name
                 best_crop = match_crop
+                result.db_id = db_id
 
         result.best_score = best_score
         result.best_person_name = best_name
@@ -448,7 +493,7 @@ class ReIDGalleryManager:
 
         best_score = 0.0
         for entry in self._gallery.values():
-            score, _ = entry.match(embedding)
+            score, _, _ = entry.match(embedding)
             if score > best_score:
                 best_score = score
 
