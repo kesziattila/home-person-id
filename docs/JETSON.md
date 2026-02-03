@@ -7,7 +7,6 @@ This guide covers running Home Person ID on NVIDIA Jetson devices (tested on Jet
 | Aspect | Desktop (x86) | Jetson (ARM) |
 |--------|---------------|--------------|
 | PyTorch | Standard pip install | JetPack pre-built wheels |
-| ONNX Runtime | `onnxruntime` or `onnxruntime-gpu` | `onnxruntime-gpu` from NVIDIA |
 | TensorRT | Optional optimization | Highly recommended (2-3x faster) |
 | Memory | Separate CPU/GPU RAM | Unified memory (shared) |
 | Models | Can use larger models | Prefer smaller models |
@@ -46,9 +45,13 @@ source venv/bin/activate
 pip install torch torchvision --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
 ```
 
-### 4. Install ONNX Runtime for Jetson
+### 4. Install ONNX Runtime for Jetson (Optional)
 
-**IMPORTANT:** onnxruntime-gpu 1.23.0 requires numpy<2.0. Install numpy first:
+**Only needed if:**
+- Using InsightFace with ONNX Runtime backend (legacy, not native TensorRT)
+- Converting models to TensorRT (ONNX is intermediate format)
+
+If using native TensorRT for all models, you can skip this step.
 
 ```bash
 # Force numpy<2.0 (required for onnxruntime-gpu compatibility)
@@ -57,10 +60,7 @@ pip install "numpy<2.0,>=1.24"
 # Install ONNX Runtime GPU from NVIDIA's Jetson AI Lab
 pip install onnxruntime-gpu --index-url https://pypi.jetson-ai-lab.io/jp6/cu126
 
-# Or download wheel directly from:
-# https://pypi.jetson-ai-lab.io/jp6/cu126/onnxruntime-gpu/
-
-# Verify CUDA provider is available:
+# Verify installation:
 python -c "import onnxruntime; print(onnxruntime.get_available_providers())"
 # Should show: ['TensorrtExecutionProvider', 'CUDAExecutionProvider', 'CPUExecutionProvider']
 ```
@@ -123,7 +123,7 @@ Standard pip packages for x86 systems.
 ### Jetson: `requirements-jetson.txt`
 Excludes packages that need special Jetson builds:
 - `torch` / `torchvision` - Install from NVIDIA wheels
-- `onnxruntime-gpu` - Install from NVIDIA wheels
+- `onnxruntime-gpu` - Install from NVIDIA wheels (optional, for InsightFace legacy mode)
 
 ---
 
@@ -237,21 +237,37 @@ Uses ONNX Runtime's TensorRT execution provider. Higher memory but easier setup:
 
 ### Re-ID Models (Optional)
 
-OSNet models from torchreid run on PyTorch. For TensorRT optimization:
+Re-ID supports two backends:
+- **PyTorch/torchreid** (default): Uses torchreid with CUDA. Higher memory usage.
+- **TensorRT native** (recommended): Lowest memory, ~11x faster than PyTorch.
 
-1. **Convert the model to ONNX** using the provided utility script:
-   ```bash
-   # Usage: python tools/convert_reid_to_onnx.py <path_to_pth> --arch <architecture>
-   python tools/convert_reid_to_onnx.py models/osnet_ain_x1_0.pth --arch osnet_ain_x1_0
-   ```
+#### TensorRT Native Backend (Recommended)
 
-2. **Update config.yaml** to use the ONNX model:
-   ```yaml
-   reid:
-     model: "models/osnet_ain_x1_0.onnx"
-   ```
+Convert your model to TensorRT engine:
 
-**NOTE:** onnxruntime will automatically create and cache a `.engine` file the first time it's loaded. This initial load may take several minutes.
+```bash
+# From .pth file (converts through ONNX automatically):
+python tools/convert_reid_to_trt.py --pth models/osnet_ain_x1_0.pth
+
+# Or from existing ONNX:
+python tools/convert_reid_to_trt.py --onnx models/osnet_ain_x1_0.onnx
+```
+
+Update config.yaml:
+```yaml
+reid:
+  use_tensorrt_native: true
+  trt_model: "models/osnet_ain_x1_0.engine"
+```
+
+#### PyTorch Backend (Default)
+
+Uses torchreid with CUDA. No conversion needed, just specify the model:
+
+```yaml
+reid:
+  model: "osnet_x1_0"  # Model name or path to .pth file
+```
 
 ---
 
@@ -361,16 +377,16 @@ detection:
 | CUDA Motion (4 cameras) | ~160-200MB |
 | YOLO TensorRT Native | ~100-150MB |
 | Face Recognition TensorRT Native (det_size=320) | ~50MB |
-| Re-ID (OSNet ONNX) | ~150-200MB |
-| **Total** | ~450-600MB |
+| Re-ID TensorRT Native | ~50-100MB |
+| **Total** | ~350-500MB |
 
-**With ONNX Runtime:**
+**With PyTorch/torchreid (Default):**
 | Component | GPU Memory |
 |-----------|-----------|
 | CUDA Motion (4 cameras) | ~160-200MB |
 | YOLOv8n via PyTorch | ~300-400MB |
 | Face Recognition (buffalo_sc, det_size=320) | ~400-500MB |
-| Re-ID (OSNet) | ~150-200MB |
+| Re-ID (OSNet PyTorch) | ~150-200MB |
 | **Total** | ~1.0-1.3GB |
 
 ---
@@ -420,9 +436,9 @@ Jetson has unified memory - GPU and CPU share RAM. Solutions:
 
 ### Slow inference
 
-- Convert models to TensorRT
+- Convert models to TensorRT (recommended for all components)
 - Check GPU is being used: `tegrastats` should show GPU activity
-- Ensure `onnxruntime-gpu` is installed (not `onnxruntime`)
+- If using InsightFace legacy mode (not native TensorRT), ensure `onnxruntime-gpu` is installed
 
 ### Model download fails
 
@@ -451,7 +467,7 @@ mv yolov8n.engine models/
 
 1. [ ] JetPack installed and CUDA working
 2. [ ] PyTorch installed from NVIDIA wheels (not pip)
-3. [ ] onnxruntime-gpu installed from NVIDIA wheels
+3. [ ] (Optional) onnxruntime-gpu from NVIDIA wheels - only for InsightFace legacy mode or model conversion
 4. [ ] TensorRT and pycuda installed: `pip install tensorrt pycuda`
 5. [ ] Other dependencies: `pip install -r requirements-jetson.txt`
 6. [ ] Config copied: `cp config/config.jetson.yaml config/config.yaml`

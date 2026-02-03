@@ -2,6 +2,10 @@
 
 OSNet (Omni-Scale Network) extracts appearance features from person crops
 for cross-camera matching when faces aren't visible.
+
+Supported backends:
+1. PyTorch/torchreid (default) - requires torch, torchvision, torchreid
+2. TensorRT native - requires TensorRT engine, lowest memory usage
 """
 
 import logging
@@ -128,6 +132,10 @@ class ReIDExtractor:
 
     Extracts 512-dimensional appearance features from person crops
     for cross-camera person matching.
+
+    Backends:
+    - PyTorch/torchreid: Default, supports .pth files and model names
+    - TensorRT native: Lowest memory, requires .engine files
     """
 
     # Shared immutable zero embedding to avoid repeated allocations
@@ -145,13 +153,24 @@ class ReIDExtractor:
         self._transform = None
         self._initialized = False
         self._device = None
-        self._is_ort = False
+        self._is_tensorrt_native = False
+        self._trt_embedder = None  # TensorRT native embedder
 
     def _initialize(self):
         """Initialize model (lazy loading)."""
         if self._initialized:
             return
 
+        # Check for TensorRT native backend first
+        if self.config.use_tensorrt_native:
+            self._initialize_tensorrt_native()
+            return
+
+        # PyTorch/torchreid backend
+        self._initialize_torch()
+
+    def _initialize_torch(self):
+        """Initialize PyTorch/torchreid backend."""
         try:
             import torch
             import torchvision.transforms as T
@@ -163,17 +182,12 @@ class ReIDExtractor:
 
             # Enable CUDA optimizations if available
             if torch.cuda.is_available():
-                # Enable cuDNN autotuner for faster convolutions
                 torch.backends.cudnn.benchmark = True
 
             model_path = self.config.model
 
-            # Check for ONNX model (TensorRT/CUDA/CPU via onnxruntime)
-            if model_path.endswith(".onnx"):
-                self._load_tensorrt_model(model_path)
-            # Check if model is a file path
-            elif model_path.endswith(".pth") or "/" in model_path:
-                # Load from local file
+            # Check if model is a file path (.pth file)
+            if model_path.endswith(".pth") or "/" in model_path:
                 model_file = Path(model_path)
                 if not model_file.exists():
                     raise FileNotFoundError(f"Re-ID model not found: {model_path}")
@@ -183,19 +197,7 @@ class ReIDExtractor:
                 # Determine model architecture from filename
                 from torchreid import models
 
-                if "osnet_ain_x1_0" in model_path:
-                    arch = "osnet_ain_x1_0"
-                elif "osnet_x1_0" in model_path:
-                    arch = "osnet_x1_0"
-                elif "osnet_x0_75" in model_path:
-                    arch = "osnet_x0_75"
-                elif "osnet_x0_5" in model_path:
-                    arch = "osnet_x0_5"
-                elif "osnet_x0_25" in model_path:
-                    arch = "osnet_x0_25"
-                else:
-                    arch = "osnet_x1_0"  # Default
-
+                arch = self._detect_architecture(model_path)
                 logger.info(f"Using architecture: {arch}")
 
                 # Build model without pretrained weights
@@ -208,20 +210,16 @@ class ReIDExtractor:
 
                 # Load weights from file
                 state_dict = torch.load(model_path, map_location=self._device)
-                # Handle different checkpoint formats
                 if "state_dict" in state_dict:
                     state_dict = state_dict["state_dict"]
-                # Remove 'module.' prefix if present (from DataParallel)
                 state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
-                # Remove classifier weights (we only need feature extractor)
                 state_dict = {k: v for k, v in state_dict.items() if not k.startswith("classifier")}
-                # Load weights
                 self._model.load_state_dict(state_dict, strict=False)
                 self._model = self._model.to(self._device)
                 self._model.eval()
 
             else:
-                # Try to load from torchreid by name
+                # Load from torchreid by model name
                 try:
                     from torchreid import models
 
@@ -229,7 +227,7 @@ class ReIDExtractor:
 
                     self._model = models.build_model(
                         name=model_path,
-                        num_classes=1,  # Not used for feature extraction
+                        num_classes=1,
                         loss="softmax",
                         pretrained=True,
                     )
@@ -237,7 +235,7 @@ class ReIDExtractor:
                     self._model.eval()
 
                 except ImportError:
-                    # Fallback to loading OSNet directly with torch hub
+                    # Fallback to torch hub
                     logger.warning("torchreid not available, using torch hub")
                     self._model = torch.hub.load(
                         "KaiyangZhou/deep-person-reid",
@@ -259,13 +257,50 @@ class ReIDExtractor:
             ])
 
             self._initialized = True
-            logger.info("Re-ID model loaded successfully")
+            logger.info("Re-ID model loaded successfully (PyTorch backend)")
 
         except ImportError as e:
             raise ImportError(
                 f"PyTorch and torchreid are required for Re-ID. "
                 f"Install with: pip install torch torchvision torchreid. Error: {e}"
             )
+
+    def _initialize_tensorrt_native(self):
+        """Initialize TensorRT native backend (no PyTorch overhead)."""
+        from pathlib import Path
+        from src.recognition.tensorrt_reid import TensorRTReIDEmbedder
+
+        model_path = self.config.trt_model
+
+        if not Path(model_path).exists():
+            raise FileNotFoundError(
+                f"TensorRT Re-ID model not found: {model_path}\n"
+                f"Convert your model with:\n"
+                f"  python tools/convert_reid_to_trt.py --pth <model>.pth"
+            )
+
+        logger.info(f"Loading TensorRT native Re-ID model: {model_path}")
+        self._trt_embedder = TensorRTReIDEmbedder(model_path)
+        self._is_tensorrt_native = True
+        self._initialized = True
+        logger.info("Re-ID model loaded successfully (TensorRT native backend)")
+
+    @staticmethod
+    def _detect_architecture(model_path: str) -> str:
+        """Detect OSNet architecture from model filename."""
+        model_path_lower = model_path.lower()
+        if "osnet_ain_x1_0" in model_path_lower:
+            return "osnet_ain_x1_0"
+        elif "osnet_x1_0" in model_path_lower:
+            return "osnet_x1_0"
+        elif "osnet_x0_75" in model_path_lower:
+            return "osnet_x0_75"
+        elif "osnet_x0_5" in model_path_lower:
+            return "osnet_x0_5"
+        elif "osnet_x0_25" in model_path_lower:
+            return "osnet_x0_25"
+        else:
+            return "osnet_x1_0"  # Default
 
     def extract(
         self, crop: np.ndarray, return_quality: bool = False
@@ -281,8 +316,6 @@ class ReIDExtractor:
         """
         self._initialize()
 
-        import torch
-
         # Check minimum crop size
         h, w = crop.shape[:2]
         if h < self.config.min_crop_height or w < 30:
@@ -297,7 +330,19 @@ class ReIDExtractor:
                 return self._ZERO_EMBEDDING, 0.0
             return self._ZERO_EMBEDDING
 
-        # Compute quality score based on crop size and aspect ratio
+        # Use TensorRT native backend if configured
+        if self._is_tensorrt_native:
+            return self._trt_embedder.extract(crop, return_quality)
+
+        # PyTorch backend
+        return self._extract_torch(crop, return_quality)
+
+    def _extract_torch(
+        self, crop: np.ndarray, return_quality: bool = False
+    ) -> np.ndarray | tuple[np.ndarray, float]:
+        """Extract embedding using PyTorch backend."""
+        import torch
+
         quality = self._compute_quality(crop)
 
         # Convert BGR to RGB
@@ -305,87 +350,22 @@ class ReIDExtractor:
 
         # Transform and add batch dimension
         tensor = self._transform(rgb).unsqueeze(0)
+        tensor = tensor.to(self._device)
 
-        # Extract features
-        if self._is_ort:
-            input_name = self._model.get_inputs()[0].name
-            ort_inputs = {input_name: tensor.numpy()}
-            features_np = self._model.run(None, ort_inputs)[0]
+        with torch.no_grad():
+            features = self._model(tensor)
+
+            # Handle different model output formats
+            if isinstance(features, tuple):
+                features = features[0]
+
             # Normalize features
-            norm = np.linalg.norm(features_np, ord=2, axis=1, keepdims=True)
-            embedding = (features_np / norm).flatten()
-        else:
-            tensor = tensor.to(self._device)
-            import torch
-            with torch.no_grad():
-                features = self._model(tensor)
-
-                # Handle different model output formats
-                if isinstance(features, tuple):
-                    features = features[0]
-
-                # Normalize features
-                features = torch.nn.functional.normalize(features, p=2, dim=1)
-
-                embedding = features.cpu().numpy().flatten()
+            features = torch.nn.functional.normalize(features, p=2, dim=1)
+            embedding = features.cpu().numpy().flatten()
 
         if return_quality:
             return embedding, quality
-
         return embedding
-
-    def _load_tensorrt_model(self, model_path: str):
-        """Load ONNX model using onnxruntime with TensorRT support."""
-        import onnxruntime as ort
-        from pathlib import Path
-
-        model_file = Path(model_path)
-        if not model_file.exists():
-            raise FileNotFoundError(f"Model file not found: {model_path}")
-
-        logger.info(f"Loading Re-ID model: {model_path}")
-        logger.info("Note: The first load with TensorRT can take several minutes to build the engine...")
-
-        # Check for TensorrtExecutionProvider
-        available_providers = ort.get_available_providers()
-        if "TensorrtExecutionProvider" not in available_providers:
-            logger.warning("TensorrtExecutionProvider not available in onnxruntime, "
-                           "falling back to CUDA or CPU. Performance will be degraded.")
-
-        trt_options = {
-            "device_id": 0,
-            "trt_fp16_enable": True,
-            "trt_engine_cache_enable": True,
-            "trt_engine_cache_path": "data/cache/trt_cache",
-        }
-        if self.config.trt_max_workspace_size > 0:
-            trt_options["trt_max_workspace_size"] = self.config.trt_max_workspace_size
-
-        providers = [
-            ("TensorrtExecutionProvider", trt_options),
-            "CUDAExecutionProvider",
-            "CPUExecutionProvider"
-        ]
-
-        # Filter providers to only those available
-        providers = [p for p in providers if (p[0] if isinstance(p, tuple) else p) in available_providers]
-
-        # Session options for memory optimization
-        sess_options = ort.SessionOptions()
-        sess_options.enable_mem_pattern = True  # Enable memory pattern optimization
-        sess_options.enable_cpu_mem_arena = True  # Enable CPU memory arena
-        sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-
-        try:
-            self._model = ort.InferenceSession(
-                model_path,
-                sess_options=sess_options,
-                providers=providers
-            )
-            self._is_ort = True
-            logger.info(f"Re-ID model loaded successfully using {self._model.get_providers()[0]}")
-        except Exception as e:
-            raise e
 
     def extract_batch(
         self, crops: list[np.ndarray]
@@ -403,7 +383,34 @@ class ReIDExtractor:
 
         self._initialize()
 
-        import cv2
+        # Use TensorRT native backend if configured
+        if self._is_tensorrt_native:
+            return self._extract_batch_tensorrt(crops)
+
+        # PyTorch backend
+        return self._extract_batch_torch(crops)
+
+    def _extract_batch_tensorrt(
+        self, crops: list[np.ndarray]
+    ) -> list[tuple[np.ndarray, float]]:
+        """Extract batch using TensorRT (processes one at a time)."""
+        results = []
+        for crop in crops:
+            h, w = crop.shape[:2]
+            if h < self.config.min_crop_height or w < 30:
+                results.append((self._ZERO_EMBEDDING, 0.0))
+                continue
+            if is_grayscale_image(crop):
+                results.append((self._ZERO_EMBEDDING, 0.0))
+                continue
+            embedding, quality = self._trt_embedder.extract(crop, return_quality=True)
+            results.append((embedding, quality))
+        return results
+
+    def _extract_batch_torch(
+        self, crops: list[np.ndarray]
+    ) -> list[tuple[np.ndarray, float]]:
+        """Extract batch using PyTorch backend."""
         import torch
 
         results = []
@@ -417,7 +424,6 @@ class ReIDExtractor:
                 results.append((self._ZERO_EMBEDDING, 0.0))
                 continue
 
-            # Skip grayscale/IR images
             if is_grayscale_image(crop):
                 results.append((self._ZERO_EMBEDDING, 0.0))
                 continue
@@ -432,25 +438,16 @@ class ReIDExtractor:
             return results
 
         # Batch inference
-        batch = torch.stack(tensors)
+        batch = torch.stack(tensors).to(self._device)
 
-        if self._is_ort:
-            input_name = self._model.get_inputs()[0].name
-            ort_inputs = {input_name: batch.numpy()}
-            features_np = self._model.run(None, ort_inputs)[0]
-            # Normalize features
-            norm = np.linalg.norm(features_np, ord=2, axis=1, keepdims=True)
-            embeddings = features_np / norm
-        else:
-            batch = batch.to(self._device)
-            with torch.no_grad():
-                features = self._model(batch)
+        with torch.no_grad():
+            features = self._model(batch)
 
-                if isinstance(features, tuple):
-                    features = features[0]
+            if isinstance(features, tuple):
+                features = features[0]
 
-                features = torch.nn.functional.normalize(features, p=2, dim=1)
-                embeddings = features.cpu().numpy()
+            features = torch.nn.functional.normalize(features, p=2, dim=1)
+            embeddings = features.cpu().numpy()
 
         # Rebuild results list
         result_dict = {}
@@ -480,8 +477,6 @@ class ReIDExtractor:
         Returns:
             Quality score between 0 and 1
         """
-        import cv2
-
         h, w = crop.shape[:2]
 
         # Size score (normalized by expected good size)
@@ -495,14 +490,15 @@ class ReIDExtractor:
         # Blur score using Laplacian variance
         gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        blur_score = min(1.0, laplacian_var / 500.0)  # 500 is empirically good
+        blur_score = min(1.0, laplacian_var / 500.0)
 
         # Combine scores
         quality = 0.4 * size_score + 0.3 * aspect_score + 0.3 * blur_score
 
         return float(quality)
 
-    def compare(self, embedding1: np.ndarray, embedding2: np.ndarray) -> float:
+    @staticmethod
+    def compare(embedding1: np.ndarray, embedding2: np.ndarray) -> float:
         """Compare two Re-ID embeddings.
 
         Args:
@@ -520,12 +516,7 @@ class ReIDExtractor:
             return
 
         self._initialize()
-        # Standard Re-ID input size
         dummy = np.zeros((256, 128, 3), dtype=np.uint8)
         self.extract(dummy)
-        
-        # Also warmup batch extraction
-        dummy_batch = [dummy] * 2
-        self.extract_batch(dummy_batch)
-        
-        logger.info("Re-ID extractor warmed up (single and batch)")
+
+        logger.info("Re-ID extractor warmed up")

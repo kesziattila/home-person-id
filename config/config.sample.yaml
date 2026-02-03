@@ -187,7 +187,7 @@ reid:
   enabled: true
 
   # Model (smallest to largest): osnet_x0_25, osnet_x0_5, osnet_x0_75, osnet_x1_0
-  # For TensorRT: models/osnet_x0_25.onnx (convert first, see docs/JETSON.md)
+  # For native TensorRT, use trt_model option instead (see docs/JETSON.md)
   # Smaller = faster and less memory, larger = more accurate
   model: "osnet_x1_0"
 
@@ -224,9 +224,13 @@ reid:
   # Set to 0.0 to disable. Recommended: 0.15
   skip_overlapping_iou: 0.15
 
-  # Max memory for TensorRT engine workspace (bytes).
-  # 0 = default (usually 1GB). Adjust if hitting memory limits.
-  trt_max_workspace_size: 0
+  # --- TensorRT Native Backend (Lowest Memory) ---
+  # Use native TensorRT instead of PyTorch (bypasses torchreid entirely)
+  # Requires TensorRT engine: python tools/convert_reid_to_trt.py
+  use_tensorrt_native: false
+
+  # Path to TensorRT engine (only used when use_tensorrt_native: true)
+  trt_model: "models/osnet_ain_x1_0.engine"
 
 # =============================================================================
 # FACE RECOGNITION (InsightFace)

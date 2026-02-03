@@ -152,8 +152,11 @@ class ReIDConfig:
     # Helps avoid storing embeddings when people are close together (e.g., parent+child).
     # Set to 0.0 to disable. Recommended: 0.15
     skip_overlapping_iou: float = 0.15
-    # Max memory for TensorRT engine (bytes), 0 = default (usually 1GB)
-    trt_max_workspace_size: int = 0
+    # Use TensorRT native backend (bypasses PyTorch, lowest memory)
+    # Requires TensorRT engine: python tools/convert_reid_to_trt.py
+    use_tensorrt_native: bool = False
+    # Path to TensorRT engine file (only used when use_tensorrt_native=True)
+    trt_model: str = "models/osnet_ain_x1_0.engine"
 
 
 @dataclass

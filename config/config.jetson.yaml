@@ -78,19 +78,21 @@ tracking:
   stationary_timeout: 0
 
 # Cross-camera Re-ID
-# Models (smallest to largest): osnet_x0_25, osnet_x0_5, osnet_x0_75, osnet_x1_0
-# For TensorRT acceleration, convert model first (see docs/JETSON.md)
-# Then use: model: "models/osnet_x0_25.onnx"
+# Backends: PyTorch/torchreid (default) or TensorRT native (lowest memory)
+# For TensorRT: python tools/convert_reid_to_trt.py
 reid:
   enabled: true                 # Set to false to save ~300MB
-  model: "osnet_x0_25"          # Smallest model, saves memory (~150MB vs ~350MB)
+  model: "osnet_x0_25"          # Model name (only for PyTorch backend)
   similarity_threshold: 0.65
   max_reappear_time_sec: 3600
   gallery_size: 10
   min_consecutive_matches: 3
   min_crop_height: 100
   min_visibility: 0.5
-  trt_max_workspace_size: 268435456  # 256MB for Re-ID TensorRT
+  # Native TensorRT backend (lowest memory, recommended for Jetson)
+  # Convert model: python tools/convert_reid_to_trt.py
+  use_tensorrt_native: true
+  trt_model: "models/osnet_ain_x1_0.engine"
 
 # Face recognition - InsightFace
 # Models: buffalo_sc (smallest), buffalo_s (small), buffalo_l (large/default)

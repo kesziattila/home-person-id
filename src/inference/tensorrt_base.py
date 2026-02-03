@@ -101,6 +101,14 @@ class TensorRTEngine(ABC):
 
         logger.info(f"TensorRT engine loaded: {self.model_path}")
 
+    def _get_input_height(self) -> int:
+        """Get expected input height. Override for non-square inputs."""
+        return self._get_input_size()
+
+    def _get_input_width(self) -> int:
+        """Get expected input width. Override for non-square inputs."""
+        return self._get_input_size()
+
     def _setup_buffers(self, cuda, trt):
         """Allocate input/output buffers."""
         self._output_names = []
@@ -113,20 +121,22 @@ class TensorRTEngine(ABC):
 
             # Handle dynamic shapes for input
             if is_input and (-1 in shape or 0 in shape):
-                input_size = self._get_input_size()
-                shape = (1, 3, input_size, input_size)
+                input_h = self._get_input_height()
+                input_w = self._get_input_width()
+                shape = (1, 3, input_h, input_w)
                 self._context.set_input_shape(name, shape)
 
             # Validate input size matches expected
             if is_input and len(shape) == 4:
                 model_h, model_w = shape[2], shape[3]
-                expected_size = self._get_input_size()
-                if model_h != expected_size or model_w != expected_size:
+                expected_h = self._get_input_height()
+                expected_w = self._get_input_width()
+                if model_h != expected_h or model_w != expected_w:
                     self._cuda_context.pop()
                     raise RuntimeError(
                         f"TensorRT model input size mismatch!\n"
                         f"  Model expects: {model_w}x{model_h}\n"
-                        f"  Config expects: {expected_size}x{expected_size}\n\n"
+                        f"  Config expects: {expected_w}x{expected_h}\n\n"
                         f"Re-convert the model with the correct input size."
                     )
 
