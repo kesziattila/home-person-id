@@ -6,6 +6,8 @@ import Unidentified from './Unidentified.js';
 import PersonDetailModal from './PersonDetailModal.js';
 import AssignFaceModal from './AssignFaceModal.js';
 import EventDetailModal from './EventDetailModal.js';
+import AddPersonModal from './AddPersonModal.js';
+import ImagePreviewModal from './ImagePreviewModal.js';
 
 export default {
     components: {
@@ -17,6 +19,8 @@ export default {
         PersonDetailModal,
         AssignFaceModal,
         EventDetailModal,
+        AddPersonModal,
+        ImagePreviewModal,
     },
     template: `
         <div>
@@ -49,12 +53,16 @@ export default {
                            @show-person-detail="showPersonDetail"
                            @show-assign-face="showAssignFace"
                            @show-event-detail="showEventDetail"
+                           @show-add-person="showAddPersonModal = true"
+                           @preview-image="showImagePreview"
                            @face-assigned="handleFaceAssigned"
                            @person-deleted="handlePersonDeleted">
                 </component>
             </main>
 
             <!-- Modals -->
+            <add-person-modal :visible="showAddPersonModal" @close="showAddPersonModal = false" @person-added="handlePersonAdded"></add-person-modal>
+            
             <person-detail-modal :person-id="selectedPersonId" 
                                  @close="selectedPersonId = null"
                                  @person-deleted="handlePersonDeleted"
@@ -70,6 +78,10 @@ export default {
                                 @close="selectedEvent = null">
             </event-detail-modal>
 
+            <image-preview-modal :image-url="previewImageUrl"
+                                 @close="previewImageUrl = null">
+            </image-preview-modal>
+
         </div>
     `,
     data() {
@@ -83,10 +95,11 @@ export default {
                 { id: 'events', name: 'Events' },
                 { id: 'tracks', name: 'Active Tracks' },
             ],
+            showAddPersonModal: false,
             selectedPersonId: null,
             selectedFaceId: null,
-            selectedImageId: null,
             selectedEvent: null,
+            previewImageUrl: null,
         };
     },
     computed: {
@@ -115,8 +128,22 @@ export default {
                 this.activeTab = newHash;
             }
         });
+
+        // Global Escape key listener
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                this.closeAllModals();
+            }
+        });
     },
     methods: {
+        closeAllModals() {
+            this.showAddPersonModal = false;
+            this.selectedPersonId = null;
+            this.selectedFaceId = null;
+            this.selectedEvent = null;
+            this.previewImageUrl = null;
+        },
         showPersonDetail(personId) {
             this.selectedPersonId = personId;
         },
@@ -126,10 +153,13 @@ export default {
         showEventDetail(event) {
             this.selectedEvent = event;
         },
-        showImagePreview(imageId) {
-            this.selectedImageId = imageId;
-            // Logic to show image preview modal will go here
-            console.log("Previewing image:", imageId);
+        showImagePreview(imageUrl) {
+            this.previewImageUrl = imageUrl;
+        },
+        handlePersonAdded() {
+            if (this.activeTab === 'persons') {
+                this.forceRerender(this.activeTab);
+            }
         },
         handlePersonDeleted() {
             if (this.activeTab === 'persons') {

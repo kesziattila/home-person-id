@@ -1,6 +1,6 @@
 export default {
     template: `
-        <div v-if="visible" class="modal active fixed inset-0 bg-black bg-opacity-75 items-center justify-center z-50 p-4">
+        <div v-if="visible" @click.self="close" class="modal active fixed inset-0 bg-black bg-opacity-75 items-center justify-center z-50 p-4">
             <div class="bg-gray-800 rounded-lg p-6 max-w-md w-full">
                 <h3 class="text-xl font-bold mb-4">Assign Face to Person</h3>
                 <div v-if="loading" class="flex justify-center items-center p-8">
@@ -77,13 +77,13 @@ export default {
             if (newId) {
                 this.visible = true;
                 await this.loadData(newId);
+            } else {
+                this.visible = false;
             }
         }
     },
     methods: {
         close() {
-            this.visible = false;
-            this.resetState();
             this.$emit('close');
         },
         resetState() {
@@ -96,6 +96,7 @@ export default {
         async loadData(faceId) {
             this.loading = true;
             this.error = null;
+            this.resetState();
             try {
                 const [faceRes, personsRes] = await Promise.all([
                     fetch(`/api/v1/unidentified-faces/${faceId}`),
@@ -106,7 +107,6 @@ export default {
                 this.faceDetails = await faceRes.json();
                 this.persons = await personsRes.json();
                 
-                // Pre-select best match if available
                 if (this.faceDetails.best_match_person_id) {
                     this.selectedPersonId = this.faceDetails.best_match_person_id;
                 }

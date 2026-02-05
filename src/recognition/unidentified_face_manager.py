@@ -250,7 +250,7 @@ class UnidentifiedFaceManager:
                 extra_data={
                     "quality_score": float(quality_score),
                     "unidentified_face_id": int(face.id),
-                    "face_id": task.best_match_face_id,
+                    "best_match_face_id": task.best_match_face_id,
                     "best_match_person_id": task.best_match_person_id,
                     "best_match_score": float(task.best_match_score) if task.best_match_score is not None else None,
                 }

@@ -419,6 +419,7 @@ class IdentityLinker:
         best_match_id = None
         best_match_name = None
         best_score = 0.0
+        best_face_id = None
 
         if gallery:
             with profiler.measure("FaceRecognizer.compare"):
@@ -473,7 +474,7 @@ class IdentityLinker:
             state.confirm_identity(best_match_id, best_score, "face")
 
             # Save snapshot
-            snapshot_path = self._save_snapshot(frame, "face_match", best_match_name)
+            snapshot_path = self._save_snapshot(face_region, best_face.bbox, "face_match", best_match_name)
 
             # Update database
             self.repository.update_track(
@@ -483,16 +484,13 @@ class IdentityLinker:
             )
             
             # Emit events
-            # 1. face_match
-            # Note: we don't automatically persist the new face embedding to the DB 
-            # to avoid redundant data. Events can reference the matched gallery face_id.
             self.repository.create_event(
                 camera_id=camera_id or "unknown",
                 event_type="face_match",
                 track_id=state.global_track_id,
                 person_id=best_match_id,
                 confidence=best_score,
-                face_embedding_id=best_face_id, # Link to the matched gallery embedding
+                face_embedding_id=best_face_id,
                 snapshot_path=snapshot_path,
                 extra_data={
                     "threshold": self.face_config.similarity_threshold,
@@ -500,7 +498,6 @@ class IdentityLinker:
                 }
             )
 
-            # 2. id_upgraded if applicable
             if was_reid_identified and previous_person_id is not None:
                 self.repository.create_event(
                     camera_id=camera_id or "unknown",
@@ -515,7 +512,6 @@ class IdentityLinker:
                     }
                 )
 
-            # Update shared Re-ID gallery
             if self.reid_gallery_manager and best_match_name:
                 track_id_num = hash(state.global_track_id) % (10**9)
                 self.reid_gallery_manager.update_track_embedding(
@@ -759,7 +755,7 @@ class IdentityLinker:
 
     # ==================== Snapshot Saving ====================
 
-    def _save_snapshot(self, frame: np.ndarray, event_type: str, person_name: Optional[str] = None) -> Optional[str]:
+    def _save_snapshot(self, image: np.ndarray, bbox: tuple, event_type: str, person_name: Optional[str] = None) -> Optional[str]:
         """Save a snapshot to disk.
 
         Returns:
@@ -777,7 +773,7 @@ class IdentityLinker:
             return None
 
         try:
-            from src.utils.image_utils import write_jpeg
+            from src.utils.image_utils import write_jpeg, crop_with_margin
             import uuid
             from pathlib import Path
 
@@ -790,8 +786,13 @@ class IdentityLinker:
             filename = f"{timestamp}_{event_type}{name_part}_{unique_id}.jpg"
             filepath = snapshot_dir / filename
 
-            write_jpeg(str(filepath), frame)
-            return str(filepath)
+            # Crop the face from the provided image (face_region)
+            face_crop, _ = crop_with_margin(image, bbox, margin_ratio=0.3)
+            if face_crop.size > 0:
+                write_jpeg(str(filepath), face_crop)
+                return str(filepath)
+            else:
+                return None
         except Exception as e:
             logger.error(f"Failed to save snapshot: {e}")
             return None

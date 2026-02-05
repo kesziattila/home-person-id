@@ -1,6 +1,6 @@
 export default {
     template: `
-        <div v-if="visible" class="modal active fixed inset-0 bg-black bg-opacity-75 items-center justify-center z-50 p-4">
+        <div v-if="visible" @click.self="close" class="modal active fixed inset-0 bg-black bg-opacity-75 items-center justify-center z-50 p-4">
             <div class="bg-gray-800 rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
                 <div class="flex justify-between items-start mb-4">
                     <div>
@@ -25,7 +25,7 @@ export default {
                         </div>
                         <div class="flex flex-wrap gap-3">
                             <div v-for="img in images" :key="img.id" class="relative group">
-                                <img v-if="img.has_image" :src="'/api/v1/faces/image/' + img.id" class="face-image" @click="$emit('preview-image', img.id)">
+                                <img v-if="img.has_image" :src="'/api/v1/faces/image/' + img.id" class="face-image" @click="$emit('preview-image', '/api/v1/faces/image/' + img.id)">
                                 <div v-else class="face-placeholder text-xs">No file</div>
                                 <div class="absolute -top-2 -right-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <button @click.stop="deleteImage(img.id)" class="bg-red-600 hover:bg-red-700 text-white rounded-full w-6 h-6 text-xs">&times;</button>
@@ -84,13 +84,13 @@ export default {
             if (newId) {
                 this.visible = true;
                 await this.loadPersonDetails(newId);
+            } else {
+                this.visible = false;
             }
         }
     },
     methods: {
         close() {
-            this.visible = false;
-            this.resetState();
             this.$emit('close');
         },
         resetState() {
@@ -104,7 +104,7 @@ export default {
         },
         async loadPersonDetails(personId) {
             this.loading = true;
-            this.error = null;
+            this.resetState();
             try {
                 const response = await fetch(`/api/v1/persons/${personId}/detail`);
                 if (!response.ok) throw new Error('Failed to load person details');

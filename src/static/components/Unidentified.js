@@ -86,7 +86,7 @@ export default {
         </div>
     `,
     props: ['autoRefresh'],
-    emits: ['show-assign-face', 'face-assigned'],
+    emits: ['show-assign-face', 'face-assigned', 'preview-image'],
     data() {
         return {
             faces: [],
@@ -183,8 +183,7 @@ export default {
             return '<span class="text-gray-500">No match</span>';
         },
         previewFace(faceId) {
-            console.log("Preview face:", faceId);
-            // This would typically emit an event to the root component to show a modal
+            this.$emit('preview-image', `/api/v1/unidentified-faces/${faceId}/image`);
         },
         async quickAssign(faceId, personId) {
             if (!confirm('Confirm this face assignment?')) return;
