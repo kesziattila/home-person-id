@@ -4,10 +4,11 @@ import logging
 import os
 import threading
 import uvicorn
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from typing import Optional
+from concurrent.futures import ThreadPoolExecutor
 
 from src.visualization.preview import PreviewBuffer, Visualizer
 from src.tracking.zone_manager import ZoneManager
@@ -41,6 +42,7 @@ class APIServer:
         self.use_nvjpeg = use_nvjpeg
         self.zone_manager = zone_manager
         self.app = FastAPI(title="Home Person ID API")
+        self.executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
 
         # Determine static directory relative to this file
         current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -50,6 +52,9 @@ class APIServer:
         self._thread: Optional[threading.Thread] = None
 
     def setup_routes(self):
+        # Mount static files directory
+        self.app.mount("/static", StaticFiles(directory=self.static_dir), name="static")
+
         @self.app.get("/")
         async def index():
             index_path = os.path.join(self.static_dir, "index.html")
@@ -62,9 +67,9 @@ class APIServer:
             return {"cameras": self.buffer.get_all_camera_ids()}
 
         @self.app.get("/api/v1/stream/{camera_id}")
-        async def stream(camera_id: str):
+        async def stream(camera_id: str, request: Request):
             return StreamingResponse(
-                self.generate_frames(camera_id),
+                self.generate_frames_threaded(camera_id, request),
                 media_type="multipart/x-mixed-replace; boundary=frame"
             )
 
@@ -93,29 +98,43 @@ class APIServer:
                 self.app.include_router(unidentified_faces_router)
                 logger.info("Unidentified faces API routes registered")
 
-    async def generate_frames(self, camera_id: str):
-        """Generate MJPEG frames for a camera."""
+    def _generate_frame(self, camera_id: str):
+        """Generates a single annotated frame."""
+        preview_frame = self.buffer.get_latest_frame(camera_id)
+        if preview_frame is not None:
+            annotated_image = Visualizer.draw_detections(
+                preview_frame.image, 
+                preview_frame.metadata,
+                zone_manager=self.zone_manager,
+                show_zones=False
+            )
+            try:
+                frame_bytes = encode_jpeg(annotated_image, use_nvjpeg=self.use_nvjpeg)
+                return (b'--frame\r\n'
+                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            except Exception as e:
+                logger.error(f"Error encoding frame: {e}")
+        return None
+
+    async def generate_frames_threaded(self, camera_id: str, request: Request):
+        """Generate MJPEG frames for a camera using a thread pool."""
+        loop = asyncio.get_running_loop()
         while True:
-            preview_frame = self.buffer.get_latest_frame(camera_id)
-            if preview_frame is not None:
-                # Draw annotations (but hide zone boundaries as requested)
-                annotated_image = Visualizer.draw_detections(
-                    preview_frame.image, 
-                    preview_frame.metadata,
-                    zone_manager=self.zone_manager,
-                    show_zones=False
+            if await request.is_disconnected():
+                logger.info(f"Client disconnected from stream {camera_id}. Stopping.")
+                break
+
+            try:
+                frame = await loop.run_in_executor(
+                    self.executor, self._generate_frame, camera_id
                 )
-                
-                # Encode to JPEG
-                try:
-                    frame_bytes = encode_jpeg(annotated_image, use_nvjpeg=self.use_nvjpeg)
-                    yield (b'--frame\r\n'
-                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-                except Exception as e:
-                    logger.error(f"Error encoding frame: {e}")
-            
-            # Control frame rate for the stream
-            await asyncio.sleep(0.05)  # ~20 FPS
+                if frame:
+                    yield frame
+                # Control frame rate for the stream
+                await asyncio.sleep(0.05)  # ~20 FPS
+            except Exception as e:
+                logger.error(f"Error in frame generation loop for {camera_id}: {e}")
+                break
 
     def start(self):
         """Start the API server in a background thread."""
@@ -127,5 +146,6 @@ class APIServer:
         logger.info(f"API server started at http://{self.host}:{self.port}")
 
     def stop(self):
-        """Stop the API server (daemon thread will stop with main)."""
+        """Stop the API server and shutdown the thread pool."""
         logger.info("Stopping API server")
+        self.executor.shutdown(wait=False)

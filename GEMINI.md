@@ -1,0 +1,1 @@
+Please use CLAUDE.md as primary rule file
