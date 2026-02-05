@@ -751,7 +751,7 @@ class GlobalTrackManager:
         )
 
         if match:
-            return match[0]  # Return matched global track ID
+            return match.matched_track_id  # Return matched global track ID
 
         return None
 

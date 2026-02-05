@@ -30,6 +30,31 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class CrossCameraMatch:
+    """Result of a cross-camera Re-ID match."""
+    matched_track_id: str
+    similarity: float
+    person_name: Optional[str] = None
+
+
+@dataclass
+class IdentificationResult:
+    """Result of an identification attempt."""
+    identified: bool
+    person_name: Optional[str] = None
+    confidence: float = 0.0
+
+
+@dataclass
+class FaceGalleryEntry:
+    """Entry in the face recognition gallery."""
+    person_id: int
+    person_name: str
+    embedding: np.ndarray
+    embedding_id: Optional[int] = None
+
+
+@dataclass
 class TrackIdentity:
     """Identity information for a track."""
 
@@ -77,7 +102,8 @@ class IdentificationManager:
     2. Production mode: Pass repository, gallery loaded from database with TTL
 
     Example (preview mode):
-        manager = IdentificationManager(config, face_gallery=gallery_list)
+        gallery = [FaceGalleryEntry(person_id=1, person_name="Alice", embedding=emb)]
+        manager = IdentificationManager(config, face_gallery=gallery)
 
     Example (production mode):
         manager = IdentificationManager(config, repository=repo)
@@ -86,7 +112,7 @@ class IdentificationManager:
     def __init__(
         self,
         config: Config,
-        face_gallery: Optional[list[tuple[int, str, np.ndarray]]] = None,
+        face_gallery: Optional[list[FaceGalleryEntry]] = None,
         repository: Optional["Repository"] = None,
         enable_debug_images: bool = False,
         face_recognizer: Optional[FaceRecognizer] = None,
@@ -97,7 +123,7 @@ class IdentificationManager:
 
         Args:
             config: Application configuration
-            face_gallery: Pre-loaded face gallery (person_id, name, embedding) - for preview
+            face_gallery: Pre-loaded face gallery - for preview.
             repository: Database repository - for production (loads gallery automatically)
             enable_debug_images: Whether to save debug images
             face_recognizer: Optional pre-initialized face recognizer (for testing/shared use)
@@ -113,7 +139,7 @@ class IdentificationManager:
         self._unidentified_face_manager = unidentified_face_manager
 
         # Face gallery - either pre-loaded or from database
-        self._face_gallery = face_gallery or []
+        self._face_gallery: list[FaceGalleryEntry] = face_gallery or []
         self._gallery_loaded_at = 0.0
         self._gallery_ttl = 60.0  # Reload from DB every 60 seconds
 
@@ -174,8 +200,12 @@ class IdentificationManager:
         return self.reid_config.enabled
 
     @property
-    def face_gallery(self) -> list[tuple[int, str, np.ndarray]]:
-        """Get face gallery, loading from database if needed."""
+    def face_gallery(self) -> list[FaceGalleryEntry]:
+        """Get face gallery, loading from database if needed.
+        
+        Returns:
+            List of FaceGalleryEntry
+        """
         if self.repository:
             self._load_face_gallery_from_db()
         return self._face_gallery
@@ -199,17 +229,56 @@ class IdentificationManager:
         for person_id, emb_id, embedding in embeddings:
             person = self.repository.get_person(person_id)
             if person:
-                self._face_gallery.append((person_id, person.name, embedding))
+                self._face_gallery.append(
+                    FaceGalleryEntry(
+                        person_id=person_id,
+                        person_name=person.name,
+                        embedding=embedding,
+                        embedding_id=emb_id
+                    )
+                )
 
         self._gallery_loaded_at = current_time
         logger.debug(f"Loaded {len(self._face_gallery)} face embeddings")
 
-    def warmup(self):
-        """Warm up models for faster first inference."""
-        if self.face_recognizer:
-            self.face_recognizer.warmup()
-        if self.reid_extractor:
-            self.reid_extractor.warmup()
+    def _save_snapshot(self, frame: np.ndarray, event_type: str, person_name: Optional[str] = None) -> Optional[str]:
+        """Save a snapshot to disk.
+
+        Returns:
+            Path to saved snapshot or None if disabled
+        """
+        if not self.config.snapshots or not self.config.snapshots.enabled:
+            return None
+
+        # Determine if we should save based on event type
+        should_save = False
+        if event_type == "face_match" and self.config.snapshots.save_on_identification:
+            should_save = True
+        elif event_type == "reid_match" and self.config.snapshots.save_on_identification:
+            should_save = True
+        
+        if not should_save:
+            return None
+
+        try:
+            from src.utils.image_utils import write_jpeg
+            import uuid
+            from pathlib import Path
+
+            snapshot_dir = Path(self.config.snapshots.path)
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            unique_id = uuid.uuid4().hex[:8]
+            name_part = f"_{person_name}" if person_name else ""
+            filename = f"{timestamp}_{event_type}{name_part}_{unique_id}.jpg"
+            filepath = snapshot_dir / filename
+
+            write_jpeg(str(filepath), frame)
+            return str(filepath)
+        except Exception as e:
+            logger.error(f"Failed to save snapshot: {e}")
+            return None
 
     # ==================== Identity State Management ====================
 
@@ -257,7 +326,20 @@ class IdentificationManager:
         self,
         track_id: str,
         crop: np.ndarray,
-        num_persons: int
+        num_persons: int,
+        camera_id: Optional[str] = None,
+        frame: Optional[np.ndarray] = None,
+    ) -> Optional[np.ndarray]:
+        """Backward compatibility for try_reid_match."""
+        return self.process_track(track_id, crop, num_persons, camera_id, frame)
+
+    def process_track(
+        self,
+        track_id: str,
+        crop: np.ndarray,
+        num_persons: int,
+        camera_id: Optional[str] = None,
+        frame: Optional[np.ndarray] = None,
     ) -> Optional[np.ndarray]:
         """Try to match a track against Re-ID gallery.
 
@@ -265,6 +347,8 @@ class IdentificationManager:
             track_id: Track identifier
             crop: Person crop image
             num_persons: Number of persons in frame
+            camera_id: Optional camera ID for snapshot saving
+            frame: Optional full frame for snapshot saving
 
         Returns:
             Gallery crop if matched, None otherwise
@@ -292,17 +376,23 @@ class IdentificationManager:
             identity.is_face_identified = False
             identity.identified_at = time.time()
 
+            # Save snapshot if frame provided
+            snapshot_path = None
+            if frame is not None:
+                snapshot_path = self._save_snapshot(frame, "reid_match", match_result.person_name)
+
             # Emit reid_match event
             if self.repository:
                 person = self.repository.get_person_by_name(match_result.person_name)
                 person_id = person.id if person else None
                 self.repository.create_event(
-                    camera_id="unknown",
+                    camera_id=camera_id or "unknown",
                     event_type="reid_match",
                     track_id=track_id,
                     person_id=person_id,
                     confidence=match_result.score,
                     reid_embedding_id=match_result.db_id,
+                    snapshot_path=snapshot_path,
                     extra_data={
                         "match_policy": "threshold",
                         "threshold": self.reid_gallery_manager.similarity_threshold,
@@ -321,7 +411,7 @@ class IdentificationManager:
         new_crop: np.ndarray,
         candidate_track_ids: list[str],
         num_persons_in_frame: int = 1,
-    ) -> Optional[tuple[str, float, Optional[str]]]:
+    ) -> Optional[CrossCameraMatch]:
         """Match a new track against existing tracks using Re-ID.
 
         Used for cross-camera matching when a person appears on a new camera.
@@ -333,7 +423,7 @@ class IdentificationManager:
             num_persons_in_frame: Number of persons in frame
 
         Returns:
-            Tuple of (matched_track_id, similarity, person_name) or None
+            CrossCameraMatch object or None
         """
         if num_persons_in_frame > 1:
             return None
@@ -370,7 +460,11 @@ class IdentificationManager:
         if self.reid_gallery_manager:
             match_result = self.reid_gallery_manager.match_new_track(new_crop, num_persons_in_frame)
             if match_result.matched and match_result.score > best_score:
-                return (new_track_id, match_result.score, match_result.person_name)
+                return CrossCameraMatch(
+                    matched_track_id=new_track_id,
+                    similarity=match_result.score,
+                    person_name=match_result.person_name
+                )
 
         return best_match
 
@@ -383,6 +477,7 @@ class IdentificationManager:
         local_track_id: int,
         num_persons: int,
         camera_id: Optional[str] = None,
+        frame: Optional[np.ndarray] = None,
     ) -> bool:
         """Try face recognition on a track.
 
@@ -392,6 +487,7 @@ class IdentificationManager:
             local_track_id: Local tracker ID (for Re-ID gallery)
             num_persons: Number of persons in frame
             camera_id: Camera ID for unidentified face capture
+            frame: Optional full frame for snapshot saving
 
         Returns:
             True if face identified
@@ -427,17 +523,22 @@ class IdentificationManager:
         best_score = 0.0
         best_name = None
         best_person_id = None
+        best_face_id = None
 
         gallery = self.face_gallery
         if gallery:
             # Vectorized comparison for better performance
-            gallery_embeddings = np.array([emb for _, _, emb in gallery])
+            gallery_embeddings = np.array([entry.embedding for entry in gallery])
             similarities = self.face_recognizer.compare_embeddings_batch(
                 face.embedding, gallery_embeddings
             )
             best_idx = int(np.argmax(similarities))
             best_score = float(similarities[best_idx])
-            best_person_id, best_name, _ = gallery[best_idx]
+            
+            best_entry = gallery[best_idx]
+            best_person_id = best_entry.person_id
+            best_name = best_entry.person_name
+            best_face_id = best_entry.embedding_id
 
         # Store face info even if below threshold
         if best_name:
@@ -456,25 +557,28 @@ class IdentificationManager:
             identity.face_info = None
             identity.identified_at = time.time()
 
-            # Persist face embedding
-            face_embedding_id = None
-            if self.repository:
-                # We should ideally save the face crop and pass its path
-                # For now just add embedding
-                fb = self.repository.add_face_embedding(best_person_id, face.embedding)
-                face_embedding_id = fb.id
+            # Save snapshot
+            snapshot_path = None
+            if frame is not None:
+                snapshot_path = self._save_snapshot(frame, "face_match", best_name)
 
             # Emit events
             if self.repository:
                 # 1. face_match
+                # Note: we don't automatically persist the new face embedding to the DB 
+                # to avoid redundant data. Events can reference the matched gallery face_id.
                 self.repository.create_event(
                     camera_id=camera_id or "unknown",
                     event_type="face_match",
                     track_id=track_id,
                     person_id=best_person_id,
                     confidence=best_score,
-                    face_embedding_id=face_embedding_id,
-                    extra_data={"threshold": self.face_threshold}
+                    face_embedding_id=best_face_id, # Link to the matched gallery embedding
+                    snapshot_path=snapshot_path,
+                    extra_data={
+                        "threshold": self.face_threshold,
+                        "face_id": best_face_id
+                    }
                 )
 
                 # 2. id_upgraded if applicable
@@ -545,6 +649,20 @@ class IdentificationManager:
 
     # ==================== Utility ====================
 
+    def warmup(self):
+        """Warm up ML models."""
+        if self.face_recognizer:
+            try:
+                self.face_recognizer.warmup()
+            except Exception as e:
+                logger.error(f"Error during face recognizer warmup: {e}")
+
+        if self.reid_extractor:
+            try:
+                self.reid_extractor.warmup()
+            except Exception as e:
+                logger.error(f"Error during Re-ID extractor warmup: {e}")
+
     def get_person_name(self, person_id: int) -> Optional[str]:
         """Get person name by ID (cached to avoid repeated DB queries)."""
         # Check cache first
@@ -563,8 +681,8 @@ class IdentificationManager:
             return None
 
         # Search in gallery
-        for pid, name, _ in self._face_gallery:
-            if pid == person_id:
-                self._person_name_cache[person_id] = name
-                return name
+        for entry in self._face_gallery:
+            if entry.person_id == person_id:
+                self._person_name_cache[person_id] = entry.person_name
+                return entry.person_name
         return None

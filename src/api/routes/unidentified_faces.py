@@ -2,7 +2,9 @@
 
 import logging
 import os
+import shutil
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -49,17 +51,20 @@ class AssignResponse(BaseModel):
 def create_unidentified_faces_router(
     repository: Repository,
     face_config: Optional[FaceRecognitionConfig] = None,
+    faces_dir: str = "data/faces"
 ) -> APIRouter:
     """Create unidentified faces router with repository dependency.
 
     Args:
         repository: Database repository instance
         face_config: Face recognition configuration (optional)
+        faces_dir: Directory to store registered face images
 
     Returns:
         Configured APIRouter
     """
     router = APIRouter(prefix="/api/v1", tags=["unidentified-faces"])
+    faces_path = Path(faces_dir)
 
     @router.get("/unidentified-faces", response_model=List[UnidentifiedFaceResponse])
     async def list_unidentified_faces(
@@ -180,8 +185,30 @@ def create_unidentified_faces_router(
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
 
+        # Prepare new image path in person's gallery
+        new_image_path = None
+        if face.image_path and os.path.exists(face.image_path):
+            person_dir = faces_path / f"person_{person.id}"
+            person_dir.mkdir(parents=True, exist_ok=True)
+            
+            filename = os.path.basename(face.image_path)
+            # Add prefix to distinguish from directly uploaded images if needed, 
+            # but using original filename is fine
+            dest_path = person_dir / filename
+            
+            try:
+                shutil.move(face.image_path, str(dest_path))
+                new_image_path = str(dest_path)
+            except Exception as e:
+                logger.error(f"Failed to move unidentified face image: {e}")
+                # Continue with original path if move fails, or fail? 
+                # Let's try to keep it consistent.
+                new_image_path = face.image_path
+
         # Assign to person
-        embedding = repository.assign_unidentified_face_to_person(face_id, request.person_id)
+        embedding = repository.assign_unidentified_face_to_person(
+            face_id, request.person_id, new_image_path=new_image_path
+        )
         if not embedding:
             raise HTTPException(status_code=500, detail="Failed to assign face to person")
 

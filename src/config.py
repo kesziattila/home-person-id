@@ -187,6 +187,8 @@ class FaceRecognitionConfig:
     trt_det_model: str = "models/det_10g.engine"
     # Path to TensorRT recognition engine (w600k_r50.engine)
     trt_rec_model: str = "models/w600k_r50.engine"
+    # Directory to store registered face images
+    faces_dir: str = "data/faces"
 
 
 @dataclass

@@ -87,7 +87,8 @@ class APIServer:
             if self.unidentified_faces_config and self.unidentified_faces_config.enabled:
                 unidentified_faces_router = create_unidentified_faces_router(
                     self.repository,
-                    self.face_config
+                    self.face_config,
+                    faces_dir=self.face_config.faces_dir if self.face_config else "data/faces"
                 )
                 self.app.include_router(unidentified_faces_router)
                 logger.info("Unidentified faces API routes registered")

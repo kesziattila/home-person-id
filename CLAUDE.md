@@ -26,6 +26,10 @@
 - Production-specific features go in wrapper class (e.g., `IdentityLinker` wraps `IdentificationManager`)
 - Wrapper classes should delegate to core class, not duplicate logic
 
+### Type Safety & Data Structures
+- **Use dataclasses for method arguments and return values**: Avoid using raw tuples for complex data structures. Dataclasses provide better readability, type safety, and prevent unpacking errors.
+- **Standardize return types**: Use dedicated result dataclasses (e.g., `IdentificationResult`, `CrossCameraMatch`) to return multiple values from a method.
+
 ### Centralize Validation Logic
 - Put validation checks in one place, typically at the point where data enters the system
 - Example: Grayscale detection and multi-face checks belong in `ReIDGalleryManager.update_track_embedding()`, not scattered across callers

@@ -58,14 +58,14 @@ class ImageUploadResponse(BaseModel):
 def create_persons_router(
     repository: Repository,
     face_config: FaceRecognitionConfig,
-    faces_dir: str = "data/faces"
+    faces_dir: Optional[str] = None,
 ) -> APIRouter:
     """Create persons router with repository dependency.
 
     Args:
         repository: Database repository instance
         face_config: Face recognition configuration
-        faces_dir: Directory to store uploaded face images
+        faces_dir: Optional override for faces directory (for testing)
 
     Returns:
         Configured APIRouter
@@ -73,7 +73,7 @@ def create_persons_router(
     router = APIRouter(prefix="/api/v1", tags=["persons"])
 
     # Ensure faces directory exists
-    faces_path = Path(faces_dir)
+    faces_path = Path(faces_dir or face_config.faces_dir)
     faces_path.mkdir(parents=True, exist_ok=True)
 
     # Lazy load face recognizer

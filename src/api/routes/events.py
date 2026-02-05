@@ -1,10 +1,12 @@
 """API routes for events, persons, and location tracking."""
 
 import logging
+import os
 from datetime import datetime, timedelta
 from typing import List, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from src.database.repository import Repository
@@ -124,6 +126,34 @@ def create_events_router(repository: Repository) -> APIRouter:
             ))
 
         return result
+
+    @router.get("/events/{event_id}/snapshot")
+    async def get_event_snapshot(event_id: int):
+        """Get the snapshot for an event."""
+        with repository.get_session() as session:
+            from src.database.models import Event
+            event = session.query(Event).filter(Event.id == event_id).first()
+            if not event or not event.snapshot_path:
+                raise HTTPException(status_code=404, detail="Snapshot not found")
+            
+            if not os.path.exists(event.snapshot_path):
+                raise HTTPException(status_code=404, detail="Snapshot file not found")
+            
+            return FileResponse(event.snapshot_path, media_type="image/jpeg")
+
+    @router.get("/reid-embeddings/{embedding_id}/image")
+    async def get_reid_embedding_image(embedding_id: int):
+        """Get the snapshot for a Re-ID embedding."""
+        with repository.get_session() as session:
+            from src.database.models import ReIDEmbedding
+            embedding = session.query(ReIDEmbedding).filter(ReIDEmbedding.id == embedding_id).first()
+            if not embedding or not embedding.snapshot_path:
+                raise HTTPException(status_code=404, detail="Snapshot not found")
+            
+            if not os.path.exists(embedding.snapshot_path):
+                raise HTTPException(status_code=404, detail="Snapshot file not found")
+            
+            return FileResponse(embedding.snapshot_path, media_type="image/jpeg")
 
     @router.get("/persons", response_model=List[PersonResponse])
     async def get_persons(

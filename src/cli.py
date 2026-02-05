@@ -471,12 +471,18 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
     # Load face gallery
     face_gallery = []
     if config.face_recognition.enabled:
+        from src.recognition.identification_manager import FaceGalleryEntry
         repo = Repository(config.database.path)
         persons = repo.get_all_persons()
         for person in persons:
             embeddings = repo.get_face_embeddings(person.id)
             for emb_id, embedding in embeddings:
-                face_gallery.append((person.id, person.name, embedding))
+                face_gallery.append(FaceGalleryEntry(
+                    person_id=person.id,
+                    person_name=person.name,
+                    embedding=embedding,
+                    embedding_id=emb_id
+                ))
         click.echo(f"Loaded {len(face_gallery)} face embeddings for {len(persons)} persons")
 
     # Initialize identification manager
@@ -926,11 +932,17 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
     # Load face gallery
     face_gallery = []
     if config.face_recognition.enabled:
+        from src.recognition.identification_manager import FaceGalleryEntry
         persons = repo.get_all_persons()
         for person in persons:
             embeddings = repo.get_face_embeddings(person.id)
             for emb_id, embedding in embeddings:
-                face_gallery.append((person.id, person.name, embedding))
+                face_gallery.append(FaceGalleryEntry(
+                    person_id=person.id,
+                    person_name=person.name,
+                    embedding=embedding,
+                    embedding_id=emb_id
+                ))
         click.echo(f"Loaded {len(face_gallery)} face embeddings for {len(persons)} persons")
 
     # Initialize identification manager and track renderer

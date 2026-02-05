@@ -162,6 +162,11 @@ class Repository:
                 result.append((emb.person_id, emb.id, arr))
             return result
 
+    def get_face_embedding(self, embedding_id: int) -> Optional[FaceEmbedding]:
+        """Get face embedding by ID."""
+        with self.get_session() as session:
+            return session.query(FaceEmbedding).filter(FaceEmbedding.id == embedding_id).first()
+
     # ==================== Track Operations ====================
 
     def create_track(
@@ -750,7 +755,7 @@ class Repository:
             return {r.camera_id: r.count for r in results}
 
     def assign_unidentified_face_to_person(
-        self, face_id: int, person_id: int
+        self, face_id: int, person_id: int, new_image_path: Optional[str] = None
     ) -> Optional[FaceEmbedding]:
         """Assign an unidentified face to a person.
 
@@ -759,6 +764,7 @@ class Repository:
         Args:
             face_id: Unidentified face ID
             person_id: Person to assign to
+            new_image_path: Optional new path for the source image
 
         Returns:
             Created FaceEmbedding or None if face not found
@@ -779,7 +785,7 @@ class Repository:
             face_emb = FaceEmbedding(
                 person_id=person_id,
                 embedding=face.embedding,  # Already bytes
-                source_image=face.image_path,
+                source_image=new_image_path or face.image_path,
             )
             session.add(face_emb)
 

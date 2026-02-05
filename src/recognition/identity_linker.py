@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING
 from src.config import Config, FaceRecognitionConfig, ReIDConfig
 from src.database.repository import Repository
 from src.recognition.face_recognizer import FaceRecognizer
-from src.recognition.identification_manager import IdentificationManager
+from src.recognition.identification_manager import IdentificationManager, CrossCameraMatch
 from src.recognition.reid_extractor import ReIDExtractor, EmbeddingGallery
 from src.utils.profiler import profiler
 from src.utils.image_utils import crop_face_region, crop_with_margin
@@ -124,6 +124,7 @@ class IdentityLinker:
         face_recognizer: Optional[FaceRecognizer] = None,
         reid_extractor: Optional[ReIDExtractor] = None,
         unidentified_face_manager: Optional["UnidentifiedFaceManager"] = None,
+        snapshot_config: Optional[Config] = None, # Using full config for easier access if needed
     ):
         """Initialize identity linker.
 
@@ -135,14 +136,18 @@ class IdentityLinker:
             face_recognizer: Optional pre-initialized face recognizer (for testing)
             reid_extractor: Optional pre-initialized Re-ID extractor (for testing)
             unidentified_face_manager: Optional manager for capturing unidentified faces
+            snapshot_config: Optional snapshot configuration
         """
         self.face_config = face_config
         self.reid_config = reid_config
         self.repository = repository
         self._unidentified_face_manager = unidentified_face_manager
+        self.snapshot_config = snapshot_config.snapshots if snapshot_config else None
 
         # Create a minimal config for IdentificationManager
         self._config = self._create_config(face_config, reid_config)
+        if snapshot_config:
+            self._config.snapshots = snapshot_config.snapshots
 
         # Core identification manager (handles face recognition and Re-ID)
         self._id_manager = IdentificationManager(
@@ -418,13 +423,17 @@ class IdentityLinker:
         if gallery:
             with profiler.measure("FaceRecognizer.compare"):
                 # Vectorized comparison for better performance
-                gallery_embeddings = np.array([emb for _, _, emb in gallery])
+                gallery_embeddings = np.array([entry.embedding for entry in gallery])
                 similarities = face_recognizer.compare_embeddings_batch(
                     embedding, gallery_embeddings
                 )
                 best_idx = int(np.argmax(similarities))
                 best_score = float(similarities[best_idx])
-                best_match_id, best_match_name, _ = gallery[best_idx]
+                
+                best_entry = gallery[best_idx]
+                best_match_id = best_entry.person_id
+                best_match_name = best_entry.person_name
+                best_face_id = best_entry.embedding_id
 
         # Check if match is above threshold
         if best_score < self.face_config.similarity_threshold:
@@ -442,6 +451,7 @@ class IdentityLinker:
                         track_id=state.global_track_id,
                         best_match_person_id=best_match_id,
                         best_match_score=best_score if best_score > 0 else None,
+                        best_match_face_id=best_face_id if best_match_id else None,
                     )
 
             return IdentificationResult(
@@ -462,6 +472,9 @@ class IdentityLinker:
             
             state.confirm_identity(best_match_id, best_score, "face")
 
+            # Save snapshot
+            snapshot_path = self._save_snapshot(frame, "face_match", best_match_name)
+
             # Update database
             self.repository.update_track(
                 state.global_track_id,
@@ -469,20 +482,22 @@ class IdentityLinker:
                 face_embedding=embedding,
             )
             
-            # Persist face embedding
-            fb = self.repository.add_face_embedding(best_match_id, embedding)
-            face_embedding_id = fb.id
-
             # Emit events
             # 1. face_match
+            # Note: we don't automatically persist the new face embedding to the DB 
+            # to avoid redundant data. Events can reference the matched gallery face_id.
             self.repository.create_event(
                 camera_id=camera_id or "unknown",
                 event_type="face_match",
                 track_id=state.global_track_id,
                 person_id=best_match_id,
                 confidence=best_score,
-                face_embedding_id=face_embedding_id,
-                extra_data={"threshold": self.face_config.similarity_threshold}
+                face_embedding_id=best_face_id, # Link to the matched gallery embedding
+                snapshot_path=snapshot_path,
+                extra_data={
+                    "threshold": self.face_config.similarity_threshold,
+                    "face_id": best_face_id
+                }
             )
 
             # 2. id_upgraded if applicable
@@ -574,7 +589,7 @@ class IdentityLinker:
         candidate_track_ids: list[str],
         num_persons_in_frame: int = 1,
         precomputed_reid: Optional[tuple[np.ndarray, float]] = None,
-    ) -> Optional[tuple[str, float, Optional[str]]]:
+    ) -> Optional[CrossCameraMatch]:
         """Match a new track against existing tracks using Re-ID.
 
         Args:
@@ -585,7 +600,7 @@ class IdentityLinker:
             precomputed_reid: Optional pre-computed Re-ID (embedding, quality)
 
         Returns:
-            Tuple of (matched_track_id, similarity, person_name) or None
+            CrossCameraMatch object or None
         """
         if num_persons_in_frame > 1:
             return None
@@ -648,7 +663,11 @@ class IdentityLinker:
                             "top1_score": match_result.best_score
                         }
                     )
-                return (None, match_result.score, match_result.person_name)
+                return CrossCameraMatch(
+                    matched_track_id=None,
+                    similarity=match_result.score,
+                    person_name=match_result.person_name
+                )
 
         if best_match_id is not None:
             logger.debug(f"Re-ID match: {new_track_id} -> {best_match_id} (sim={best_score:.2f})")
@@ -669,7 +688,11 @@ class IdentityLinker:
                         "threshold": self.reid_config.similarity_threshold
                     }
                 )
-            return (best_match_id, best_score, best_person_name)
+            return CrossCameraMatch(
+                matched_track_id=best_match_id,
+                similarity=best_score,
+                person_name=best_person_name
+            )
 
         return None
 
@@ -733,3 +756,42 @@ class IdentityLinker:
     def warmup(self):
         """Warm up models."""
         self._id_manager.warmup()
+
+    # ==================== Snapshot Saving ====================
+
+    def _save_snapshot(self, frame: np.ndarray, event_type: str, person_name: Optional[str] = None) -> Optional[str]:
+        """Save a snapshot to disk.
+
+        Returns:
+            Path to saved snapshot or None if disabled
+        """
+        if not self.snapshot_config or not self.snapshot_config.enabled:
+            return None
+
+        # Determine if we should save based on event type
+        should_save = False
+        if event_type == "face_match" and self.snapshot_config.save_on_identification:
+            should_save = True
+        
+        if not should_save:
+            return None
+
+        try:
+            from src.utils.image_utils import write_jpeg
+            import uuid
+            from pathlib import Path
+
+            snapshot_dir = Path(self.snapshot_config.path)
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            unique_id = uuid.uuid4().hex[:8]
+            name_part = f"_{person_name}" if person_name else ""
+            filename = f"{timestamp}_{event_type}{name_part}_{unique_id}.jpg"
+            filepath = snapshot_dir / filename
+
+            write_jpeg(str(filepath), frame)
+            return str(filepath)
+        except Exception as e:
+            logger.error(f"Failed to save snapshot: {e}")
+            return None

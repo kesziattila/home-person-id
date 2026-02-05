@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch, PropertyMock
 
-from src.recognition.identification_manager import IdentificationManager
+from src.recognition.identification_manager import IdentificationManager, FaceGalleryEntry
 from src.config import (
     Config,
     FaceRecognitionConfig,
@@ -83,7 +83,7 @@ class TestUnidentifiedFaceCapture:
             config=config,
             repository=None,
             face_gallery=[
-                (1, "John", np.random.randn(512).astype(np.float32))
+                FaceGalleryEntry(person_id=1, person_name="John", embedding=np.random.randn(512).astype(np.float32))
             ],
             unidentified_face_manager=mock_unidentified_manager,
         )
@@ -159,7 +159,7 @@ class TestUnidentifiedFaceCapture:
             config=config,
             repository=None,
             face_gallery=[
-                (1, "John", np.random.randn(512).astype(np.float32))
+                FaceGalleryEntry(person_id=1, person_name="John", embedding=np.random.randn(512).astype(np.float32))
             ],
             unidentified_face_manager=mock_unidentified_manager,
         )
@@ -195,7 +195,7 @@ class TestUnidentifiedFaceCapture:
             config=config,
             repository=None,
             face_gallery=[
-                (1, "John", np.random.randn(512).astype(np.float32))
+                FaceGalleryEntry(person_id=1, person_name="John", embedding=np.random.randn(512).astype(np.float32))
             ],
             unidentified_face_manager=mock_unidentified_manager,
         )

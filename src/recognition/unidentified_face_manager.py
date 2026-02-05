@@ -32,6 +32,7 @@ class UnidentifiedFaceTask:
     best_match_person_id: Optional[int]
     best_match_score: Optional[float]
     face_bbox: tuple[int, int, int, int]  # x1, y1, x2, y2
+    best_match_face_id: Optional[int] = None
 
 
 class UnidentifiedFaceManager:
@@ -108,6 +109,7 @@ class UnidentifiedFaceManager:
         track_id: Optional[str] = None,
         best_match_person_id: Optional[int] = None,
         best_match_score: Optional[float] = None,
+        best_match_face_id: Optional[int] = None,
     ) -> bool:
         """Submit an unidentified face for background processing.
 
@@ -121,6 +123,7 @@ class UnidentifiedFaceManager:
             track_id: Optional track ID
             best_match_person_id: Best matching person ID (if any)
             best_match_score: Similarity score to best match
+            best_match_face_id: ID of the best matching face embedding
 
         Returns:
             True if submitted, False if queue is full
@@ -137,6 +140,7 @@ class UnidentifiedFaceManager:
             if best_match_score < self.config.min_match_score:
                 best_match_person_id = None
                 best_match_score = None
+                best_match_face_id = None
 
         task = UnidentifiedFaceTask(
             camera_id=camera_id,
@@ -146,6 +150,7 @@ class UnidentifiedFaceManager:
             best_match_person_id=best_match_person_id,
             best_match_score=best_match_score,
             face_bbox=face_bbox,
+            best_match_face_id=best_match_face_id,
         )
 
         try:
@@ -244,7 +249,8 @@ class UnidentifiedFaceManager:
                 snapshot_path=image_path,
                 extra_data={
                     "quality_score": float(quality_score),
-                    "face_id": int(face.id),
+                    "unidentified_face_id": int(face.id),
+                    "face_id": task.best_match_face_id,
                     "best_match_person_id": task.best_match_person_id,
                     "best_match_score": float(task.best_match_score) if task.best_match_score is not None else None,
                 }

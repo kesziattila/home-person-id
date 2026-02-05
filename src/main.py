@@ -130,6 +130,7 @@ class PersonIDSystem:
             self.config.reid,
             self.repository,
             unidentified_face_manager=self.unidentified_face_manager,
+            snapshot_config=self.config,
         )
 
         # Initialize global tracking
