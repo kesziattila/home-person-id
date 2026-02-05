@@ -98,40 +98,47 @@ class APIServer:
                 self.app.include_router(unidentified_faces_router)
                 logger.info("Unidentified faces API routes registered")
 
-    def _generate_frame(self, camera_id: str):
-        """Generates a single annotated frame."""
-        preview_frame = self.buffer.get_latest_frame(camera_id)
-        if preview_frame is not None:
-            annotated_image = Visualizer.draw_detections(
-                preview_frame.image, 
-                preview_frame.metadata,
-                zone_manager=self.zone_manager,
-                show_zones=False
-            )
-            try:
-                frame_bytes = encode_jpeg(annotated_image, use_nvjpeg=self.use_nvjpeg)
-                return (b'--frame\r\n'
-                        b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
-            except Exception as e:
-                logger.error(f"Error encoding frame: {e}")
+    def _process_and_encode_frame(self, preview_frame):
+        """Processes a single frame by annotating and encoding it."""
+        annotated_image = Visualizer.draw_detections(
+            preview_frame.image, 
+            preview_frame.metadata,
+            zone_manager=self.zone_manager,
+            show_zones=False
+        )
+        try:
+            frame_bytes = encode_jpeg(annotated_image, use_nvjpeg=self.use_nvjpeg)
+            return (b'--frame\r\n'
+                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        except Exception as e:
+            logger.error(f"Error encoding frame: {e}")
         return None
 
     async def generate_frames_threaded(self, camera_id: str, request: Request):
-        """Generate MJPEG frames for a camera using a thread pool."""
+        """Generate MJPEG frames for a camera, skipping duplicates."""
         loop = asyncio.get_running_loop()
+        last_sent_frame = None
         while True:
             if await request.is_disconnected():
                 logger.info(f"Client disconnected from stream {camera_id}. Stopping.")
                 break
-
+            
             try:
-                frame = await loop.run_in_executor(
-                    self.executor, self._generate_frame, camera_id
-                )
-                if frame:
-                    yield frame
-                # Control frame rate for the stream
-                await asyncio.sleep(0.05)  # ~20 FPS
+                preview_frame = self.buffer.get_latest_frame(camera_id)
+
+                # Only process and send if the frame object itself is new
+                if preview_frame is not None and preview_frame is not last_sent_frame:
+                    last_sent_frame = preview_frame
+                    
+                    frame_bytes = await loop.run_in_executor(
+                        self.executor, self._process_and_encode_frame, preview_frame
+                    )
+                    if frame_bytes:
+                        yield frame_bytes
+                
+                # Sleep to control the polling rate / max FPS
+                await asyncio.sleep(0.05)  # ~20 FPS polling
+
             except Exception as e:
                 logger.error(f"Error in frame generation loop for {camera_id}: {e}")
                 break
