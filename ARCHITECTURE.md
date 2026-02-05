@@ -181,7 +181,29 @@ The system uses a **Scenario-Based Testing Framework** to verify complex trackin
 
 See [TESTING_SCENARIOS.md](docs/TESTING_SCENARIOS.md) for detailed examples and guide.
 
-### 6. Utils (`src/utils/`)
+### 6. Frontend (`src/static/`)
+
+The frontend is a modern, single-page application (SPA) built with **Vue.js** and styled with **Tailwind CSS**.
+
+**Framework Choice (Vue.js):**
+- **Simplicity & Performance:** Vue was chosen for its gentle learning curve and excellent performance. It's loaded directly from a CDN, avoiding the need for a complex build setup (like Webpack or Vite), which keeps the project simple.
+- **Component-Based Architecture:** The UI is broken down into logical, reusable components (e.g., `App.js`, `Streams.js`, `PersonCard.js`), making the code clean, organized, and easy to maintain.
+- **Declarative Rendering:** Vue's reactive data binding automatically updates the UI when data changes, eliminating manual DOM manipulation (`innerHTML`) and improving code readability.
+
+**Core Architecture:**
+- **`index.html`**: A minimal shell that loads Vue, Tailwind, and the main application script. It contains a single `<div id="app"></div>` where the Vue application is mounted.
+- **`app.js`**: The main entry point. It initializes the Vue application, registers all the components, and mounts the root `App` component.
+- **`components/`**: This directory contains all the Vue components.
+    - **`App.js` (Root Component):** Manages global state, such as the active tab and the visibility of all modals. It acts as the central hub for communication between different parts of the UI.
+    - **Tab Components (`Streams.js`, `Persons.js`, etc.):** Each tab in the UI has its own dedicated component, encapsulating all the logic and HTML for that view.
+    - **UI Components (`PersonCard.js`, `EventDetailModal.js`, etc.):** Smaller, reusable components used by the tab components to display specific pieces of the UI.
+- **`utils/`**: Contains shared JavaScript utility functions, such as `formatters.js`.
+
+**Communication:**
+- **Parent-to-Child:** Data is passed down from parent components to child components via **props** (e.g., `App.js` passes the `autoRefresh` setting to the active tab component).
+- **Child-to-Parent:** Child components communicate with the parent by **emitting events** (e.g., when a person card is clicked, it emits a `show-person-detail` event, which the `App` component listens for to open the correct modal).
+
+### 7. Utils (`src/utils/`)
 
 **Profiler** (`profiler.py`)
 - High-precision timing using `time.perf_counter()`
@@ -198,7 +220,7 @@ See [TESTING_SCENARIOS.md](docs/TESTING_SCENARIOS.md) for detailed examples and 
 - `encode_jpeg(image, quality, use_nvjpeg)`: JPEG encoding with optional hardware acceleration
 - Hardware-accelerated encoding via nvJPEG on Jetson
 
-### 7. Configuration (`src/config.py`)
+### 8. Configuration (`src/config.py`)
 
 Dataclasses for all configuration sections:
 - CameraConfig, CameraTopologyConfig
@@ -209,7 +231,7 @@ Dataclasses for all configuration sections:
 
 Loaded from YAML file via `load_config()`.
 
-### 7. Visualization & Web UI (`src/visualization/`, `src/api/`, `src/static/`)
+### 9. Visualization & API (`src/visualization/`, `src/api/`)
 
 **PreviewBuffer** (`visualization/preview.py`)
 - Thread-safe buffer for latest frames and metadata per camera
@@ -235,18 +257,8 @@ Loaded from YAML file via `load_config()`.
 - FastAPI-based web server
 - Runs in a separate daemon thread
 - Provides MJPEG streaming endpoints (`/api/v1/stream/{camera_id}`)
-- Serves static dashboard (`index.html`)
+- Serves static dashboard (`index.html`) and all frontend assets (`/static/*`).
 - Integrated with `ZoneManager` to provide zone context in labels
-
-**Web Dashboard** (`static/index.html`)
-- Tailwind CSS based responsive UI
-- Auto-discovers active cameras
-- Displays real-time annotated streams
-- **Tabs**:
-  - Live: Real-time camera streams with person detection overlays
-  - Events: Activity history with filtering
-  - Persons: Manage known persons (add, edit, delete, upload face images)
-  - Unidentified: Review faces below recognition threshold, assign to persons or dismiss
 
 ## Data Flow
 
