@@ -477,6 +477,16 @@ class GlobalTrackManager:
         """Link a local track to a global track."""
         self._local_to_global[(camera_id, local_track_id)] = global_track_id
 
+    def _cleanup_mappings_for_track(self, global_track_id: str):
+        """Remove all local-to-global mappings pointing to this global track."""
+        keys_to_remove = [
+            key for key, gid in self._local_to_global.items()
+            if gid == global_track_id
+        ]
+        for key in keys_to_remove:
+            del self._local_to_global[key]
+            self._last_bboxes.pop(key, None)
+
     def _create_global_track(
         self,
         camera_id: str,
@@ -646,13 +656,12 @@ class GlobalTrackManager:
                 )
                 return
 
-        # Mark as lost (may be re-identified via Re-ID later)
+        # Mark as lost — keep _local_to_global mapping alive so ByteTrack
+        # re-detection of the same local ID can recover the global track
+        # (same approach as the handover path). Mapping is cleaned up when
+        # the track transitions to REMOVED (grace period expired).
         global_track.state = TrackState.LOST
         self._recently_lost_tracks.add(global_track_id)
-
-        # Remove local-to-global mapping
-        del self._local_to_global[(camera_id, local_track_id)]
-        self._last_bboxes.pop((camera_id, local_track_id), None)
 
     def _check_exit_zone(self, camera_id: str) -> Optional[str]:
         """Check if camera has a handover zone and return target camera.
@@ -943,7 +952,8 @@ class GlobalTrackManager:
                     if time_since_seen > grace:
                         track.state = TrackState.REMOVED
                         self._recently_lost_tracks.discard(track_id)
-                        
+                        self._cleanup_mappings_for_track(track_id)
+
                         # Emit track_lost event
                         self.repository.create_event(
                             camera_id=track.current_camera_id or "unknown",
@@ -1178,6 +1188,7 @@ class GlobalTrackManager:
 
         for track_id in to_remove:
             self.identity_linker.unregister_track(track_id)
+            self._cleanup_mappings_for_track(track_id)
             del self._tracks[track_id]
             self._recently_lost_tracks.discard(track_id)
 
