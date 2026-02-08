@@ -24,6 +24,7 @@ from src.tracking.stationary_tracker import StationaryTracker
 from src.tracking.zone_manager import ZoneManager
 from src.tracking.handover import HandoverManager
 from src.visualization.preview import PreviewBuffer
+from src.visualization.debug_overlay import DebugOverlayRenderer
 from src.api.server import APIServer
 from src.utils.profiler import profiler, memory_profiler, create_data_structure_tracker
 
@@ -132,6 +133,12 @@ class PersonIDSystem:
             unidentified_face_manager=self.unidentified_face_manager,
             snapshot_config=self.config,
         )
+
+        # Initialize debug overlay (optional)
+        self.debug_overlay: Optional[DebugOverlayRenderer] = None
+        if self.config.debug.reid_overlay:
+            self.debug_overlay = DebugOverlayRenderer(self.identity_linker)
+            logger.info("Debug Re-ID overlay enabled")
 
         # Initialize global tracking
         self.global_tracker = GlobalTrackManager(
@@ -512,6 +519,10 @@ class PersonIDSystem:
                 s_time = self.stationary_tracker.get_stationary_time(camera_id, track.track_id, current_time)
                 if s_time is not None:
                     stationary_times[track.track_id] = s_time
+
+        # Draw debug overlay if enabled
+        if self.debug_overlay:
+            self.debug_overlay.draw(frame_image, camera_id)
 
         with profiler.measure("PreviewBuffer.update"):
             self.preview_buffer.update(

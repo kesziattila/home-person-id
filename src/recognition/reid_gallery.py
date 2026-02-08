@@ -439,6 +439,10 @@ class ReIDGalleryManager:
 
         for person_name, entry in self._gallery.items():
             score, match_crop, db_id = entry.match(embedding)
+            logger.debug(
+                f"  gallery '{person_name}': score={score:.3f}, "
+                f"embeddings={len(entry.entries)}"
+            )
             if score > best_score:
                 best_score = score
                 best_name = person_name
@@ -448,6 +452,11 @@ class ReIDGalleryManager:
         result.best_score = best_score
         result.best_person_name = best_name
         result.score = best_score
+
+        logger.debug(
+            f"Re-ID gallery match_new_track: best={best_name}, score={best_score:.3f}, "
+            f"threshold={self.similarity_threshold}"
+        )
 
         if best_name and best_score > self.similarity_threshold:
             result.person_name = best_name

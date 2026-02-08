@@ -53,13 +53,25 @@ class TrackRenderer:
         is_multi_camera = cameras_seen and len(cameras_seen) > 1
 
         if identity.person_name:
-            # Identified
-            if identity.is_reid_identified:
-                label = f"{identity.person_name} (R:{identity.confidence:.2f})"
+            # Identified — prefix depends on identification method
+            # Check for IdentificationResult (from IdentityLinker) which has .method
+            method = getattr(identity, 'method', None)
+            if method == "handover":
+                prefix = "H"
+                color = self.COLOR_REID_IDENTIFIED
+            elif method == "reid_gallery":
+                prefix = "RG"
+                color = self.COLOR_REID_IDENTIFIED
+            elif method == "reid":
+                prefix = "R"
+                color = self.COLOR_REID_IDENTIFIED
+            elif identity.is_reid_identified:
+                prefix = "R"
                 color = self.COLOR_REID_IDENTIFIED
             else:
-                label = f"{identity.person_name} (F:{identity.confidence:.2f})"
+                prefix = "F"
                 color = self.COLOR_FACE_IDENTIFIED
+            label = f"{identity.person_name} ({prefix}:{identity.confidence:.2f})"
         else:
             # Unidentified
             # Clean track ID for display

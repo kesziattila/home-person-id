@@ -32,8 +32,8 @@ logger = logging.getLogger(__name__)
 @dataclass
 class CrossCameraMatch:
     """Result of a cross-camera Re-ID match."""
-    matched_track_id: str
-    similarity: float
+    matched_track_id: Optional[str] = None
+    similarity: float = 0.0
     person_name: Optional[str] = None
 
 
