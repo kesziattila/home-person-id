@@ -339,7 +339,10 @@ def load_config(config_path: str | Path) -> Config:
     for overlap_data in topology_data.get("overlaps", []):
         overlaps.append(CameraOverlap(**overlap_data))
     camera_topology = CameraTopologyConfig(
-        use_zones=topology_data.get("use_zones", True), overlaps=overlaps
+        use_zones=topology_data.get("use_zones", True),
+        overlaps=overlaps,
+        enable_handover=topology_data.get("enable_handover", True),
+        enable_cross_camera_propagation=topology_data.get("enable_cross_camera_propagation", True),
     )
 
     # Parse zones configuration

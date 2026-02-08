@@ -338,6 +338,7 @@ class Repository:
         camera_id: Optional[str] = None,
         person_id: Optional[int] = None,
         event_type: Optional[str] = None,
+        track_id: Optional[str] = None,
         since: Optional[datetime] = None,
         limit: int = 100,
     ) -> list[Event]:
@@ -351,6 +352,8 @@ class Repository:
                 query = query.filter(Event.person_id == person_id)
             if event_type:
                 query = query.filter(Event.event_type == event_type)
+            if track_id:
+                query = query.filter(Event.track_id == track_id)
             if since:
                 query = query.filter(Event.timestamp >= since)
 

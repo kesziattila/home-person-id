@@ -89,6 +89,7 @@ def create_events_router(repository: Repository) -> APIRouter:
         camera_id: Optional[str] = Query(None, description="Filter by camera ID"),
         person_id: Optional[int] = Query(None, description="Filter by person ID"),
         event_type: Optional[str] = Query(None, description="Filter by event type"),
+        track_id: Optional[str] = Query(None, description="Filter by track ID"),
         since_hours: int = Query(24, description="Hours to look back", ge=1, le=720),
         limit: int = Query(50, description="Maximum events to return", ge=1, le=1000),
     ) -> List[EventResponse]:
@@ -99,6 +100,7 @@ def create_events_router(repository: Repository) -> APIRouter:
             camera_id=camera_id,
             person_id=person_id,
             event_type=event_type,
+            track_id=track_id,
             since=since,
             limit=limit,
         )

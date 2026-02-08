@@ -24,7 +24,7 @@ from src.config import (
     ZonesConfig,
 )
 from src.recognition.identity_linker import IdentityLinker, TrackIdentityState
-from src.tracking.global_tracker import GlobalTrackManager
+from src.tracking.global_tracker import GlobalTrackManager, PendingHandover
 from src.tracking.track import GlobalTrack, LocalTrack, TrackState
 
 
@@ -393,3 +393,231 @@ class TestZonePropagationThrottling:
 
         # Should NOT propagate because interval hasn't elapsed
         assert state_b.person_id is None
+
+
+class TestTrackRecoveryAfterBriefLoss:
+    """Test track recovery when ByteTrack re-detects after brief loss.
+
+    Covers the scenario where a stationary person is briefly lost by ByteTrack
+    (e.g., 1 missed detection frame) but then re-detected with the same local ID.
+    The track should be restored to TRACKED instead of timing out.
+    """
+
+    def test_track_recovered_after_brief_loss(self):
+        """Track LOST -> ByteTrack re-reports same local ID -> restored to TRACKED."""
+        zones = _make_zone_config("living_room", ["cam_a", "cam_b"])
+        manager = _make_global_track_manager(zones_config=zones)
+
+        # Register a tracked person on cam_b
+        _register_active_track(
+            manager, "cam_b", 5, "global_1",
+            bbox=(100, 100, 300, 500),
+        )
+
+        # Simulate brief loss: mark track as LOST and create PendingHandover
+        manager._tracks["global_1"].state = TrackState.LOST
+        manager._recently_lost_tracks.add("global_1")
+        manager._pending_handovers.append(PendingHandover(
+            global_track_id="global_1",
+            from_camera="cam_b",
+            zone_name="living_room",
+            exit_time=time.time(),
+            max_handover_sec=5.0,
+            local_track_id=5,
+        ))
+
+        # ByteTrack re-detects same local ID (not in new_track_ids — it's a continued track)
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        result = manager.process_local_tracks(
+            "cam_b",
+            [LocalTrack(track_id=5, camera_id="cam_b", bbox=(100, 100, 300, 500), confidence=0.9)],
+            frame,
+            new_track_ids=[],
+            lost_track_ids=[],
+        )
+
+        # Track should be restored to TRACKED
+        assert manager._tracks["global_1"].state == TrackState.TRACKED
+        assert "global_1" not in manager._recently_lost_tracks
+        # Should appear in active tracks
+        active_ids = [t.track_id for t in result.active_tracks]
+        assert "global_1" in active_ids
+
+    def test_pending_handover_cancelled_on_recovery(self):
+        """PendingHandover removed when track recovers on same camera."""
+        zones = _make_zone_config("living_room", ["cam_a", "cam_b"])
+        manager = _make_global_track_manager(zones_config=zones)
+
+        _register_active_track(
+            manager, "cam_b", 5, "global_1",
+            bbox=(100, 100, 300, 500),
+        )
+
+        # Create pending handover (simulating _handle_lost_local_track)
+        manager._tracks["global_1"].state = TrackState.LOST
+        manager._recently_lost_tracks.add("global_1")
+        manager._pending_handovers.append(PendingHandover(
+            global_track_id="global_1",
+            from_camera="cam_b",
+            zone_name="living_room",
+            exit_time=time.time(),
+            max_handover_sec=5.0,
+            local_track_id=5,
+        ))
+        assert len(manager._pending_handovers) == 1
+
+        # ByteTrack re-detects
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        manager.process_local_tracks(
+            "cam_b",
+            [LocalTrack(track_id=5, camera_id="cam_b", bbox=(100, 100, 300, 500), confidence=0.9)],
+            frame,
+            new_track_ids=[],
+            lost_track_ids=[],
+        )
+
+        # PendingHandover should be cancelled
+        assert len(manager._pending_handovers) == 0
+
+    def test_has_active_tracks_includes_pending_handovers(self):
+        """has_active_tracks returns True when pending handover exists from camera."""
+        zones = _make_zone_config("living_room", ["cam_a", "cam_b"])
+        manager = _make_global_track_manager(zones_config=zones)
+
+        # No tracks, no pending -> False
+        assert manager.has_active_tracks("cam_b") is False
+
+        # Add pending handover from cam_b
+        manager._pending_handovers.append(PendingHandover(
+            global_track_id="global_1",
+            from_camera="cam_b",
+            zone_name="living_room",
+            exit_time=time.time(),
+            max_handover_sec=5.0,
+            local_track_id=5,
+        ))
+
+        # Now should return True (keeps detection gate open)
+        assert manager.has_active_tracks("cam_b") is True
+        # But not for other cameras
+        assert manager.has_active_tracks("cam_a") is False
+
+    def test_mapping_cleaned_on_handover_timeout(self):
+        """local-to-global mapping removed when PendingHandover times out."""
+        zones = _make_zone_config("living_room", ["cam_a", "cam_b"])
+        manager = _make_global_track_manager(zones_config=zones)
+
+        _register_active_track(
+            manager, "cam_b", 5, "global_1",
+            bbox=(100, 100, 300, 500),
+        )
+
+        # Simulate _handle_lost_local_track with mapping kept alive
+        manager._tracks["global_1"].state = TrackState.LOST
+        manager._recently_lost_tracks.add("global_1")
+        manager._pending_handovers.append(PendingHandover(
+            global_track_id="global_1",
+            from_camera="cam_b",
+            zone_name="living_room",
+            exit_time=time.time() - 10.0,  # Already expired
+            max_handover_sec=5.0,
+            local_track_id=5,
+        ))
+
+        # Mapping should still exist
+        assert ("cam_b", 5) in manager._local_to_global
+
+        # Run cleanup (called at start of process_local_tracks)
+        manager._cleanup_pending_handovers(time.time())
+
+        # Mapping should now be cleaned up
+        assert ("cam_b", 5) not in manager._local_to_global
+        assert ("cam_b", 5) not in manager._last_bboxes
+
+    def test_mapping_cleaned_on_handover_match(self):
+        """Old camera mapping removed when handover matches on new camera."""
+        zones = _make_zone_config("living_room", ["cam_a", "cam_b"])
+        manager = _make_global_track_manager(zones_config=zones)
+
+        _register_active_track(
+            manager, "cam_b", 5, "global_1",
+            bbox=(100, 100, 300, 500),
+        )
+
+        # Simulate _handle_lost_local_track: mapping kept alive, pending handover created
+        manager._tracks["global_1"].state = TrackState.LOST
+        manager._recently_lost_tracks.add("global_1")
+        manager._pending_handovers.append(PendingHandover(
+            global_track_id="global_1",
+            from_camera="cam_b",
+            zone_name="living_room",
+            exit_time=time.time(),
+            max_handover_sec=5.0,
+            local_track_id=5,
+        ))
+
+        # New track appears on cam_a -> handover match
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        manager.process_local_tracks(
+            "cam_a",
+            [LocalTrack(track_id=10, camera_id="cam_a", bbox=(200, 150, 400, 600), confidence=0.9)],
+            frame,
+            new_track_ids=[10],
+            lost_track_ids=[],
+        )
+
+        # Old cam_b mapping should be removed
+        assert ("cam_b", 5) not in manager._local_to_global
+        # New cam_a mapping should exist
+        assert ("cam_a", 10) in manager._local_to_global
+        assert manager._local_to_global[("cam_a", 10)] == "global_1"
+        # Track should be TRACKED on cam_a
+        assert manager._tracks["global_1"].state == TrackState.TRACKED
+
+    def test_normal_handover_still_works(self):
+        """Regression: person leaves camera, appears on another -> handover succeeds."""
+        zones = _make_zone_config("living_room", ["cam_a", "cam_b"])
+        manager = _make_global_track_manager(zones_config=zones)
+
+        _register_active_track(
+            manager, "cam_a", 1, "global_1",
+            bbox=(100, 100, 300, 500),
+        )
+
+        # Track lost on cam_a (leaves view) -> creates pending handover
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        manager.process_local_tracks(
+            "cam_a",
+            [],  # No tracks — person left
+            frame,
+            new_track_ids=[],
+            lost_track_ids=[1],
+        )
+
+        # Should have pending handover
+        assert len(manager._pending_handovers) == 1
+        assert manager._pending_handovers[0].global_track_id == "global_1"
+        assert manager._pending_handovers[0].from_camera == "cam_a"
+        assert manager._tracks["global_1"].state == TrackState.LOST
+
+        # Mapping should still exist (kept alive for recovery)
+        assert ("cam_a", 1) in manager._local_to_global
+
+        # New track appears on cam_b -> handover match
+        result = manager.process_local_tracks(
+            "cam_b",
+            [LocalTrack(track_id=10, camera_id="cam_b", bbox=(200, 150, 400, 600), confidence=0.9)],
+            frame,
+            new_track_ids=[10],
+            lost_track_ids=[],
+        )
+
+        # Handover should complete
+        assert len(result.handovers_completed) == 1
+        assert result.handovers_completed[0] == ("global_1", "cam_a", "cam_b")
+        # Track should be TRACKED on cam_b
+        assert manager._tracks["global_1"].state == TrackState.TRACKED
+        # Old cam_a mapping should be cleaned up
+        assert ("cam_a", 1) not in manager._local_to_global
+        # New cam_b mapping should exist
+        assert ("cam_b", 10) in manager._local_to_global

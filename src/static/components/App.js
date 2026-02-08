@@ -48,15 +48,17 @@ export default {
             </div>
 
             <main class="container mx-auto p-6">
-                <component :is="activeTabComponent" 
+                <component :is="activeTabComponent"
                            :auto-refresh="autoRefresh"
+                           :apply-filter="eventFilter"
                            @show-person-detail="showPersonDetail"
                            @show-assign-face="showAssignFace"
                            @show-event-detail="showEventDetail"
                            @show-add-person="showAddPersonModal = true"
                            @preview-image="showImagePreview"
                            @face-assigned="handleFaceAssigned"
-                           @person-deleted="handlePersonDeleted">
+                           @person-deleted="handlePersonDeleted"
+                           @filter-applied="eventFilter = null">
                 </component>
             </main>
 
@@ -75,7 +77,8 @@ export default {
             </assign-face-modal>
 
             <event-detail-modal :event="selectedEvent"
-                                @close="selectedEvent = null">
+                                @close="selectedEvent = null"
+                                @filter-events="applyEventFilter">
             </event-detail-modal>
 
             <image-preview-modal :image-url="previewImageUrl"
@@ -87,7 +90,7 @@ export default {
     data() {
         return {
             activeTab: 'streams',
-            autoRefresh: true,
+            autoRefresh: localStorage.getItem('autoRefresh') !== 'false',
             tabs: [
                 { id: 'streams', name: 'Live Streams' },
                 { id: 'persons', name: 'Persons' },
@@ -99,6 +102,7 @@ export default {
             selectedPersonId: null,
             selectedFaceId: null,
             selectedEvent: null,
+            eventFilter: null,
             previewImageUrl: null,
         };
     },
@@ -114,6 +118,9 @@ export default {
             if (window.location.hash !== '#' + newTab) {
                 window.location.hash = newTab;
             }
+        },
+        autoRefresh(newVal) {
+            localStorage.setItem('autoRefresh', newVal);
         }
     },
     created() {
@@ -165,6 +172,11 @@ export default {
             if (this.activeTab === 'persons') {
                 this.forceRerender(this.activeTab);
             }
+        },
+        applyEventFilter({ field, value }) {
+            this.eventFilter = { field, value };
+            this.selectedEvent = null;
+            this.activeTab = 'events';
         },
         handleFaceAssigned() {
             if (this.activeTab === 'unidentified') {

@@ -49,6 +49,7 @@ class PendingHandover:
     max_handover_sec: float
     reid_embedding: Optional[np.ndarray] = None
     last_bbox: Optional[tuple[float, float, float, float]] = None
+    local_track_id: Optional[int] = None  # For mapping cleanup on timeout
 
 
 @dataclass
@@ -282,6 +283,14 @@ class GlobalTrackManager:
             if handover_match:
                 # Link to existing global track
                 global_track_id, from_camera = handover_match
+
+                # Clean up old camera mapping (kept alive for recovery)
+                for key, gid in list(self._local_to_global.items()):
+                    if key[0] == from_camera and gid == global_track_id:
+                        del self._local_to_global[key]
+                        self._last_bboxes.pop(key, None)
+                        break
+
                 self._link_local_to_global(camera_id, local_track_id, global_track_id)
 
                 # Update global track location
@@ -296,6 +305,18 @@ class GlobalTrackManager:
                 result.handovers_completed.append(
                     (global_track_id, from_camera, camera_id)
                 )
+
+                self.repository.create_event(
+                    camera_id=camera_id,
+                    event_type="handover_completed",
+                    track_id=global_track_id,
+                    person_id=global_track.person_id,
+                    extra_data={
+                        "from_camera": from_camera,
+                        "to_camera": camera_id,
+                    }
+                )
+
                 logger.info(
                     f"Handover completed: {global_track_id} from {from_camera} to {camera_id}"
                 )
@@ -379,6 +400,30 @@ class GlobalTrackManager:
             global_track = self._tracks.get(global_track_id)
             if global_track is None:
                 continue
+
+            # If ByteTrack is reporting this track but we marked it LOST,
+            # detection recovered — restore to TRACKED and cancel pending handover
+            if global_track.state == TrackState.LOST:
+                global_track.state = TrackState.TRACKED
+                self._recently_lost_tracks.discard(global_track_id)
+                self._pending_handovers = [
+                    p for p in self._pending_handovers
+                    if p.global_track_id != global_track_id
+                ]
+                self.repository.create_event(
+                    camera_id=camera_id,
+                    event_type="track_recovered",
+                    track_id=global_track_id,
+                    person_id=global_track.person_id,
+                    extra_data={
+                        "reason": "bytetrack_re_detected",
+                    }
+                )
+
+                logger.info(
+                    f"Track {global_track_id} recovered on {camera_id} "
+                    f"(ByteTrack re-detected after brief loss)"
+                )
 
             # Update location and time
             global_track.last_seen = datetime.now()
@@ -558,6 +603,8 @@ class GlobalTrackManager:
 
                     if other_cameras:
                         # Create pending handover for zone-based system
+                        # Keep _local_to_global mapping alive so ByteTrack
+                        # re-detection can recover the track during handover window
                         pending = PendingHandover(
                             global_track_id=global_track_id,
                             from_camera=camera_id,
@@ -566,6 +613,7 @@ class GlobalTrackManager:
                             max_handover_sec=zone_config.max_handover_sec if zone_config else 5.0,
                             reid_embedding=reid_embedding,
                             last_bbox=last_bbox,
+                            local_track_id=local_track_id,
                         )
                         self._pending_handovers.append(pending)
                         global_track.state = TrackState.LOST
@@ -574,10 +622,6 @@ class GlobalTrackManager:
                             f"Track {global_track_id} pending zone handover from {camera_id} "
                             f"in zone '{zone_name}' (potential cameras: {other_cameras})"
                         )
-
-                        # Clean up mappings
-                        del self._local_to_global[(camera_id, local_track_id)]
-                        self._last_bboxes.pop((camera_id, local_track_id), None)
                         return
 
         # Legacy rectangle-based handover (fallback)
@@ -592,6 +636,7 @@ class GlobalTrackManager:
                     max_handover_sec=3.0,
                     reid_embedding=reid_embedding,
                     last_bbox=last_bbox,
+                    local_track_id=local_track_id,
                 )
                 self._pending_handovers.append(pending)
                 global_track.state = TrackState.LOST
@@ -599,9 +644,6 @@ class GlobalTrackManager:
                 logger.debug(
                     f"Track {global_track_id} pending handover from {camera_id} to {exit_zone}"
                 )
-
-                del self._local_to_global[(camera_id, local_track_id)]
-                self._last_bboxes.pop((camera_id, local_track_id), None)
                 return
 
         # Mark as lost (may be re-identified via Re-ID later)
@@ -879,6 +921,13 @@ class GlobalTrackManager:
 
         for pending in to_remove:
             self._pending_handovers.remove(pending)
+
+            # Clean up local-to-global mapping that was kept alive for recovery
+            if pending.local_track_id is not None:
+                key = (pending.from_camera, pending.local_track_id)
+                self._local_to_global.pop(key, None)
+                self._last_bboxes.pop(key, None)
+
             logger.debug(
                 f"Expired pending handover for {pending.global_track_id} "
                 f"in zone '{pending.zone_name}'"
@@ -997,6 +1046,17 @@ class GlobalTrackManager:
                         # Update DB
                         if state_a.person_id is not None:
                             self.repository.update_track(track_b_id, person_id=state_a.person_id)
+                        self.repository.create_event(
+                            camera_id=cam_b,
+                            event_type="cross_camera_propagation",
+                            track_id=track_b_id,
+                            person_id=state_a.person_id,
+                            extra_data={
+                                "zone": zone_name,
+                                "from_track": track_a_id,
+                                "from_camera": cam_a,
+                            }
+                        )
                         logger.info(
                             f"Zone identity propagation: zone='{zone_name}' "
                             f"{track_a_id} -> {track_b_id} (person_id={state_a.person_id})"
@@ -1006,6 +1066,17 @@ class GlobalTrackManager:
                         # Update DB
                         if state_b.person_id is not None:
                             self.repository.update_track(track_a_id, person_id=state_b.person_id)
+                        self.repository.create_event(
+                            camera_id=cam_a,
+                            event_type="cross_camera_propagation",
+                            track_id=track_a_id,
+                            person_id=state_b.person_id,
+                            extra_data={
+                                "zone": zone_name,
+                                "from_track": track_b_id,
+                                "from_camera": cam_b,
+                            }
+                        )
                         logger.info(
                             f"Zone identity propagation: zone='{zone_name}' "
                             f"{track_b_id} -> {track_a_id} (person_id={state_b.person_id})"
@@ -1034,6 +1105,9 @@ class GlobalTrackManager:
     def has_active_tracks(self, camera_id: str) -> bool:
         """Check if there are active tracks on a specific camera.
 
+        Also returns True when there are pending handovers from this camera,
+        which keeps detection running so ByteTrack can re-detect the person.
+
         Args:
             camera_id: Camera identifier
 
@@ -1046,6 +1120,13 @@ class GlobalTrackManager:
                 and track.current_camera_id == camera_id
             ):
                 return True
+
+        # Also active if there are pending handovers from this camera
+        # (keeps detection running so ByteTrack can re-detect)
+        for pending in self._pending_handovers:
+            if pending.from_camera == camera_id:
+                return True
+
         return False
 
     def get_occupancy(self) -> dict:
