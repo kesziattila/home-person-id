@@ -45,6 +45,7 @@ A Python-based person identification system for home environments that processes
 │                    - Cross-camera track coordination                         │
 │                    - Camera handover (overlapping views)                     │
 │                    - Re-ID matching (non-overlapping views)                  │
+│                    - Zone identity propagation (simultaneous views)          │
 └─────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      ▼
@@ -358,7 +359,10 @@ See `config/config.yaml` for all options. Key settings:
 | `detection.device` | YOLO device: "cuda", "cpu", or null (auto) | null |
 | `tracking.track_thresh` | Detection confidence threshold | 0.5 |
 | `tracking.match_thresh` | IoU threshold for tracking (lower for fast movement) | 0.3 |
+| `camera_topology.enable_handover` | Enable lost→reappear handover across cameras | true |
+| `camera_topology.enable_cross_camera_propagation` | Enable zone identity propagation between simultaneous tracks | true |
 | `reid.similarity_threshold` | Re-ID match threshold | 0.65 |
+| `reid.cross_camera_interval` | Seconds between cross-camera zone propagation checks | 2.0 |
 | `reid.gallery_size` | Embeddings stored per person | 10 |
 | `reid.max_reappear_time_sec` | Gallery entry expiration time | 300 |
 | `face_recognition.similarity_threshold` | Face match threshold | 0.6 |

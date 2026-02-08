@@ -53,6 +53,15 @@ camera_topology:
   # If false, uses legacy rectangular overlap zones defined below
   use_zones: true
 
+  # Enable handover: when a track is lost on one camera and appears on another
+  # in the same zone, link them as the same person
+  enable_handover: true
+
+  # Enable cross-camera identity propagation: when two cameras simultaneously
+  # see exactly 1 person each in a shared zone, transfer identity from the
+  # face-identified track to the unidentified one
+  enable_cross_camera_propagation: true
+
   overlaps:
     # Example: front_door camera's right edge overlaps with hallway's left edge
     # - cameras: ["front_door", "hallway"]
@@ -232,6 +241,11 @@ reid:
   # Path to TensorRT engine (only used when use_tensorrt_native: true)
   trt_model: "models/osnet_ain_x1_0.engine"
 
+  # Seconds between cross-camera zone identity propagation checks.
+  # When two cameras share a zone and each sees exactly 1 person,
+  # identity is transferred from the face-identified track to the unidentified one.
+  cross_camera_interval: 2.0
+
 # =============================================================================
 # FACE RECOGNITION (InsightFace)
 # =============================================================================
@@ -404,6 +418,20 @@ snapshots:
 
   # Only save snapshots of unknown (unidentified) people
   save_unknown_only: false
+
+# =============================================================================
+# DEBUG / DIAGNOSTICS
+# =============================================================================
+# Developer tools for diagnosing Re-ID and identification issues.
+
+debug:
+  # Show Re-ID debug overlay on preview frames
+  # Displays: gallery state, per-track identification method, recent Re-ID events
+  reid_overlay: false
+
+  # Enable detailed Re-ID decision logging at DEBUG level
+  # Logs per-candidate scores, gallery comparison details, routing decisions
+  log_reid_details: false
 
 # =============================================================================
 # LOGGING

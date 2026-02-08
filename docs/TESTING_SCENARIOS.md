@@ -67,5 +67,20 @@ def test_handover(self):
 ## Running Tests
 
 ```bash
+# Global tracking scenarios (handover, Re-ID)
 PYTHONPATH=. python3 tests/test_global_tracking_scenarios.py
+
+# Cross-camera zone identity propagation
+PYTHONPATH=. python -m pytest tests/test_cross_camera_zone_propagation.py -v
 ```
+
+## Cross-Camera Zone Propagation Tests
+
+`tests/test_cross_camera_zone_propagation.py` covers zone-based identity propagation between simultaneously active tracks:
+
+- **Propagation**: Face-identified track on one camera propagates identity to unidentified track on another camera in the same zone
+- **Single-person constraint**: No propagation when multiple persons on one camera in the zone
+- **Already identified**: No change when both tracks are identified
+- **Precedence**: Face-identified tracks are not downgraded by handover propagation
+- **No zones**: No propagation when zone manager is not configured
+- **Throttling**: Propagation respects `reid.cross_camera_interval`

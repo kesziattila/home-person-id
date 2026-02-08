@@ -98,7 +98,8 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
 **GlobalTrackManager** (`global_tracker.py`)
 - Coordinates tracks across all cameras
 - Creates global tracks from confirmed local tracks
-- Handles camera handover (overlapping views)
+- Handles camera handover (overlapping views) — configurable via `enable_handover`
+- Cross-camera zone identity propagation: when two cameras simultaneously see exactly 1 person each in a shared zone, transfers identity from the face-identified track to the unidentified one — configurable via `enable_cross_camera_propagation`
 - Uses Re-ID for cross-camera matching within a short grace period
 - Assigns new `global_track_id` after the grace period expires
 - Manages track lifecycle and cleanup
@@ -280,8 +281,9 @@ Loaded from YAML file via `load_config()`.
 
 5. GlobalTrackManager.process_local_tracks(...)
    └── Creates/updates GlobalTrack for each LocalTrack
-   └── Checks for camera handover
+   └── Checks for camera handover (lost → reappear)
    └── Checks for Re-ID match with lost tracks
+   └── Cross-camera zone identity propagation (simultaneous active tracks)
    └── Returns GlobalTrackingResult
 
 6. IdentityLinker.process_track(global_track_id, frame, crop, bbox)
@@ -328,15 +330,31 @@ Loaded from YAML file via `load_config()`.
 
 ### Camera Handover
 
+Controlled by `camera_topology.enable_handover` (default: true).
+
 ```
-1. Define overlap zones in config (normalized coordinates)
-2. When track exits cam1's overlap zone:
+1. Define polygon zones in config (normalized coordinates)
+2. When track is lost in a zone visible by other cameras:
    - Create PendingHandover with Re-ID embedding
    - Mark track as "lost"
-3. When new track enters cam2's overlap zone:
+3. When new track appears in the same zone on another camera:
    - Check pending handovers from connected cameras
    - If time window OK and Re-ID matches → link tracks
    - Else → create new global track
+```
+
+### Cross-Camera Zone Identity Propagation
+
+Controlled by `camera_topology.enable_cross_camera_propagation` (default: true).
+Throttled by `reid.cross_camera_interval` (default: 2 seconds).
+
+```
+1. After processing all active tracks, check shared zones
+2. For each zone visible on multiple cameras:
+   - If camera A sees exactly 1 person AND camera B sees exactly 1 person
+   - And one is face-identified while the other is unidentified
+   - Transfer identity via handover method (rank 1, upgradeable by reid/face)
+3. Update database for the newly identified track
 ```
 
 ## State Management

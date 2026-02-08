@@ -19,6 +19,7 @@ from src.config import CameraTopologyConfig, ReIDConfig, ZonesConfig
 from src.database.repository import Repository
 from src.detection.person_detector import compute_iou
 from src.recognition.identity_linker import IdentityLinker
+from src.recognition.identification_manager import CrossCameraMatch
 from src.tracking.track import GlobalTrack, LocalTrack, TrackState
 from src.tracking.zone_manager import ZoneManager
 from src.utils.profiler import profiler
@@ -124,6 +125,9 @@ class GlobalTrackManager:
         # Index of recently-lost track IDs for O(1) lookup in Re-ID matching
         # Avoids O(N) iteration over all tracks
         self._recently_lost_tracks: set[str] = set()
+
+        # Throttle for cross-camera zone identity propagation
+        self._last_cross_camera_check: float = 0.0
 
     def _load_next_track_id(self) -> int:
         """Load the next track ID from database to avoid duplicates.
@@ -269,9 +273,11 @@ class GlobalTrackManager:
                 continue
 
             # Check if this is a handover match
-            handover_match = self._try_handover_match(
-                camera_id, local_track, frame, current_time, local_tracks, frame_w, frame_h
-            )
+            handover_match = None
+            if self.topology_config.enable_handover:
+                handover_match = self._try_handover_match(
+                    camera_id, local_track, frame, current_time, local_tracks, frame_w, frame_h
+                )
 
             if handover_match:
                 # Link to existing global track
@@ -299,8 +305,9 @@ class GlobalTrackManager:
                 with profiler.measure("GlobalTracker.reid_match"):
                     reid_match = self._try_reid_match(camera_id, local_track, frame)
 
-                if reid_match:
-                    global_track_id = reid_match
+                if reid_match and reid_match.matched_track_id:
+                    # Case 1: Relink to existing global track (per-track or gallery-resolved)
+                    global_track_id = reid_match.matched_track_id
                     self._link_local_to_global(camera_id, local_track_id, global_track_id)
 
                     global_track = self._tracks[global_track_id]
@@ -308,10 +315,50 @@ class GlobalTrackManager:
                     global_track.state = TrackState.TRACKED
                     self._recently_lost_tracks.discard(global_track_id)
 
-                    logger.info(f"Re-ID match: {global_track_id} reappeared on {camera_id}")
+                    # confirm_identity uses precedence — only upgrades from none/handover
+                    if reid_match.person_name and self.repository:
+                        person = self.repository.get_person_by_name(reid_match.person_name)
+                        if person:
+                            state = self.identity_linker.get_track_state(global_track_id)
+                            if state:
+                                state.confirm_identity(person.id, reid_match.similarity, "reid")
+
+                    logger.info(
+                        f"Re-ID relink: {global_track_id} reappeared on {camera_id} "
+                        f"(person={reid_match.person_name}, sim={reid_match.similarity:.2f})"
+                    )
+
+                elif reid_match and reid_match.person_name:
+                    # Case 2: Gallery match, no lost track found — create new track
+                    # but assign the identity immediately as reid_gallery
+                    global_track_id = self._create_global_track(
+                        camera_id,
+                        local_track,
+                        frame,
+                        has_overlapping_bbox=local_track.track_id in overlapping_track_ids,
+                    )
+                    result.new_global_tracks.append(global_track_id)
+
+                    # Assign identity from gallery match
+                    person = self.repository.get_person_by_name(reid_match.person_name)
+                    if person:
+                        state = self.identity_linker.get_track_state(global_track_id)
+                        if state:
+                            state.confirm_identity(
+                                person.id, reid_match.similarity, "reid_gallery"
+                            )
+                            # Update database
+                            self.repository.update_track(
+                                global_track_id, person_id=person.id
+                            )
+
+                    logger.info(
+                        f"Re-ID gallery: new track {global_track_id} on {camera_id} "
+                        f"identified as {reid_match.person_name} (sim={reid_match.similarity:.2f})"
+                    )
 
                 else:
-                    # Create new global track
+                    # Case 3: No match — create fresh unidentified track
                     global_track_id = self._create_global_track(
                         camera_id,
                         local_track,
@@ -355,6 +402,11 @@ class GlobalTrackManager:
         # Process lost local tracks
         for local_track_id in lost_track_ids:
             self._handle_lost_local_track(camera_id, local_track_id, current_time)
+
+        # Cross-camera zone identity propagation
+        if self.topology_config.enable_cross_camera_propagation and self.zone_manager and current_time - self._last_cross_camera_check > self.reid_config.cross_camera_interval:
+            self._last_cross_camera_check = current_time
+            self._try_zone_identity_propagation()
 
         # Build result
         for global_track in self._tracks.values():
@@ -469,11 +521,28 @@ class GlobalTrackManager:
         if identity_state and len(identity_state.reid_gallery) > 0:
             reid_embedding = identity_state.reid_gallery.get_average_embedding()
 
+        # Flush track data to shared Re-ID gallery so it's available for
+        # cross-camera matching immediately (not just after periodic cleanup)
+        was_face_identified = (
+            identity_state is not None
+            and identity_state.is_identified
+            and identity_state.identified_by == "face"
+        )
+        if self.identity_linker.reid_gallery_manager:
+            track_id_num = hash(global_track_id) % (10**9)
+            self.identity_linker.reid_gallery_manager.on_track_lost(
+                track_id_num, was_face_identified=was_face_identified
+            )
+            if was_face_identified:
+                logger.debug(
+                    f"Flushed Re-ID gallery for face-identified track {global_track_id}"
+                )
+
         # Get last known bbox
         last_bbox = self._last_bboxes.get((camera_id, local_track_id))
 
         # Zone-based handover (preferred)
-        if self.zone_manager and last_bbox:
+        if self.topology_config.enable_handover and self.zone_manager and last_bbox:
             frame_dims = self._frame_dimensions.get(camera_id)
             if frame_dims:
                 frame_w, frame_h = frame_dims
@@ -512,7 +581,7 @@ class GlobalTrackManager:
                         return
 
         # Legacy rectangle-based handover (fallback)
-        if not self.zone_manager:
+        if self.topology_config.enable_handover and not self.zone_manager:
             exit_zone = self._check_exit_zone(camera_id)
             if exit_zone:
                 pending = PendingHandover(
@@ -706,11 +775,12 @@ class GlobalTrackManager:
         camera_id: str,
         local_track: LocalTrack,
         frame: np.ndarray,
-    ) -> Optional[str]:
+    ) -> Optional[CrossCameraMatch]:
         """Try to match new track against recently lost tracks using Re-ID.
 
         Returns:
-            Global track ID if matched, else None
+            CrossCameraMatch if matched (may have matched_track_id=None for
+            gallery-only matches), else None
         """
         if local_track.last_crop is None:
             return None
@@ -739,7 +809,12 @@ class GlobalTrackManager:
             self._recently_lost_tracks.discard(track_id)
 
         if not candidate_track_ids:
+            logger.debug(f"Re-ID: no candidates for {camera_id}:{local_track.track_id}")
             return None
+
+        logger.debug(
+            f"Re-ID: {camera_id}:{local_track.track_id} checking {len(candidate_track_ids)} candidates"
+        )
 
         # Use identity linker's Re-ID matching
         match = self.identity_linker.match_reid_cross_camera(
@@ -750,10 +825,7 @@ class GlobalTrackManager:
             if local_track.last_reid_embedding is not None else None
         )
 
-        if match:
-            return match.matched_track_id  # Return matched global track ID
-
-        return None
+        return match
 
     def _cleanup_pending_handovers(self, current_time: float):
         """Remove expired pending handovers and retire stale LOST tracks.
@@ -854,6 +926,89 @@ class GlobalTrackManager:
                             
                         logger.debug(
                             f"Track {track_id} exceeded LOST grace ({time_since_seen:.1f}s > {grace:.1f}s), marked REMOVED and archived in DB"
+                        )
+
+    def _try_zone_identity_propagation(self):
+        """Propagate identity between simultaneously active tracks in shared zones.
+
+        For each zone visible on multiple cameras, if camera A sees exactly 1 person
+        and camera B sees exactly 1 person, and one is face-identified while the other
+        is unidentified, transfer identity via handover method.
+        """
+        if not self.zone_manager:
+            return
+
+        # Build a map of active tracks per (zone, camera)
+        # zone_name -> camera_id -> list of (global_track_id, bbox)
+        zone_camera_tracks: dict[str, dict[str, list[tuple[str, tuple]]]] = {}
+
+        for (camera_id, local_track_id), global_track_id in self._local_to_global.items():
+            global_track = self._tracks.get(global_track_id)
+            if global_track is None or global_track.state not in (TrackState.TRACKED, TrackState.NEW):
+                continue
+
+            bbox = self._last_bboxes.get((camera_id, local_track_id))
+            if bbox is None:
+                continue
+
+            frame_dims = self._frame_dimensions.get(camera_id)
+            if frame_dims is None:
+                continue
+
+            frame_w, frame_h = frame_dims
+            zone_name = self.zone_manager.get_person_zone(camera_id, bbox, frame_w, frame_h)
+            if zone_name is None:
+                continue
+
+            if zone_name not in zone_camera_tracks:
+                zone_camera_tracks[zone_name] = {}
+            if camera_id not in zone_camera_tracks[zone_name]:
+                zone_camera_tracks[zone_name][camera_id] = []
+            zone_camera_tracks[zone_name][camera_id].append((global_track_id, bbox))
+
+        # For each zone, check camera pairs
+        for zone_name, cameras in zone_camera_tracks.items():
+            camera_ids = list(cameras.keys())
+            for i in range(len(camera_ids)):
+                for j in range(i + 1, len(camera_ids)):
+                    cam_a = camera_ids[i]
+                    cam_b = camera_ids[j]
+                    tracks_a = cameras[cam_a]
+                    tracks_b = cameras[cam_b]
+
+                    # Both cameras must see exactly 1 person in this zone
+                    if len(tracks_a) != 1 or len(tracks_b) != 1:
+                        continue
+
+                    track_a_id = tracks_a[0][0]
+                    track_b_id = tracks_b[0][0]
+
+                    state_a = self.identity_linker.get_track_state(track_a_id)
+                    state_b = self.identity_linker.get_track_state(track_b_id)
+                    if state_a is None or state_b is None:
+                        continue
+
+                    # Determine which is identified and which is not
+                    a_identified = state_a.is_identified
+                    b_identified = state_b.is_identified
+
+                    if a_identified and not b_identified:
+                        self.identity_linker.transfer_identity(track_a_id, track_b_id)
+                        # Update DB
+                        if state_a.person_id is not None:
+                            self.repository.update_track(track_b_id, person_id=state_a.person_id)
+                        logger.info(
+                            f"Zone identity propagation: zone='{zone_name}' "
+                            f"{track_a_id} -> {track_b_id} (person_id={state_a.person_id})"
+                        )
+                    elif b_identified and not a_identified:
+                        self.identity_linker.transfer_identity(track_b_id, track_a_id)
+                        # Update DB
+                        if state_b.person_id is not None:
+                            self.repository.update_track(track_a_id, person_id=state_b.person_id)
+                        logger.info(
+                            f"Zone identity propagation: zone='{zone_name}' "
+                            f"{track_b_id} -> {track_a_id} (person_id={state_b.person_id})"
                         )
 
     def get_global_track(self, global_track_id: str) -> Optional[GlobalTrack]:

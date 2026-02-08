@@ -194,6 +194,7 @@ ReIDGalleryManager
 2. Track → Face recognition → Identity (if face matched)
 3. Track → Re-ID embedding → Gallery update (if face-identified)
 4. New track → Re-ID match → Identity transfer (cross-camera)
+5. Active tracks in shared zone → Zone identity propagation (face-identified → unidentified)
 
 ---
 
@@ -235,6 +236,7 @@ This catches basic errors like:
 
 ## Pending Improvements
 
-- [ ] Polygon-based room zones for camera handover (plan exists)
+- [x] Polygon-based room zones for camera handover
 - [ ] Interactive zone drawing UI
-- [ ] Zone-based handover logic instead of camera-pair transitions
+- [x] Zone-based handover logic instead of camera-pair transitions
+- [x] Cross-camera zone identity propagation (simultaneous tracks in shared zone)

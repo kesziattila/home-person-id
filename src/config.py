@@ -69,6 +69,13 @@ class CameraTopologyConfig:
     # Use room-based zones for handovers
     use_zones: bool = True
     overlaps: list[CameraOverlap] = field(default_factory=list)
+    # Enable handover: when a track is lost on one camera and appears on another
+    # in the same zone, link them as the same person.
+    enable_handover: bool = True
+    # Enable cross-camera identity propagation: when two cameras simultaneously
+    # see exactly 1 person each in a shared zone, transfer identity from the
+    # face-identified track to the unidentified one.
+    enable_cross_camera_propagation: bool = True
 
 
 @dataclass
@@ -157,6 +164,10 @@ class ReIDConfig:
     use_tensorrt_native: bool = False
     # Path to TensorRT engine file (only used when use_tensorrt_native=True)
     trt_model: str = "models/osnet_ain_x1_0.engine"
+    # Seconds between cross-camera zone identity propagation checks.
+    # When two cameras share a zone and each sees exactly 1 person,
+    # identity is transferred from the face-identified track to the unidentified one.
+    cross_camera_interval: float = 2.0
 
 
 @dataclass
@@ -249,6 +260,16 @@ class SnapshotConfig:
 
 
 @dataclass
+class DebugConfig:
+    """Debug configuration for development and diagnostics."""
+
+    # Show Re-ID debug overlay on preview frames
+    reid_overlay: bool = False
+    # Enable detailed Re-ID decision logging at DEBUG level
+    log_reid_details: bool = False
+
+
+@dataclass
 class LoggingConfig:
     """Logging configuration."""
 
@@ -281,6 +302,7 @@ class Config:
     api: APIConfig = field(default_factory=APIConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     snapshots: SnapshotConfig = field(default_factory=SnapshotConfig)
+    debug: DebugConfig = field(default_factory=DebugConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
     def get_camera(self, camera_id: str) -> Optional[CameraConfig]:
@@ -347,6 +369,7 @@ def load_config(config_path: str | Path) -> Config:
     api = APIConfig(**data.get("api", {}))
     database = DatabaseConfig(**data.get("database", {}))
     snapshots = SnapshotConfig(**data.get("snapshots", {}))
+    debug = DebugConfig(**data.get("debug", {}))
     logging_config = LoggingConfig(**data.get("logging", {}))
 
     return Config(
@@ -363,5 +386,6 @@ def load_config(config_path: str | Path) -> Config:
         api=api,
         database=database,
         snapshots=snapshots,
+        debug=debug,
         logging=logging_config,
     )
