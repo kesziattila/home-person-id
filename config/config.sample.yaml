@@ -135,7 +135,11 @@ detection:
   model: "yolov8n.pt"
 
   # Minimum confidence for detections (0.0 - 1.0)
-  # Higher = fewer false positives, lower = catch more people
+  # Higher = fewer false positives, lower = catch more people.
+  # ByteTrack has two-stage matching: high-conf detections are matched first,
+  # then low-conf detections are matched against lost tracks. Lowering this
+  # to 0.3-0.4 helps recover flickering tracks (borderline detections that
+  # hover around the threshold).
   confidence_threshold: 0.5
 
   # Non-Maximum Suppression IoU threshold
@@ -173,16 +177,30 @@ tracking:
   # Detection confidence threshold for new tracks (deprecated, use detection.confidence_threshold)
   track_thresh: 0.5
 
-  # Frames to keep track alive without detection
-  # Higher = more tolerant of brief occlusions
+  # Frames to keep track alive without detection.
+  # ByteTrack keeps unmatched tracks in a LOST state for this many frames,
+  # using Kalman prediction to try re-matching. Only after track_buffer frames
+  # is the track truly removed.
+  # At 10 FPS: 30 = 3s, 60 = 6s, 90 = 9s.
+  # Higher = more tolerant of brief occlusions and detection gaps, but uses
+  # slightly more memory and may keep ghost tracks longer.
+  # If you see frequent track flickering (rapid lost→recovered cycles),
+  # increase this so ByteTrack handles gaps internally instead of escalating
+  # to the global tracker's handover logic.
   track_buffer: 30
 
-  # IoU threshold for matching detections to tracks
-  # Lower = stricter matching, higher = more lenient
+  # IoU threshold for matching detections to existing tracks.
+  # ByteTrack compares each detection's bounding box against predicted track
+  # positions using IoU (Intersection over Union). If IoU is below this
+  # threshold, the detection won't match the track.
+  # Lower = stricter (bbox must overlap closely), higher = more lenient.
+  # If a stationary person's detection bbox shifts slightly between frames
+  # (due to model jitter, lighting changes), a strict threshold causes
+  # match failures → track flickering. Increasing to 0.5-0.6 helps.
   match_thresh: 0.3
 
-  # Seconds before removing stationary track (0 = never remove)
-  # Useful for removing people who left but weren't detected leaving
+  # Seconds before removing stationary track (0 = never remove).
+  # Useful for removing people who left but weren't detected leaving.
   stationary_timeout: 60.0
 
 # =============================================================================

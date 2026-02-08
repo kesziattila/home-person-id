@@ -1103,23 +1103,31 @@ class GlobalTrackManager:
         ]
 
     def has_active_tracks(self, camera_id: str) -> bool:
-        """Check if there are active tracks on a specific camera.
+        """Check if there are active or recently-lost tracks on a camera.
 
-        Also returns True when there are pending handovers from this camera,
-        which keeps detection running so ByteTrack can re-detect the person.
+        Returns True when detection should keep running, including:
+        - TRACKED/NEW tracks on this camera
+        - LOST tracks within the grace period (so ByteTrack can re-detect)
+        - Pending handovers from this camera
 
         Args:
             camera_id: Camera identifier
 
         Returns:
-            True if there are active tracks on this camera
+            True if detection should keep running on this camera
         """
+        now = datetime.now()
+        grace = self.reid_config.global_id_grace_period
+
         for track in self._tracks.values():
-            if (
-                track.state in (TrackState.TRACKED, TrackState.NEW)
-                and track.current_camera_id == camera_id
-            ):
+            if track.current_camera_id != camera_id:
+                continue
+            if track.state in (TrackState.TRACKED, TrackState.NEW):
                 return True
+            if track.state == TrackState.LOST:
+                time_since_seen = (now - track.last_seen).total_seconds()
+                if time_since_seen < grace:
+                    return True
 
         # Also active if there are pending handovers from this camera
         # (keeps detection running so ByteTrack can re-detect)
