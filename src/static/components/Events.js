@@ -90,6 +90,17 @@ export default {
                     </tbody>
                 </table>
             </div>
+
+            <!-- Infinite scroll indicators -->
+            <div v-if="loadingMore" class="py-4 text-center">
+                <div class="inline-flex items-center gap-2 text-gray-400 text-sm">
+                    <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-500"></div>
+                    Loading more events...
+                </div>
+            </div>
+            <div v-else-if="!hasMore && filteredEvents.length > 0" class="py-4 text-center text-gray-500 text-sm">
+                No more events
+            </div>
         </div>
     `,
     props: {
@@ -107,6 +118,10 @@ export default {
             error: null,
             hours: '24',
             refreshInterval: null,
+            offset: 0,
+            loadingMore: false,
+            hasMore: true,
+            pageSize: 50,
             filters: {
                 event_type: null,
                 camera_id: null,
@@ -138,12 +153,19 @@ export default {
             if (e.key === 'c' || e.key === 'C') { this.clearAllFilters(); }
         };
         window.addEventListener('keydown', this._onKeydown);
+        this._onScroll = () => {
+            if (window.innerHeight + window.scrollY >= document.body.offsetHeight - 200) {
+                this.loadMoreEvents();
+            }
+        };
+        window.addEventListener('scroll', this._onScroll);
     },
     beforeUnmount() {
         if (this.refreshInterval) {
             clearInterval(this.refreshInterval);
         }
         window.removeEventListener('keydown', this._onKeydown);
+        window.removeEventListener('scroll', this._onScroll);
     },
     watch: {
         autoRefresh(newVal) {
@@ -166,23 +188,49 @@ export default {
         async loadEvents() {
             this.loading = true;
             this.error = null;
+            this.offset = 0;
+            this.hasMore = true;
             try {
-                const params = new URLSearchParams();
-                params.set('since_hours', this.hours);
-                params.set('limit', '100');
-                if (this.filters.event_type) params.set('event_type', this.filters.event_type);
-                if (this.filters.camera_id) params.set('camera_id', this.filters.camera_id);
-                if (this.filters.track_id) params.set('track_id', this.filters.track_id);
-
+                const params = this._buildParams();
                 const response = await fetch(`/api/v1/events?${params.toString()}`);
                 if (!response.ok) throw new Error('Failed to fetch events');
-                this.events = await response.json();
+                const data = await response.json();
+                this.events = data;
+                this.offset = data.length;
+                if (data.length < this.pageSize) this.hasMore = false;
             } catch (e) {
                 this.error = 'Error loading events.';
                 console.error(e);
             } finally {
                 this.loading = false;
             }
+        },
+        async loadMoreEvents() {
+            if (this.loadingMore || !this.hasMore || this.loading) return;
+            this.loadingMore = true;
+            try {
+                const params = this._buildParams();
+                params.set('offset', String(this.offset));
+                const response = await fetch(`/api/v1/events?${params.toString()}`);
+                if (!response.ok) throw new Error('Failed to fetch events');
+                const data = await response.json();
+                this.events.push(...data);
+                this.offset += data.length;
+                if (data.length < this.pageSize) this.hasMore = false;
+            } catch (e) {
+                console.error(e);
+            } finally {
+                this.loadingMore = false;
+            }
+        },
+        _buildParams() {
+            const params = new URLSearchParams();
+            params.set('since_hours', this.hours);
+            params.set('limit', String(this.pageSize));
+            if (this.filters.event_type) params.set('event_type', this.filters.event_type);
+            if (this.filters.camera_id) params.set('camera_id', this.filters.camera_id);
+            if (this.filters.track_id) params.set('track_id', this.filters.track_id);
+            return params;
         },
         setFilter(field, value) {
             if (this.filters[field] === value) {

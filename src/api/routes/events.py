@@ -92,6 +92,7 @@ def create_events_router(repository: Repository) -> APIRouter:
         track_id: Optional[str] = Query(None, description="Filter by track ID"),
         since_hours: int = Query(24, description="Hours to look back", ge=1, le=720),
         limit: int = Query(50, description="Maximum events to return", ge=1, le=1000),
+        offset: int = Query(0, description="Offset for pagination", ge=0),
     ) -> List[EventResponse]:
         """Get recent events with optional filters."""
         since = datetime.utcnow() - timedelta(hours=since_hours)
@@ -103,6 +104,7 @@ def create_events_router(repository: Repository) -> APIRouter:
             track_id=track_id,
             since=since,
             limit=limit,
+            offset=offset,
         )
 
         result = []

@@ -341,6 +341,7 @@ class Repository:
         track_id: Optional[str] = None,
         since: Optional[datetime] = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[Event]:
         """Query events with filters."""
         with self.get_session() as session:
@@ -357,7 +358,7 @@ class Repository:
             if since:
                 query = query.filter(Event.timestamp >= since)
 
-            return query.order_by(Event.timestamp.desc()).limit(limit).all()
+            return query.order_by(Event.timestamp.desc()).offset(offset).limit(limit).all()
 
     def cleanup_old_events(self, days: int = 30) -> int:
         """Delete events older than N days.
