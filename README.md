@@ -23,7 +23,7 @@ A Python-based person identification system for home environments that processes
 │                    - Skip processing when no motion                          │
 │                    - ~90% compute savings when idle                          │
 └─────────────────────────────────────────────────────────────────────────────┘
-                                     │ (only if motion detected)
+                                     │ (if motion OR active/recently-lost tracks)
                                      ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                      Person Detection (YOLOv8-nano)                          │
@@ -99,6 +99,8 @@ A real-time web dashboard is available for monitoring all camera streams:
 - **Zero-Config**: Automatically discovers cameras from system configuration.
 - **Person Management**: Add, edit, and delete known persons with face image upload.
 - **Unidentified Faces**: Review faces that fall below recognition threshold, assign to persons or dismiss.
+- **Events Filtering**: Click any cell (type, camera, person, track) to filter. Active filter chips with clear/clear-all. Full track IDs displayed.
+- **Keyboard Shortcuts**: `R` to refresh events, `C` to clear filters.
 
 Default access: `http://localhost:8000`
 
@@ -506,3 +508,8 @@ self._model.to('cpu')
 ### Tracking creates too many IDs
 - Lower `tracking.match_thresh` (e.g., 0.2) for fast-moving persons
 - Increase `tracking.track_buffer` to keep lost tracks longer
+
+### Track flickering (rapid lost/recovered cycles)
+- Increase `tracking.match_thresh` (e.g., 0.5-0.6) to tolerate bbox jitter for stationary people
+- Increase `tracking.track_buffer` (e.g., 60-90) so ByteTrack handles gaps internally
+- Lower `detection.confidence_threshold` (e.g., 0.3-0.4) to keep borderline detections

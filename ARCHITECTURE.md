@@ -24,8 +24,9 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
 - The main `run` loop collects frames from all camera clients.
 - It performs **Motion Detection** (fast, CPU-based) for each frame.
     - **Optimization**: To handle high-resolution (1080p+) streams efficiently on Jetson, frames are downscaled (default: 360p) before background subtraction. This reduces the pixel count by ~90% while maintaining detection accuracy.
-- If motion is detected OR there are active tracks on that camera:
+- If motion is detected OR there are active/recently-lost tracks on that camera:
     - It creates an `InferenceTask` and pushes it to the `InferenceQueue`.
+    - LOST tracks within the grace period (`reid.global_id_grace_period`, default 60s) keep detection running so ByteTrack can re-detect a briefly lost person.
 - If no motion/tracks:
     - it updates the **Preview Buffer** with the raw frame and skips expensive ML.
 - It also polls the `ResultQueue` for completed inference results and processes them (tracking, cross-camera coordination).
@@ -102,6 +103,8 @@ The system uses a decoupled, multi-threaded pipeline to maximize throughput and 
 - Cross-camera zone identity propagation: when two cameras simultaneously see exactly 1 person each in a shared zone, transfers identity from the face-identified track to the unidentified one — configurable via `enable_cross_camera_propagation`
 - Uses Re-ID for cross-camera matching within a short grace period
 - Assigns new `global_track_id` after the grace period expires
+- **Track recovery**: When a track goes LOST, the local-to-global mapping is kept alive so ByteTrack re-detection of the same local ID restores the global track with its identity. Mappings are cleaned up when the track transitions to REMOVED (grace period expired).
+- **Detection gate**: `has_active_tracks()` includes LOST tracks within the grace period, preventing detection from stopping for stationary people whose tracks flicker
 - Manages track lifecycle and cleanup
 
 **HandoverManager** (`handover.py`)
@@ -366,8 +369,8 @@ Throttled by `reid.cross_camera_interval` (default: 2 seconds).
   - Displayed with orange color in preview (`S:10s`)
   - Shown with stationary duration counter
   - Removed after 60 seconds of no detection (if `stationary_timeout` configured)
-- LOST: No detection match, but still in memory
-- REMOVED: Marked for deletion
+- LOST: No detection match, but still in memory. Local-to-global mapping is kept alive for ByteTrack recovery. Detection continues running (`has_active_tracks` returns True) within the grace period.
+- REMOVED: Marked for deletion. Local-to-global mapping cleaned up.
 
 ### Identity States (per GlobalTrack)
 - Unidentified: person_id = None
@@ -389,8 +392,8 @@ Throttled by `reid.cross_camera_interval` (default: 2 seconds).
 
 ### For Better Tracking
 - `tracking.track_thresh`: Lower to detect more (may increase false positives)
-- `tracking.track_buffer`: Increase to keep lost tracks longer (default 60)
-- `tracking.match_thresh`: IoU threshold - lower for fast movement (default 0.5)
+- `tracking.track_buffer`: Increase to keep lost tracks longer (default 30). At 10 FPS: 30=3s, 60=6s, 90=9s.
+- `tracking.match_thresh`: IoU threshold — lower for fast movement, higher (0.5-0.6) to reduce flickering for stationary people (default 0.3)
 
 ### For False Positive Reduction
 - **Exclusion zones**: Define areas to ignore (e.g., coat racks, mirrors)
@@ -446,4 +449,4 @@ Throttled by `reid.cross_camera_interval` (default: 2 seconds).
 ### Phase 6: Web UI
 - [x] Simple web interface for monitoring
 - [x] Live camera preview with annotations
-- [ ] Event history viewer
+- [x] Event history viewer (with clickable filtering, track ID display, keyboard shortcuts)
