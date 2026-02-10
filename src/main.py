@@ -265,6 +265,8 @@ class PersonIDSystem:
 
     def stop(self):
         """Stop the system."""
+        if not self._running:
+            return
         logger.info("Stopping Person ID System")
         self._running = False
         self.api_server.stop()

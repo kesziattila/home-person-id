@@ -29,6 +29,7 @@
 ### Type Safety & Data Structures
 - **Use dataclasses for method arguments and return values**: Avoid using raw tuples for complex data structures. Dataclasses provide better readability, type safety, and prevent unpacking errors.
 - **Standardize return types**: Use dedicated result dataclasses (e.g., `IdentificationResult`, `CrossCameraMatch`) to return multiple values from a method.
+- **Don't use `Optional` defaults for required dependencies**: Constructor parameters that are needed for correct operation (e.g., `repository`, `reid_extractor`) must NOT default to `None`. Making them required ensures missing arguments are caught immediately at the call site, not silently ignored at runtime. Use `Optional` only when the parameter is truly optional (i.e., the class works correctly without it).
 
 ### Centralize Validation Logic
 - Put validation checks in one place, typically at the point where data enters the system

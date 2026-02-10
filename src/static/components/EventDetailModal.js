@@ -58,6 +58,16 @@ export default {
                             </div>
                         </section>
 
+                        <!-- Gallery Match section -->
+                        <section v-if="hasGalleryMatch">
+                            <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Gallery Match</h4>
+                            <div class="bg-gray-700/50 rounded-lg p-4 text-center">
+                                <img :src="'/api/v1/reid-embeddings/' + event.extra_data.original_reid_embedding_id + '/image'"
+                                     class="w-32 h-32 object-cover rounded shadow-lg mx-auto border border-gray-600"
+                                     alt="Gallery Match Crop">
+                            </div>
+                        </section>
+
                         <section>
                             <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Metadata</h4>
                             <pre class="bg-gray-900 text-green-400 p-4 rounded-lg text-xs overflow-x-auto border border-gray-700 font-mono">{{ formattedExtra }}</pre>
@@ -114,6 +124,10 @@ export default {
         hasReferenceFace() {
             return this.event && this.event.event_type === 'face_match'
                 && this.event.extra_data && this.event.extra_data.face_id;
+        },
+        hasGalleryMatch() {
+            return this.event && this.event.event_type === 'reid_match'
+                && this.event.extra_data && this.event.extra_data.original_reid_embedding_id;
         }
     },
     methods: {

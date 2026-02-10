@@ -57,29 +57,43 @@ class TensorRTEngine(ABC):
     def shutdown(self):
         """Clean up CUDA resources."""
         with self._lock:
-            if self._cuda_context:
+            if not self._cuda_context:
+                return
+
+            try:
+                self._cuda_context.push()
+            except Exception:
+                # Context already invalid, nothing we can do
+                self._cuda_context = None
+                self._engine = None
+                self._context = None
+                self._stream = None
+                self._buffers = {}
+                return
+
+            try:
+                # Free TRT objects while CUDA context is active
+                self._context = None
+                self._engine = None
+
+                # Free device memory
+                for _, device_mem, _ in self._buffers.values():
+                    if device_mem:
+                        device_mem.free()
+                self._buffers = {}
+
+                if self._stream:
+                    self._stream.synchronize()
+                    self._stream = None
+            except Exception:
+                pass
+            finally:
                 try:
                     self._cuda_context.pop()
                 except Exception:
                     pass
                 self._cuda_context = None
 
-            if self._stream:
-                try:
-                    self._stream.synchronize()
-                except Exception:
-                    pass
-                self._stream = None
-
-            # Free device memory
-            for _, device_mem, _ in self._buffers.values():
-                if device_mem:
-                    # pycuda frees memory when the object goes out of scope
-                    pass
-
-            self._buffers = {}
-            self._engine = None
-            self._context = None
             logger.info(f"TensorRT engine shut down: {self.model_path}")
 
     def _load_engine(self):

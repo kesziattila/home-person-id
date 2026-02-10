@@ -79,9 +79,11 @@ class GalleryEntry:
 
     def add_embedding(self, embedding: np.ndarray, crop: Optional[np.ndarray] = None, db_id: Optional[int] = None):
         """Add an embedding to the gallery entry."""
-        # Save crop to disk instead of memory
         crop_path = self._save_crop_to_disk(crop) if crop is not None else None
+        self._add_embedding_with_path(embedding, crop_path, db_id=db_id)
 
+    def _add_embedding_with_path(self, embedding: np.ndarray, crop_path: Optional[str] = None, db_id: Optional[int] = None):
+        """Add an embedding with an already-saved crop path."""
         self.entries.append(EmbeddingWithCrop(
             embedding=embedding,
             crop_path=crop_path,
@@ -359,21 +361,20 @@ class ReIDGalleryManager:
                 person_id = person.id
 
         for emb in embeddings:
+            # Save crop to disk first so we can reference it from DB
+            crop_path = entry._save_crop_to_disk(crop) if crop is not None else None
+
             db_id = None
             if self.repository:
-                # Store embedding in database
-                # For now we use the track_id as source camera ID if available, 
-                # though it's not quite right. We'll pass None for camera_id for now
-                # or try to find it from data if we extend it.
                 reid_emb = self.repository.add_reid_embedding(
-                    camera_id="unknown", # We don't have camera_id here easily
+                    camera_id="unknown",
                     embedding=emb,
                     track_id=f"global_{track_id}",
                     person_id=person_id,
-                    snapshot_path=None # add_embedding will save its own crop
+                    snapshot_path=crop_path,
                 )
                 db_id = reid_emb.id
-                
+
                 # Emit event
                 self.repository.create_event(
                     camera_id="unknown",
@@ -387,7 +388,8 @@ class ReIDGalleryManager:
                     }
                 )
 
-            entry.add_embedding(emb, crop, db_id=db_id)
+            # Pass pre-saved crop_path directly to avoid saving a duplicate
+            entry._add_embedding_with_path(emb, crop_path, db_id=db_id)
 
         entry.last_seen = time.time()  # Update last seen time when track is lost
 

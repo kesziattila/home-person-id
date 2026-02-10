@@ -190,6 +190,7 @@ class IdentificationManager:
                     max_embeddings_per_person=self.reid_config.gallery_size,
                     crop_cache_path=self.reid_config.crop_cache_path,
                     face_recognizer=self.face_recognizer,
+                    repository=self.repository,
                     debug_saver=self._debug_saver,
                 )
         return self._reid_gallery_manager
