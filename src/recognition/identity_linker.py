@@ -80,6 +80,7 @@ class TrackIdentityState:
     # Timestamps
     first_seen: float = field(default_factory=time.time)
     last_face_check: float = 0.0
+    last_gallery_check: float = 0.0
     identified_at: Optional[float] = None
 
     @property
@@ -368,6 +369,19 @@ class IdentityLinker:
         # Always update Re-ID gallery for cross-camera matching
         self._update_reid_gallery(state, person_crop, num_persons_in_frame, precomputed_reid)
 
+        # For unidentified tracks, try periodic gallery recheck
+        if not state.is_identified:
+            if self._try_gallery_identification(state, person_crop, num_persons_in_frame, camera_id):
+                name = self._get_person_name(state.person_id)
+                return IdentificationResult(
+                    person_id=state.person_id,
+                    person_name=name,
+                    confidence=state.identification_confidence,
+                    method="reid_gallery",
+                    is_confirmed=True,
+                    is_reid_identified=True,
+                )
+
         # Get best-match info from underlying IdentificationManager for unidentified tracks
         if not result.is_confirmed:
             identity = self._id_manager.get_identity(global_track_id)
@@ -592,6 +606,86 @@ class IdentityLinker:
                         track_id_num, crop, person_name, num_persons_in_frame
                     )
 
+    # ==================== Gallery Recheck ====================
+
+    def _try_gallery_identification(
+        self,
+        state: TrackIdentityState,
+        person_crop: np.ndarray,
+        num_persons_in_frame: int = 1,
+        camera_id: Optional[str] = None,
+    ) -> bool:
+        """Try to identify an unidentified track via the shared Re-ID gallery.
+
+        Time-gated by reid_config.gallery_recheck_interval.
+
+        Args:
+            state: Track identity state
+            person_crop: Person crop image
+            num_persons_in_frame: Number of persons in frame
+            camera_id: Camera ID for event logging
+
+        Returns:
+            True if identification succeeded
+        """
+        current_time = time.time()
+        if current_time - state.last_gallery_check < self.reid_config.gallery_recheck_interval:
+            return False
+
+        state.last_gallery_check = current_time
+
+        if not self.reid_gallery_manager:
+            return False
+
+        with profiler.measure("ReIDGallery.recheck"):
+            match_result = self.reid_gallery_manager.match_new_track(
+                person_crop, num_persons_in_frame
+            )
+
+        if not match_result.matched:
+            return False
+
+        # Resolve person name to person_id
+        person = self.repository.get_person_by_name(match_result.person_name)
+        if not person:
+            return False
+
+        state.confirm_identity(person.id, match_result.score, "reid_gallery")
+
+        # Update database
+        self.repository.update_track(
+            state.global_track_id, person_id=person.id
+        )
+
+        # Save current person crop as snapshot
+        snapshot_path = self._save_snapshot_crop(
+            person_crop, "reid_match", match_result.person_name
+        )
+
+        # Emit reid_match event
+        self.repository.create_event(
+            camera_id=camera_id or "unknown",
+            event_type="reid_match",
+            track_id=state.global_track_id,
+            person_id=person.id,
+            confidence=match_result.score,
+            reid_embedding_id=match_result.db_id,
+            snapshot_path=snapshot_path,
+            extra_data={
+                "match_policy": "gallery_recheck",
+                "threshold": self.reid_config.similarity_threshold,
+                "top1_score": match_result.best_score,
+                "original_reid_embedding_id": match_result.db_id,
+            }
+        )
+
+        logger.info(
+            f"Gallery recheck: track {state.global_track_id} identified as "
+            f"{match_result.person_name} (sim={match_result.score:.2f})"
+        )
+
+        return True
+
     # ==================== Cross-Camera Re-ID ====================
 
     def _find_track_for_person(self, person_name: str, candidate_track_ids: list[str]) -> Optional[str]:
@@ -715,6 +809,9 @@ class IdentityLinker:
                 if self.repository:
                     person = self.repository.get_person_by_name(match_result.person_name)
                     person_id = person.id if person else None
+                    snapshot_path = self._save_snapshot_crop(
+                        new_crop, "reid_match", match_result.person_name
+                    )
                     self.repository.create_event(
                         camera_id="unknown",
                         event_type="reid_match",
@@ -722,11 +819,13 @@ class IdentityLinker:
                         person_id=person_id,
                         confidence=match_result.score,
                         reid_embedding_id=match_result.db_id,
+                        snapshot_path=snapshot_path,
                         extra_data={
                             "match_policy": "gallery" if not resolved_track else "gallery_resolved",
                             "threshold": self.reid_config.similarity_threshold,
                             "top1_score": match_result.best_score,
                             "resolved_track": resolved_track,
+                            "original_reid_embedding_id": match_result.db_id,
                         }
                     )
 
@@ -866,4 +965,32 @@ class IdentityLinker:
                 return None
         except Exception as e:
             logger.error(f"Failed to save snapshot: {e}")
+            return None
+
+    def _save_snapshot_crop(self, crop: np.ndarray, event_type: str, label: str = "") -> Optional[str]:
+        """Save a person crop directly as an event snapshot (no bbox cropping).
+
+        Returns:
+            Path to saved snapshot or None if disabled/failed.
+        """
+        if not self.snapshot_config or not self.snapshot_config.enabled:
+            return None
+
+        try:
+            from src.utils.image_utils import write_jpeg
+            import uuid
+            from pathlib import Path
+
+            snapshot_dir = Path(self.snapshot_config.path) / event_type
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            unique_id = uuid.uuid4().hex[:8]
+            label_part = f"_{label}" if label else ""
+            filename = f"{timestamp}{label_part}_{unique_id}.jpg"
+
+            write_jpeg(str(snapshot_dir / filename), crop)
+            return str(snapshot_dir / filename)
+        except Exception as e:
+            logger.debug(f"Failed to save {event_type} snapshot: {e}")
             return None

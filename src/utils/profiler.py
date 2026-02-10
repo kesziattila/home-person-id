@@ -461,7 +461,6 @@ def create_data_structure_tracker(
             sizes.append(DataStructureSize("GlobalTracker._tracks", len(global_tracker._tracks)))
             sizes.append(DataStructureSize("GlobalTracker._local_to_global", len(global_tracker._local_to_global)))
             sizes.append(DataStructureSize("GlobalTracker._recently_lost", len(global_tracker._recently_lost_tracks)))
-            sizes.append(DataStructureSize("GlobalTracker._pending_handovers", len(global_tracker._pending_handovers)))
 
         if identity_linker:
             sizes.append(DataStructureSize("IdentityLinker._track_states", len(identity_linker._track_states)))

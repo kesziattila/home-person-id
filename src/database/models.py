@@ -248,6 +248,7 @@ def init_database(db_path: str) -> tuple:
     with engine.connect() as conn:
         conn.execute(text("PRAGMA journal_mode=WAL"))
         conn.execute(text("PRAGMA busy_timeout=5000"))  # Wait up to 5s on locks
+        conn.execute(text("PRAGMA synchronous=NORMAL"))  # Crash-safe with WAL
         conn.commit()
 
     Base.metadata.create_all(engine)

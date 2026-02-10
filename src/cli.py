@@ -919,6 +919,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
     global_tracker = GlobalTrackManager(
         config.camera_topology, config.reid, identity_linker, repo,
         zones_config=config.zones,
+        snapshot_config=config.snapshots,
     )
 
     # Initialize zone manager and renderer
@@ -1088,32 +1089,6 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
                         has_motion=result.has_motion,
                     )
 
-                    # Log and save handover events
-                    for track_id, from_cam, to_cam in global_result.handovers_completed:
-                        identity = id_manager.get_identity(track_id)
-                        name = identity.person_name or "Unknown"
-                        msg = f"[HANDOVER] {name} ({track_id}): {from_cam} -> {to_cam}"
-                        click.echo(msg)
-                        handover_log.append((current_time, msg))
-
-                        # Save handover snapshot
-                        from_frame = last_processed_frames.get(from_cam)
-                        to_frame = current_frames.get(to_cam, frame)
-                        if from_frame is not None:
-                            from_bbox = last_track_bboxes.get((from_cam, track_id))
-                            to_bbox = last_track_bboxes.get((to_cam, track_id))
-                            saved_path = snapshot_saver.save_handover(
-                                track_id=track_id,
-                                person_name=name,
-                                from_camera=from_cam,
-                                to_camera=to_cam,
-                                from_frame=from_frame,
-                                to_frame=to_frame,
-                                from_bbox=from_bbox,
-                                to_bbox=to_bbox,
-                            )
-                            if saved_path:
-                                click.echo(f"  Saved handover: {saved_path}")
 
                     for track_id in global_result.new_global_tracks:
                         click.echo(f"[NEW] {track_id} on {cam_id}")
@@ -1162,9 +1137,8 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
                     grid[r * max_h:r * max_h + h, c * max_w:c * max_w + w] = d
 
                 # Status bar
-                pending = len(global_tracker._pending_handovers)
                 identified = sum(1 for gid in id_manager._identities if id_manager.is_identified(gid))
-                status = f"Identified: {identified} | Gallery: {id_manager.gallery_size} | Pending: {pending}"
+                status = f"Identified: {identified} | Gallery: {id_manager.gallery_size}"
                 cv2.putText(grid, status, (10, grid.shape[0] - 10),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
 

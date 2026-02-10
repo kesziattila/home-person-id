@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from src.database.models import (
@@ -46,6 +47,19 @@ class Repository:
     def get_session(self) -> Session:
         """Get a new database session."""
         return self._session_maker()
+
+    def checkpoint(self):
+        """Force WAL checkpoint to flush all pending writes to the main database file.
+
+        Call this on shutdown to prevent corruption if the process is killed.
+        """
+        try:
+            with self._engine.connect() as conn:
+                conn.execute(text("PRAGMA wal_checkpoint(TRUNCATE)"))
+                conn.commit()
+            logger.info("Database WAL checkpoint completed")
+        except Exception as e:
+            logger.error(f"WAL checkpoint failed: {e}")
 
     # ==================== Person Operations ====================
 

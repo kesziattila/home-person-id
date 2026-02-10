@@ -147,6 +147,7 @@ class PersonIDSystem:
             self.identity_linker,
             self.repository,
             zones_config=self.config.zones,
+            snapshot_config=self.config.snapshots,
         )
 
         # Parallel processing queues
@@ -288,6 +289,12 @@ class PersonIDSystem:
             reid = self.identity_linker.reid_extractor
             if reid and hasattr(reid, "shutdown"):
                 reid.shutdown()
+        except Exception:
+            pass
+
+        # Checkpoint WAL to prevent database corruption on unclean exit
+        try:
+            self.repository.checkpoint()
         except Exception:
             pass
 
@@ -546,28 +553,6 @@ class PersonIDSystem:
         # New tracks
         for track_id in result.new_global_tracks:
             logger.info(f"[{camera_id}] New person detected: {track_id}")
-
-        # Handovers
-        for track_id, from_cam, to_cam in result.handovers_completed:
-            state = self.identity_linker.get_track_state(track_id)
-            person_name = "Unknown"
-            if state and state.is_identified:
-                person = self.repository.get_person(state.person_id)
-                if person:
-                    person_name = person.name
-
-            logger.info(
-                f"[{to_cam}] Person moved from {from_cam}: {person_name} ({track_id})"
-            )
-
-            # Create event
-            self.repository.create_event(
-                camera_id=to_cam,
-                event_type="track_handover",
-                track_id=track_id,
-                person_id=state.person_id if state else None,
-                extra_data={"from_camera": from_cam},
-            )
 
         # Lost tracks
         for track_id in result.tracks_lost:

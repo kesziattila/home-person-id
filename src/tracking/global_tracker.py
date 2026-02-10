@@ -2,8 +2,8 @@
 
 Manages global tracks that span multiple cameras, handling:
 1. Creation of global tracks from local tracks
-2. Camera handover for overlapping views
-3. Re-ID matching for non-overlapping cameras
+2. Re-ID gallery matching for cross-camera identification
+3. Zone-based identity propagation for simultaneous views
 4. Track lifecycle management
 """
 
@@ -15,7 +15,7 @@ from typing import Optional
 
 import numpy as np
 
-from src.config import CameraTopologyConfig, ReIDConfig, ZonesConfig
+from src.config import CameraTopologyConfig, ReIDConfig, SnapshotConfig, ZonesConfig
 from src.database.repository import Repository
 from src.detection.person_detector import compute_iou
 from src.recognition.identity_linker import IdentityLinker
@@ -28,37 +28,11 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class CameraHandoverZone:
-    """Defines an overlap zone between two cameras."""
-
-    camera1_id: str
-    camera2_id: str
-    cam1_exit_zone: tuple[float, float, float, float]  # Normalized (x1, y1, x2, y2)
-    cam2_entry_zone: tuple[float, float, float, float]
-    max_handover_sec: float = 3.0
-
-
-@dataclass
-class PendingHandover:
-    """Track pending handover between cameras."""
-
-    global_track_id: str
-    from_camera: str
-    zone_name: str  # Zone where track was lost
-    exit_time: float
-    max_handover_sec: float
-    reid_embedding: Optional[np.ndarray] = None
-    last_bbox: Optional[tuple[float, float, float, float]] = None
-    local_track_id: Optional[int] = None  # For mapping cleanup on timeout
-
-
-@dataclass
 class GlobalTrackingResult:
     """Result of global tracking update."""
 
     active_tracks: list[GlobalTrack]
     new_global_tracks: list[str]
-    handovers_completed: list[tuple[str, str, str]]  # (track_id, from_cam, to_cam)
     tracks_lost: list[str]
 
 
@@ -68,7 +42,7 @@ class GlobalTrackManager:
     Coordinates between:
     - Local ByteTrack instances (per-camera)
     - Identity linker (face recognition + Re-ID)
-    - Camera handover logic
+    - Zone-based identity propagation
     - Database persistence
     """
 
@@ -79,6 +53,7 @@ class GlobalTrackManager:
         identity_linker: IdentityLinker,
         repository: Repository,
         zones_config: Optional[ZonesConfig] = None,
+        snapshot_config: Optional[SnapshotConfig] = None,
     ):
         """Initialize global track manager.
 
@@ -87,18 +62,20 @@ class GlobalTrackManager:
             reid_config: Re-ID configuration
             identity_linker: Identity linker instance
             repository: Database repository
-            zones_config: Optional polygon zones configuration for zone-based handover
+            zones_config: Optional polygon zones configuration for zone-based propagation
+            snapshot_config: Optional snapshot configuration for event images
         """
         self.topology_config = topology_config
         self.reid_config = reid_config
         self.identity_linker = identity_linker
         self.repository = repository
+        self.snapshot_config = snapshot_config
 
-        # Zone manager for polygon-based handover (preferred)
+        # Zone manager for zone-based identity propagation
         self.zone_manager: Optional[ZoneManager] = None
         if zones_config and zones_config.zones:
             self.zone_manager = ZoneManager(zones_config)
-            logger.info("Using zone-based handover")
+            logger.info("Using zone-based identity propagation")
 
         # Global tracks: global_track_id -> GlobalTrack
         self._tracks: dict[str, GlobalTrack] = {}
@@ -106,21 +83,13 @@ class GlobalTrackManager:
         # Mapping: (camera_id, local_track_id) -> global_track_id
         self._local_to_global: dict[tuple[str, int], str] = {}
 
-        # Pending handovers waiting to be matched
-        self._pending_handovers: list[PendingHandover] = []
-
-        # Handover zones (legacy rectangle-based)
-        self._handover_zones: list[CameraHandoverZone] = []
-        if not self.zone_manager:
-            self._load_handover_zones()
-
         # Track ID counter - load from database to avoid duplicates
         self._next_track_id = self._load_next_track_id()
 
         # Store frame dimensions per camera for zone checks
         self._frame_dimensions: dict[str, tuple[int, int]] = {}
 
-        # Store last known bbox for each local track (for zone-based handover)
+        # Store last known bbox for each local track (for zone propagation)
         self._last_bboxes: dict[tuple[str, int], tuple[float, float, float, float]] = {}
 
         # Index of recently-lost track IDs for O(1) lookup in Re-ID matching
@@ -129,6 +98,36 @@ class GlobalTrackManager:
 
         # Throttle for cross-camera zone identity propagation
         self._last_cross_camera_check: float = 0.0
+
+    def _save_event_snapshot(self, crop: np.ndarray, event_type: str, label: str = "") -> Optional[str]:
+        """Save a person crop as an event snapshot.
+
+        Returns:
+            Path to saved snapshot or None if disabled/failed.
+        """
+        if not self.snapshot_config or not self.snapshot_config.enabled:
+            return None
+        if not self.snapshot_config.save_on_new_track and event_type == "track_created":
+            return None
+
+        try:
+            import uuid
+            from pathlib import Path
+            from src.utils.image_utils import write_jpeg
+
+            snapshot_dir = Path(self.snapshot_config.path) / event_type
+            snapshot_dir.mkdir(parents=True, exist_ok=True)
+
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            unique_id = uuid.uuid4().hex[:8]
+            label_part = f"_{label}" if label else ""
+            filename = f"{timestamp}{label_part}_{unique_id}.jpg"
+
+            write_jpeg(str(snapshot_dir / filename), crop)
+            return str(snapshot_dir / filename)
+        except Exception:
+            logger.debug(f"Failed to save {event_type} snapshot", exc_info=True)
+            return None
 
     def _load_next_track_id(self) -> int:
         """Load the next track ID from database to avoid duplicates.
@@ -158,30 +157,6 @@ class GlobalTrackManager:
         except Exception as e:
             logger.warning(f"Failed to load track ID from database: {e}, starting from 1")
             return 1
-
-    def _load_handover_zones(self):
-        """Load camera handover zones from config."""
-        for overlap in self.topology_config.overlaps:
-            zone = CameraHandoverZone(
-                camera1_id=overlap.cameras[0],
-                camera2_id=overlap.cameras[1],
-                cam1_exit_zone=tuple(overlap.cam1_exit_zone),
-                cam2_entry_zone=tuple(overlap.cam2_entry_zone),
-                max_handover_sec=overlap.max_handover_sec,
-            )
-            self._handover_zones.append(zone)
-
-            # Also add reverse direction
-            reverse_zone = CameraHandoverZone(
-                camera1_id=overlap.cameras[1],
-                camera2_id=overlap.cameras[0],
-                cam1_exit_zone=tuple(overlap.cam2_entry_zone),
-                cam2_entry_zone=tuple(overlap.cam1_exit_zone),
-                max_handover_sec=overlap.max_handover_sec,
-            )
-            self._handover_zones.append(reverse_zone)
-
-        logger.info(f"Loaded {len(self._handover_zones)} handover zones")
 
     def _generate_track_id(self) -> str:
         """Generate a new global track ID."""
@@ -247,7 +222,6 @@ class GlobalTrackManager:
         result = GlobalTrackingResult(
             active_tracks=[],
             new_global_tracks=[],
-            handovers_completed=[],
             tracks_lost=[],
         )
 
@@ -259,8 +233,8 @@ class GlobalTrackManager:
             # Try to get from cache or use defaults for testing
             frame_w, frame_h = self._frame_dimensions.get(camera_id, (1920, 1080))
 
-        # Clean up expired pending handovers
-        self._cleanup_pending_handovers(current_time)
+        # Clean up stale LOST tracks
+        self._cleanup_lost_tracks(current_time)
 
         # Find tracks with overlapping bounding boxes (skip Re-ID for these)
         overlapping_track_ids = self._find_overlapping_track_ids(
@@ -273,124 +247,51 @@ class GlobalTrackManager:
             if local_track is None:
                 continue
 
-            # Check if this is a handover match
-            handover_match = None
-            if self.topology_config.enable_handover:
-                handover_match = self._try_handover_match(
-                    camera_id, local_track, frame, current_time, local_tracks, frame_w, frame_h
+            # Try gallery match for immediate identity assignment
+            with profiler.measure("GlobalTracker.gallery_match"):
+                gallery_match = self._try_gallery_match(camera_id, local_track)
+
+            if gallery_match and gallery_match.person_name:
+                # Gallery match — create new track with immediate identity
+                global_track_id = self._create_global_track(
+                    camera_id,
+                    local_track,
+                    frame,
+                    has_overlapping_bbox=local_track.track_id in overlapping_track_ids,
                 )
+                result.new_global_tracks.append(global_track_id)
 
-            if handover_match:
-                # Link to existing global track
-                global_track_id, from_camera = handover_match
-
-                # Clean up old camera mapping (kept alive for recovery)
-                for key, gid in list(self._local_to_global.items()):
-                    if key[0] == from_camera and gid == global_track_id:
-                        del self._local_to_global[key]
-                        self._last_bboxes.pop(key, None)
-                        break
-
-                self._link_local_to_global(camera_id, local_track_id, global_track_id)
-
-                # Update global track location
-                global_track = self._tracks[global_track_id]
-                global_track.update_location(camera_id, local_track_id)
-                global_track.state = TrackState.TRACKED
-                self._recently_lost_tracks.discard(global_track_id)
-
-                # Transfer identity via linker
-                self.identity_linker.transfer_identity(global_track_id, global_track_id)
-
-                result.handovers_completed.append(
-                    (global_track_id, from_camera, camera_id)
-                )
-
-                self.repository.create_event(
-                    camera_id=camera_id,
-                    event_type="handover_completed",
-                    track_id=global_track_id,
-                    person_id=global_track.person_id,
-                    extra_data={
-                        "from_camera": from_camera,
-                        "to_camera": camera_id,
-                    }
-                )
+                # Assign identity from gallery match
+                person = self.repository.get_person_by_name(gallery_match.person_name)
+                if person:
+                    state = self.identity_linker.get_track_state(global_track_id)
+                    if state:
+                        state.confirm_identity(
+                            person.id, gallery_match.similarity, "reid_gallery"
+                        )
+                        # Update database
+                        self.repository.update_track(
+                            global_track_id, person_id=person.id
+                        )
 
                 logger.info(
-                    f"Handover completed: {global_track_id} from {from_camera} to {camera_id}"
+                    f"Re-ID gallery: new track {global_track_id} on {camera_id} "
+                    f"identified as {gallery_match.person_name} (sim={gallery_match.similarity:.2f})"
                 )
 
             else:
-                # Try Re-ID match against recent lost tracks
-                with profiler.measure("GlobalTracker.reid_match"):
-                    reid_match = self._try_reid_match(camera_id, local_track, frame)
-
-                if reid_match and reid_match.matched_track_id:
-                    # Case 1: Relink to existing global track (per-track or gallery-resolved)
-                    global_track_id = reid_match.matched_track_id
-                    self._link_local_to_global(camera_id, local_track_id, global_track_id)
-
-                    global_track = self._tracks[global_track_id]
-                    global_track.update_location(camera_id, local_track_id)
-                    global_track.state = TrackState.TRACKED
-                    self._recently_lost_tracks.discard(global_track_id)
-
-                    # confirm_identity uses precedence — only upgrades from none/handover
-                    if reid_match.person_name and self.repository:
-                        person = self.repository.get_person_by_name(reid_match.person_name)
-                        if person:
-                            state = self.identity_linker.get_track_state(global_track_id)
-                            if state:
-                                state.confirm_identity(person.id, reid_match.similarity, "reid")
-
-                    logger.info(
-                        f"Re-ID relink: {global_track_id} reappeared on {camera_id} "
-                        f"(person={reid_match.person_name}, sim={reid_match.similarity:.2f})"
-                    )
-
-                elif reid_match and reid_match.person_name:
-                    # Case 2: Gallery match, no lost track found — create new track
-                    # but assign the identity immediately as reid_gallery
-                    global_track_id = self._create_global_track(
-                        camera_id,
-                        local_track,
-                        frame,
-                        has_overlapping_bbox=local_track.track_id in overlapping_track_ids,
-                    )
-                    result.new_global_tracks.append(global_track_id)
-
-                    # Assign identity from gallery match
-                    person = self.repository.get_person_by_name(reid_match.person_name)
-                    if person:
-                        state = self.identity_linker.get_track_state(global_track_id)
-                        if state:
-                            state.confirm_identity(
-                                person.id, reid_match.similarity, "reid_gallery"
-                            )
-                            # Update database
-                            self.repository.update_track(
-                                global_track_id, person_id=person.id
-                            )
-
-                    logger.info(
-                        f"Re-ID gallery: new track {global_track_id} on {camera_id} "
-                        f"identified as {reid_match.person_name} (sim={reid_match.similarity:.2f})"
-                    )
-
-                else:
-                    # Case 3: No match — create fresh unidentified track
-                    global_track_id = self._create_global_track(
-                        camera_id,
-                        local_track,
-                        frame,
-                        has_overlapping_bbox=local_track.track_id in overlapping_track_ids,
-                    )
-                    result.new_global_tracks.append(global_track_id)
+                # No match — create fresh unidentified track
+                global_track_id = self._create_global_track(
+                    camera_id,
+                    local_track,
+                    frame,
+                    has_overlapping_bbox=local_track.track_id in overlapping_track_ids,
+                )
+                result.new_global_tracks.append(global_track_id)
 
         # Process active local tracks (update Re-ID, face recognition)
         for local_track in local_tracks:
-            # Store last bbox for zone-based handover
+            # Store last bbox for zone propagation
             self._last_bboxes[(camera_id, local_track.track_id)] = local_track.bbox
 
             global_track_id = self._local_to_global.get((camera_id, local_track.track_id))
@@ -402,23 +303,20 @@ class GlobalTrackManager:
                 continue
 
             # If ByteTrack is reporting this track but we marked it LOST,
-            # detection recovered — restore to TRACKED and cancel pending handover
+            # detection recovered — restore to TRACKED
             if global_track.state == TrackState.LOST:
                 global_track.state = TrackState.TRACKED
                 self._recently_lost_tracks.discard(global_track_id)
-                self._pending_handovers = [
-                    p for p in self._pending_handovers
-                    if p.global_track_id != global_track_id
-                ]
-                self.repository.create_event(
-                    camera_id=camera_id,
-                    event_type="track_recovered",
-                    track_id=global_track_id,
-                    person_id=global_track.person_id,
-                    extra_data={
-                        "reason": "bytetrack_re_detected",
-                    }
-                )
+                if self.reid_config.log_track_recovery:
+                    self.repository.create_event(
+                        camera_id=camera_id,
+                        event_type="track_recovered",
+                        track_id=global_track_id,
+                        person_id=global_track.person_id,
+                        extra_data={
+                            "reason": "bytetrack_re_detected",
+                        }
+                    )
 
                 logger.info(
                     f"Track {global_track_id} recovered on {camera_id} "
@@ -536,11 +434,18 @@ class GlobalTrackManager:
             )
 
         # Save to database
+        snapshot_path = None
+        if local_track.last_crop is not None:
+            snapshot_path = self._save_event_snapshot(
+                local_track.last_crop, "track_created", global_track_id
+            )
+
         self.repository.create_track(global_track_id, camera_id)
         self.repository.create_event(
             camera_id=camera_id,
             event_type="track_created",
             track_id=global_track_id,
+            snapshot_path=snapshot_path,
             extra_data={
                 "origin": "detection",
                 "local_track_id": local_track.track_id
@@ -556,7 +461,8 @@ class GlobalTrackManager:
     ):
         """Handle a local track being lost.
 
-        Determines if this could be a camera handover or track end.
+        Flushes Re-ID gallery to shared gallery and marks the track as LOST.
+        The mapping is kept alive so ByteTrack re-detection can recover the track.
         """
         global_track_id = self._local_to_global.get((camera_id, local_track_id))
         if global_track_id is None:
@@ -570,14 +476,9 @@ class GlobalTrackManager:
             self._last_bboxes.pop((camera_id, local_track_id), None)
             return
 
-        # Get identity state for Re-ID embedding
-        identity_state = self.identity_linker.get_track_state(global_track_id)
-        reid_embedding = None
-        if identity_state and len(identity_state.reid_gallery) > 0:
-            reid_embedding = identity_state.reid_gallery.get_average_embedding()
-
         # Flush track data to shared Re-ID gallery so it's available for
-        # cross-camera matching immediately (not just after periodic cleanup)
+        # cross-camera matching immediately
+        identity_state = self.identity_linker.get_track_state(global_track_id)
         was_face_identified = (
             identity_state is not None
             and identity_state.is_identified
@@ -593,399 +494,117 @@ class GlobalTrackManager:
                     f"Flushed Re-ID gallery for face-identified track {global_track_id}"
                 )
 
-        # Get last known bbox
-        last_bbox = self._last_bboxes.get((camera_id, local_track_id))
-
-        # Zone-based handover (preferred)
-        if self.topology_config.enable_handover and self.zone_manager and last_bbox:
-            frame_dims = self._frame_dimensions.get(camera_id)
-            if frame_dims:
-                frame_w, frame_h = frame_dims
-                zone_name = self.zone_manager.get_person_zone(
-                    camera_id, last_bbox, frame_w, frame_h
-                )
-
-                if zone_name:
-                    zone_config = self.zone_manager.get_zone_config(zone_name)
-                    other_cameras = self.zone_manager.get_other_cameras_for_zone(
-                        zone_name, camera_id
-                    )
-
-                    if other_cameras:
-                        # Create pending handover for zone-based system
-                        # Keep _local_to_global mapping alive so ByteTrack
-                        # re-detection can recover the track during handover window
-                        pending = PendingHandover(
-                            global_track_id=global_track_id,
-                            from_camera=camera_id,
-                            zone_name=zone_name,
-                            exit_time=current_time,
-                            max_handover_sec=zone_config.max_handover_sec if zone_config else 5.0,
-                            reid_embedding=reid_embedding,
-                            last_bbox=last_bbox,
-                            local_track_id=local_track_id,
-                        )
-                        self._pending_handovers.append(pending)
-                        global_track.state = TrackState.LOST
-                        self._recently_lost_tracks.add(global_track_id)
-                        logger.debug(
-                            f"Track {global_track_id} pending zone handover from {camera_id} "
-                            f"in zone '{zone_name}' (potential cameras: {other_cameras})"
-                        )
-                        return
-
-        # Legacy rectangle-based handover (fallback)
-        if self.topology_config.enable_handover and not self.zone_manager:
-            exit_zone = self._check_exit_zone(camera_id)
-            if exit_zone:
-                pending = PendingHandover(
-                    global_track_id=global_track_id,
-                    from_camera=camera_id,
-                    zone_name=exit_zone,  # Use camera name as zone name for legacy
-                    exit_time=current_time,
-                    max_handover_sec=3.0,
-                    reid_embedding=reid_embedding,
-                    last_bbox=last_bbox,
-                    local_track_id=local_track_id,
-                )
-                self._pending_handovers.append(pending)
-                global_track.state = TrackState.LOST
-                self._recently_lost_tracks.add(global_track_id)
-                logger.debug(
-                    f"Track {global_track_id} pending handover from {camera_id} to {exit_zone}"
-                )
-                return
-
         # Mark as lost — keep _local_to_global mapping alive so ByteTrack
-        # re-detection of the same local ID can recover the global track
-        # (same approach as the handover path). Mapping is cleaned up when
-        # the track transitions to REMOVED (grace period expired).
+        # re-detection of the same local ID can recover the global track.
+        # Mapping is cleaned up when the track transitions to REMOVED.
         global_track.state = TrackState.LOST
         self._recently_lost_tracks.add(global_track_id)
 
-    def _check_exit_zone(self, camera_id: str) -> Optional[str]:
-        """Check if camera has a handover zone and return target camera.
-
-        TODO: This should check actual track position against zones.
-        For now, returns the first connected camera if any.
-        """
-        for zone in self._handover_zones:
-            if zone.camera1_id == camera_id:
-                return zone.camera2_id
-        return None
-
-    def _try_handover_match(
+    def _try_gallery_match(
         self,
         camera_id: str,
         local_track: LocalTrack,
-        frame: np.ndarray,
-        current_time: float,
-        all_local_tracks: list[LocalTrack],
-        frame_w: int,
-        frame_h: int,
-    ) -> Optional[tuple[str, str]]:
-        """Try to match new track against pending handovers.
-
-        Args:
-            camera_id: Camera identifier
-            local_track: New local track to match
-            frame: Current frame
-            current_time: Current timestamp
-            all_local_tracks: All local tracks on this camera (for single-person check)
-            frame_w: Frame width in pixels
-            frame_h: Frame height in pixels
-
-        Returns:
-            Tuple of (global_track_id, from_camera) if matched, else None
-        """
-        if not self._pending_handovers:
-            return None
-
-        # Zone-based handover matching
-        if self.zone_manager and self.topology_config.use_zones:
-            # Check what zone the new track is in
-            zone_name = self.zone_manager.get_person_zone(
-                camera_id, local_track.bbox, frame_w, frame_h
-            )
-
-            if zone_name:
-                # Check if alone in zone (required for handover)
-                persons_in_zone = self.zone_manager.get_persons_in_zone(
-                    zone_name, camera_id, all_local_tracks, frame_w, frame_h
-                )
-                if len(persons_in_zone) > 1:
-                    logger.debug(
-                        f"Multiple persons ({len(persons_in_zone)}) in zone '{zone_name}', "
-                        f"skipping handover"
-                    )
-                    return None
-
-                # Find matching pending handover for this zone
-                for pending in self._pending_handovers:
-                    if pending.zone_name != zone_name:
-                        continue
-                    if pending.from_camera == camera_id:
-                        continue  # Can't handover to same camera
-
-                    # Check time window
-                    time_since_exit = current_time - pending.exit_time
-                    if time_since_exit > pending.max_handover_sec:
-                        continue
-
-                    # Match using Re-ID if available
-                    if pending.reid_embedding is not None:
-                        # Use pre-computed Re-ID from local track if available
-                        if local_track.last_reid_embedding is not None:
-                            embedding = local_track.last_reid_embedding
-                            quality = local_track.last_reid_quality
-                        elif local_track.last_crop is not None:
-                            # Fallback to extraction if not pre-computed (should be rare)
-                            with profiler.measure("GlobalTracker.handover_reid"):
-                                embedding, quality = self.identity_linker.reid_extractor.extract(
-                                    local_track.last_crop, return_quality=True
-                                )
-                        else:
-                            continue
-
-                        if quality >= self.reid_config.min_visibility:
-                            from src.recognition.reid_extractor import cosine_similarity
-
-                            similarity = cosine_similarity(embedding, pending.reid_embedding)
-
-                            if similarity > self.reid_config.similarity_threshold:
-                                # Match found
-                                logger.info(
-                                    f"Zone handover match: zone='{zone_name}', "
-                                    f"similarity={similarity:.2f}"
-                                )
-                                self._pending_handovers.remove(pending)
-                                return (pending.global_track_id, pending.from_camera)
-                    else:
-                        # No Re-ID available, accept based on timing and zone alone
-                        self._pending_handovers.remove(pending)
-                        logger.info(
-                            f"Zone handover match (no Re-ID): zone='{zone_name}'"
-                        )
-                        return (pending.global_track_id, pending.from_camera)
-
-            return None
-
-        # Legacy rectangle-based handover matching
-        for pending in self._pending_handovers:
-            # For legacy, zone_name contains the target camera ID
-            if pending.zone_name != camera_id:
-                continue
-
-            # Check time window
-            time_since_exit = current_time - pending.exit_time
-            zone = self._find_handover_zone(pending.from_camera, camera_id)
-            if zone and time_since_exit > zone.max_handover_sec:
-                continue
-
-            # Match using Re-ID if available
-            if pending.reid_embedding is not None:
-                # Use pre-computed Re-ID from local track if available
-                if local_track.last_reid_embedding is not None:
-                    embedding = local_track.last_reid_embedding
-                    quality = local_track.last_reid_quality
-                elif local_track.last_crop is not None:
-                    with profiler.measure("GlobalTracker.handover_reid"):
-                        embedding, quality = self.identity_linker.reid_extractor.extract(
-                            local_track.last_crop, return_quality=True
-                        )
-                else:
-                    continue
-
-                if quality >= self.reid_config.min_visibility:
-                    from src.recognition.reid_extractor import cosine_similarity
-
-                    similarity = cosine_similarity(embedding, pending.reid_embedding)
-
-                    if similarity > self.reid_config.similarity_threshold:
-                        self._pending_handovers.remove(pending)
-                        return (pending.global_track_id, pending.from_camera)
-
-            else:
-                # No Re-ID available, accept based on timing alone
-                self._pending_handovers.remove(pending)
-                return (pending.global_track_id, pending.from_camera)
-
-        return None
-
-    def _find_handover_zone(
-        self, from_camera: str, to_camera: str
-    ) -> Optional[CameraHandoverZone]:
-        """Find handover zone between two cameras."""
-        for zone in self._handover_zones:
-            if zone.camera1_id == from_camera and zone.camera2_id == to_camera:
-                return zone
-        return None
-
-    def _try_reid_match(
-        self,
-        camera_id: str,
-        local_track: LocalTrack,
-        frame: np.ndarray,
     ) -> Optional[CrossCameraMatch]:
-        """Try to match new track against recently lost tracks using Re-ID.
+        """Try to match new track against the shared Re-ID gallery.
 
         Returns:
-            CrossCameraMatch if matched (may have matched_track_id=None for
-            gallery-only matches), else None
+            CrossCameraMatch if matched, else None
         """
         if local_track.last_crop is None:
             return None
 
-        # Get recently lost tracks using the index (O(N) where N = lost tracks, not all tracks)
-        candidate_track_ids = []
-        expired_track_ids = []
-        current_time = datetime.now()
-
-        for global_track_id in self._recently_lost_tracks:
-            global_track = self._tracks.get(global_track_id)
-            if global_track is None or global_track.state != TrackState.LOST:
-                # Track was removed or re-matched, clean up index
-                expired_track_ids.append(global_track_id)
-                continue
-
-            time_since_lost = (current_time - global_track.last_seen).total_seconds()
-            if time_since_lost < self.reid_config.global_id_grace_period:
-                candidate_track_ids.append(global_track_id)
-            else:
-                # Track is too old for Re-ID matching, remove from index
-                expired_track_ids.append(global_track_id)
-
-        # Clean up expired entries from index
-        for track_id in expired_track_ids:
-            self._recently_lost_tracks.discard(track_id)
-
-        if not candidate_track_ids:
-            logger.debug(f"Re-ID: no candidates for {camera_id}:{local_track.track_id}")
+        if not self.identity_linker.reid_gallery_manager:
             return None
 
-        logger.debug(
-            f"Re-ID: {camera_id}:{local_track.track_id} checking {len(candidate_track_ids)} candidates"
+        with profiler.measure("ReIDGallery.match"):
+            match_result = self.identity_linker.reid_gallery_manager.match_new_track(
+                local_track.last_crop, 1
+            )
+
+        if not match_result.matched:
+            return None
+
+        # Emit reid_match event
+        if self.repository:
+            person = self.repository.get_person_by_name(match_result.person_name)
+            person_id = person.id if person else None
+            snapshot_path = self._save_event_snapshot(
+                local_track.last_crop, "reid_match", match_result.person_name
+            )
+            self.repository.create_event(
+                camera_id=camera_id,
+                event_type="reid_match",
+                track_id=f"temp_{camera_id}_{local_track.track_id}",
+                person_id=person_id,
+                confidence=match_result.score,
+                reid_embedding_id=match_result.db_id,
+                snapshot_path=snapshot_path,
+                extra_data={
+                    "match_policy": "gallery",
+                    "threshold": self.reid_config.similarity_threshold,
+                    "top1_score": match_result.best_score,
+                    "original_reid_embedding_id": match_result.db_id,
+                }
+            )
+
+        return CrossCameraMatch(
+            matched_track_id=None,
+            similarity=match_result.score,
+            person_name=match_result.person_name,
         )
 
-        # Use identity linker's Re-ID matching
-        match = self.identity_linker.match_reid_cross_camera(
-            f"temp_{camera_id}_{local_track.track_id}",
-            local_track.last_crop,
-            candidate_track_ids,
-            precomputed_reid=(local_track.last_reid_embedding, local_track.last_reid_quality)
-            if local_track.last_reid_embedding is not None else None
-        )
+    def _cleanup_lost_tracks(self, current_time: float):
+        """Retire stale LOST tracks that exceeded the grace period.
 
-        return match
-
-    def _cleanup_pending_handovers(self, current_time: float):
-        """Remove expired pending handovers and retire stale LOST tracks.
-
-        - Pending handovers that exceed their per-zone timeout are converted to
-          REMOVED (finalized) and cleared from the pending list.
-        - Additionally, any LOST global track that hasn't reappeared within
-          the Re-ID grace period (reid.global_id_grace_period) is marked
-          REMOVED so it can be fully cleaned up by periodic cleanup.
+        Any LOST global track that hasn't reappeared within the Re-ID grace
+        period (reid.global_id_grace_period) is marked REMOVED so it can be
+        fully cleaned up by periodic cleanup.
         """
-        to_remove = []
-        for pending in self._pending_handovers:
-            # Use per-handover timeout (from zone config)
-            if current_time - pending.exit_time > pending.max_handover_sec:
-                to_remove.append(pending)
-                # Mark the global track as truly lost
-                if pending.global_track_id in self._tracks:
-                    track = self._tracks[pending.global_track_id]
+        if not self._tracks:
+            return
+
+        cutoff = datetime.now()
+        grace = self.reid_config.global_id_grace_period
+        for track_id, track in list(self._tracks.items()):
+            if track.state == TrackState.LOST:
+                time_since_seen = (cutoff - track.last_seen).total_seconds()
+                if time_since_seen > grace:
                     track.state = TrackState.REMOVED
-                    self._recently_lost_tracks.discard(pending.global_track_id)
+                    self._recently_lost_tracks.discard(track_id)
+                    self._cleanup_mappings_for_track(track_id)
 
                     # Emit track_lost event
                     self.repository.create_event(
-                        camera_id=pending.from_camera,
+                        camera_id=track.current_camera_id or "unknown",
                         event_type="track_lost",
-                        track_id=pending.global_track_id,
+                        track_id=track_id,
                         person_id=track.person_id,
                         extra_data={
-                            "reason": "handover_timeout",
-                            "from_camera": pending.from_camera,
-                            "zone": pending.zone_name
+                            "reason": "stale",
+                            "age_sec": time_since_seen
                         }
                     )
-                        
+
                     # Sync to database immediately so UI reflects it
                     try:
-                        self.repository.update_track(pending.global_track_id, status="archived")
-                            
+                        self.repository.update_track(track_id, status="archived")
+
                         # Emit track_archived event
                         self.repository.create_event(
-                            camera_id=pending.from_camera,
+                            camera_id=track.current_camera_id or "unknown",
                             event_type="track_archived",
-                            track_id=pending.global_track_id,
+                            track_id=track_id,
                             person_id=track.person_id,
                             extra_data={
-                                "reason": "handover_timeout"
+                                "age_sec": time_since_seen
                             }
                         )
                     except Exception as e:
                         logger.warning(f"Failed to update track status in DB: {e}")
 
-        for pending in to_remove:
-            self._pending_handovers.remove(pending)
-
-            # Clean up local-to-global mapping that was kept alive for recovery
-            if pending.local_track_id is not None:
-                key = (pending.from_camera, pending.local_track_id)
-                self._local_to_global.pop(key, None)
-                self._last_bboxes.pop(key, None)
-
-            logger.debug(
-                f"Expired pending handover for {pending.global_track_id} "
-                f"in zone '{pending.zone_name}'"
-            )
-
-        # Also retire LOST tracks that exceeded the grace period for reappearance
-        if self._tracks:
-            cutoff = datetime.now()
-            grace = self.reid_config.global_id_grace_period
-            for track_id, track in list(self._tracks.items()):
-                if track.state == TrackState.LOST:
-                    time_since_seen = (cutoff - track.last_seen).total_seconds()
-                    if time_since_seen > grace:
-                        track.state = TrackState.REMOVED
-                        self._recently_lost_tracks.discard(track_id)
-                        self._cleanup_mappings_for_track(track_id)
-
-                        # Emit track_lost event
-                        self.repository.create_event(
-                            camera_id=track.current_camera_id or "unknown",
-                            event_type="track_lost",
-                            track_id=track_id,
-                            person_id=track.person_id,
-                            extra_data={
-                                "reason": "stale",
-                                "age_sec": time_since_seen
-                            }
-                        )
-
-                        # Sync to database immediately so UI reflects it
-                        try:
-                            self.repository.update_track(track_id, status="archived")
-                            
-                            # Emit track_archived event
-                            self.repository.create_event(
-                                camera_id=track.current_camera_id or "unknown",
-                                event_type="track_archived",
-                                track_id=track_id,
-                                person_id=track.person_id,
-                                extra_data={
-                                    "age_sec": time_since_seen
-                                }
-                            )
-                        except Exception as e:
-                            logger.warning(f"Failed to update track status in DB: {e}")
-                            
-                        logger.debug(
-                            f"Track {track_id} exceeded LOST grace ({time_since_seen:.1f}s > {grace:.1f}s), marked REMOVED and archived in DB"
-                        )
+                    logger.debug(
+                        f"Track {track_id} exceeded LOST grace ({time_since_seen:.1f}s > {grace:.1f}s), marked REMOVED and archived in DB"
+                    )
 
     def _try_zone_identity_propagation(self):
         """Propagate identity between simultaneously active tracks in shared zones.
@@ -1118,7 +737,6 @@ class GlobalTrackManager:
         Returns True when detection should keep running, including:
         - TRACKED/NEW tracks on this camera
         - LOST tracks within the grace period (so ByteTrack can re-detect)
-        - Pending handovers from this camera
 
         Args:
             camera_id: Camera identifier
@@ -1138,12 +756,6 @@ class GlobalTrackManager:
                 time_since_seen = (now - track.last_seen).total_seconds()
                 if time_since_seen < grace:
                     return True
-
-        # Also active if there are pending handovers from this camera
-        # (keeps detection running so ByteTrack can re-detect)
-        for pending in self._pending_handovers:
-            if pending.from_camera == camera_id:
-                return True
 
         return False
 

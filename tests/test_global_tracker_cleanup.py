@@ -46,7 +46,7 @@ def test_lost_track_retired_after_grace_period():
 
     # Trigger cleanup logic via the internal method
     now = datetime.now().timestamp()
-    gtm._cleanup_pending_handovers(now)
+    gtm._cleanup_lost_tracks(now)
 
     # The track should be marked REMOVED first
     assert gtm._tracks[track_id].state == TrackState.REMOVED

@@ -168,6 +168,14 @@ class ReIDConfig:
     # When two cameras share a zone and each sees exactly 1 person,
     # identity is transferred from the face-identified track to the unidentified one.
     cross_camera_interval: float = 2.0
+    # Seconds between gallery rechecks for unidentified tracks.
+    # Periodically checks unidentified tracks against the shared Re-ID gallery,
+    # so identification on one camera propagates to others even without zone overlap.
+    gallery_recheck_interval: float = 10.0
+    # Log track_recovered events to the database.
+    # These fire frequently when ByteTrack briefly loses a detection.
+    # Disable to reduce event noise.
+    log_track_recovery: bool = False
 
 
 @dataclass
