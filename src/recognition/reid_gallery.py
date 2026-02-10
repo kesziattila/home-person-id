@@ -50,6 +50,64 @@ class EmbeddingWithCrop:
                 pass
 
 
+def _save_crop_file(crop: np.ndarray, cache_dir: str, prefix: str = "track") -> Optional[str]:
+    """Save a crop image to disk and return the file path."""
+    if crop is None:
+        return None
+    path = Path(cache_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    safe_prefix = prefix.replace(" ", "_").replace("/", "-")
+    filepath = path / f"{safe_prefix}_{timestamp}.jpg"
+    cv2.imwrite(str(filepath), crop)
+    return str(filepath)
+
+
+@dataclass
+class TrackEmbedding:
+    """A single Re-ID embedding captured from an active track."""
+    embedding: np.ndarray
+    crop_path: Optional[str] = None  # Saved to disk at extraction time
+
+    def load_crop(self) -> Optional[np.ndarray]:
+        if self.crop_path and Path(self.crop_path).exists():
+            return cv2.imread(self.crop_path)
+        return None
+
+    def delete_crop_file(self):
+        if self.crop_path:
+            try:
+                Path(self.crop_path).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+@dataclass
+class TrackReIDData:
+    """Accumulated Re-ID data for an active track."""
+    person_name: Optional[str] = None
+    crop_cache_path: Optional[str] = None
+    entries: list[TrackEmbedding] = field(default_factory=list)
+    max_entries: int = 10
+
+    def add(self, embedding: np.ndarray, crop: np.ndarray, person_name: Optional[str] = None):
+        if person_name:
+            self.person_name = person_name
+        crop_path = _save_crop_file(crop, self.crop_cache_path, "track") if self.crop_cache_path else None
+        self.entries.append(TrackEmbedding(embedding=embedding, crop_path=crop_path))
+        if len(self.entries) > self.max_entries:
+            old = self.entries[:-self.max_entries]
+            for e in old:
+                e.delete_crop_file()
+            self.entries = self.entries[-self.max_entries:]
+
+    def cleanup(self):
+        """Delete all crop files."""
+        for e in self.entries:
+            e.delete_crop_file()
+        self.entries.clear()
+
+
 @dataclass
 class GalleryEntry:
     """Entry in the Re-ID gallery for a known person."""
@@ -64,18 +122,7 @@ class GalleryEntry:
         """Save crop to disk and return the file path."""
         if self.crop_cache_path is None or crop is None:
             return None
-
-        cache_dir = Path(self.crop_cache_path)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-
-        # Generate unique filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        safe_name = self.person_name.replace(" ", "_").replace("/", "-")
-        filename = f"{safe_name}_{timestamp}.jpg"
-        filepath = cache_dir / filename
-
-        cv2.imwrite(str(filepath), crop)
-        return str(filepath)
+        return _save_crop_file(crop, self.crop_cache_path, self.person_name)
 
     def add_embedding(self, embedding: np.ndarray, crop: Optional[np.ndarray] = None, db_id: Optional[int] = None):
         """Add an embedding to the gallery entry."""
@@ -204,8 +251,7 @@ class ReIDGalleryManager:
         self._gallery: dict[str, GalleryEntry] = {}
 
         # Track data for active tracks (before they're lost)
-        # track_id -> {'embeddings': [], 'crop': np.array, 'person_name': str}
-        self._track_data: dict[int, dict] = {}
+        self._track_data: dict[int, TrackReIDData] = {}
 
     @property
     def gallery_size(self) -> int:
@@ -297,21 +343,12 @@ class ReIDGalleryManager:
             return False
 
         if track_id not in self._track_data:
-            self._track_data[track_id] = {
-                'embeddings': [],
-                'crop': None,
-                'person_name': None
-            }
+            self._track_data[track_id] = TrackReIDData(
+                max_entries=self.max_embeddings_per_person,
+                crop_cache_path=self.crop_cache_path,
+            )
 
-        data = self._track_data[track_id]
-        data['embeddings'].append(embedding)
-        data['crop'] = crop.copy()
-        if person_name:
-            data['person_name'] = person_name
-
-        # Keep max embeddings
-        if len(data['embeddings']) > self.max_embeddings_per_person:
-            data['embeddings'] = data['embeddings'][-self.max_embeddings_per_person:]
+        self._track_data[track_id].add(embedding, crop, person_name)
 
         return True
 
@@ -334,14 +371,14 @@ class ReIDGalleryManager:
 
         # Only store if face-identified (not Re-ID identified)
         if not was_face_identified:
+            data.cleanup()
             return False
 
-        person_name = data.get('person_name')
-        embeddings = data.get('embeddings', [])
-        crop = data.get('crop')
-
-        if not person_name or not embeddings:
+        if not data.person_name or not data.entries:
+            data.cleanup()
             return False
+
+        person_name = data.person_name
 
         # Store/update gallery entry
         if person_name not in self._gallery:
@@ -352,7 +389,7 @@ class ReIDGalleryManager:
             )
 
         entry = self._gallery[person_name]
-        
+
         # Get person_id from repository if available
         person_id = None
         if self.repository:
@@ -360,22 +397,19 @@ class ReIDGalleryManager:
             if person:
                 person_id = person.id
 
-        for emb in embeddings:
-            # Save crop to disk first so we can reference it from DB
-            crop_path = entry._save_crop_to_disk(crop) if crop is not None else None
-
+        for te in data.entries:
+            # Crop already saved to disk during tracking — reuse the path
             db_id = None
             if self.repository:
                 reid_emb = self.repository.add_reid_embedding(
                     camera_id="unknown",
-                    embedding=emb,
+                    embedding=te.embedding,
                     track_id=f"global_{track_id}",
                     person_id=person_id,
-                    snapshot_path=crop_path,
+                    snapshot_path=te.crop_path,
                 )
                 db_id = reid_emb.id
 
-                # Emit event
                 self.repository.create_event(
                     camera_id="unknown",
                     event_type="reid_gallery_updated",
@@ -388,14 +422,14 @@ class ReIDGalleryManager:
                     }
                 )
 
-            # Pass pre-saved crop_path directly to avoid saving a duplicate
-            entry._add_embedding_with_path(emb, crop_path, db_id=db_id)
+            entry._add_embedding_with_path(te.embedding, te.crop_path, db_id=db_id)
 
-        entry.last_seen = time.time()  # Update last seen time when track is lost
+        entry.last_seen = time.time()
 
-        # Save debug image
-        if self.debug_saver and crop is not None:
-            self.debug_saver.save_gallery_stored(crop, person_name, len(entry.embeddings))
+        # Save debug image using the last crop
+        last_crop = data.entries[-1].load_crop()
+        if self.debug_saver and last_crop is not None:
+            self.debug_saver.save_gallery_stored(last_crop, person_name, len(entry.embeddings))
 
         logger.info(f"Track #{track_id} lost - Re-ID gallery updated: {person_name} ({len(entry.embeddings)} embeddings)")
 
@@ -403,7 +437,9 @@ class ReIDGalleryManager:
 
     def clear_track_data(self, track_id: int):
         """Clear track data without storing to gallery."""
-        self._track_data.pop(track_id, None)
+        data = self._track_data.pop(track_id, None)
+        if data:
+            data.cleanup()
 
     def match_new_track(
         self,

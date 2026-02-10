@@ -63,7 +63,7 @@ export default {
                             <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Gallery Match</h4>
                             <div class="bg-gray-700/50 rounded-lg p-4 text-center">
                                 <img :src="'/api/v1/reid-embeddings/' + event.extra_data.original_reid_embedding_id + '/image'"
-                                     class="w-32 h-32 object-cover rounded shadow-lg mx-auto border border-gray-600"
+                                     class="max-w-48 max-h-48 object-contain rounded shadow-lg mx-auto border border-gray-600"
                                      alt="Gallery Match Crop">
                             </div>
                         </section>
