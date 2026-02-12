@@ -44,6 +44,8 @@ class LocationResponse(BaseModel):
     person_name: str
     current_camera_id: Optional[str] = None
     current_zone: Optional[str] = None
+    estimated_location: Optional[str] = None
+    time_since_seen_sec: Optional[float] = None
     last_seen: Optional[datetime] = None
     status: str  # 'active', 'lost', 'archived'
 
@@ -68,6 +70,7 @@ class ActiveTrackResponse(BaseModel):
     person_id: Optional[int] = None
     person_name: Optional[str] = None
     camera_id: str
+    zone: Optional[str] = None
     first_seen: datetime
     last_seen: datetime
     duration_sec: float
@@ -201,11 +204,19 @@ def create_events_router(repository: Repository) -> APIRouter:
                 break
 
         if person_track:
+            extra = person_track.extra_data or {}
+            current_zone = extra.get("zone")
+            time_since = (
+                (datetime.utcnow() - person_track.last_seen).total_seconds()
+                if person_track.last_seen else None
+            )
             return LocationResponse(
                 person_id=person.id,
                 person_name=person.name,
                 current_camera_id=person_track.last_camera_id,
-                current_zone=person_track.extra_data.get("zone") if person_track.extra_data else None,
+                current_zone=current_zone,
+                estimated_location=current_zone,
+                time_since_seen_sec=time_since,
                 last_seen=person_track.last_seen,
                 status=person_track.status,
             )
@@ -221,11 +232,20 @@ def create_events_router(repository: Repository) -> APIRouter:
                 )
 
                 if recent_track:
+                    extra = recent_track.extra_data or {}
+                    current_zone = extra.get("zone")
+                    estimated = extra.get("estimated_zone", current_zone)
+                    time_since = (
+                        (datetime.utcnow() - recent_track.last_seen).total_seconds()
+                        if recent_track.last_seen else None
+                    )
                     return LocationResponse(
                         person_id=person.id,
                         person_name=person.name,
                         current_camera_id=recent_track.last_camera_id,
-                        current_zone=recent_track.extra_data.get("zone") if recent_track.extra_data else None,
+                        current_zone=current_zone,
+                        estimated_location=estimated,
+                        time_since_seen_sec=time_since,
                         last_seen=recent_track.last_seen,
                         status=recent_track.status,
                     )
@@ -309,6 +329,7 @@ def create_events_router(repository: Repository) -> APIRouter:
                 person_id=track.person_id,
                 person_name=person_name,
                 camera_id=track.last_camera_id,
+                zone=track.extra_data.get("zone") if track.extra_data else None,
                 first_seen=track.first_seen,
                 last_seen=track.last_seen,
                 duration_sec=duration_sec,

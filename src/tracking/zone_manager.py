@@ -109,6 +109,23 @@ class ZoneManager:
                 result.append(track)
         return result
 
+    def get_exit_destination(self, zone_name: str) -> Optional[str]:
+        """Get the exit destination for a zone.
+
+        When a person disappears from a zone, this returns where they
+        likely went (e.g., "outside", "upstairs").
+
+        Args:
+            zone_name: Name of the zone
+
+        Returns:
+            Exit destination string, or None if not configured
+        """
+        zone = self.get_zone_config(zone_name)
+        if zone is None:
+            return None
+        return zone.exit_destination
+
     def get_zone_config(self, zone_name: str) -> Optional[ZoneConfig]:
         """Get zone configuration by name.
 

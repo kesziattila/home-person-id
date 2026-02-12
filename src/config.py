@@ -53,6 +53,7 @@ class ZoneConfig:
     name: str
     cameras: dict[str, ZonePolygon]  # camera_id -> polygon
     max_handover_sec: float = 5.0
+    exit_destination: Optional[str] = None  # Estimated location when person leaves this zone
 
 
 @dataclass
@@ -365,6 +366,7 @@ def load_config(config_path: str | Path) -> Config:
                 name=zone_data.get("name", ""),
                 cameras=cameras_dict,
                 max_handover_sec=zone_data.get("max_handover_sec", 5.0),
+                exit_destination=zone_data.get("exit_destination"),
             )
         )
     zones_config = ZonesConfig(zones=zone_configs)

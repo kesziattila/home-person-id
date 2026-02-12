@@ -24,7 +24,7 @@ export default {
                     </div>
                     <div class="space-y-1 text-sm text-gray-400">
                         <div class="font-mono text-xs">{{ track.track_id }}</div>
-                        <div>{{ track.camera_id }}</div>
+                        <div>{{ track.camera_id }}<span v-if="track.zone" class="text-blue-400 ml-2">{{ track.zone }}</span></div>
                         <div>{{ Math.floor(track.duration_sec / 60) }}m {{ Math.floor(track.duration_sec % 60) }}s</div>
                         <div>Last seen: {{ formatRelativeTime(track.last_seen) }}</div>
                     </div>

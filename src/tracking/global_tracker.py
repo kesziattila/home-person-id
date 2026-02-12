@@ -96,6 +96,9 @@ class GlobalTrackManager:
         # Avoids O(N) iteration over all tracks
         self._recently_lost_tracks: set[str] = set()
 
+        # Current zone per global track (zone tracking)
+        self._track_zones: dict[str, Optional[str]] = {}
+
         # Throttle for cross-camera zone identity propagation
         self._last_cross_camera_check: float = 0.0
 
@@ -346,10 +349,12 @@ class GlobalTrackManager:
         for local_track_id in lost_track_ids:
             self._handle_lost_local_track(camera_id, local_track_id, current_time)
 
-        # Cross-camera zone identity propagation
-        if self.topology_config.enable_cross_camera_propagation and self.zone_manager and current_time - self._last_cross_camera_check > self.reid_config.cross_camera_interval:
+        # Zone tracking + cross-camera identity propagation
+        if self.zone_manager and current_time - self._last_cross_camera_check > self.reid_config.cross_camera_interval:
             self._last_cross_camera_check = current_time
-            self._try_zone_identity_propagation()
+            zone_camera_tracks = self._update_track_zones()
+            if self.topology_config.enable_cross_camera_propagation:
+                self._try_zone_identity_propagation(zone_camera_tracks)
 
         # Build result
         for global_track in self._tracks.values():
@@ -440,7 +445,36 @@ class GlobalTrackManager:
                 local_track.last_crop, "track_created", global_track_id
             )
 
+        # Compute initial zone
+        initial_zone = None
+        if self.zone_manager:
+            frame_dims = self._frame_dimensions.get(camera_id)
+            if frame_dims:
+                frame_w, frame_h = frame_dims
+                initial_zone = self.zone_manager.get_person_zone(
+                    camera_id, local_track.bbox, frame_w, frame_h
+                )
+                self._track_zones[global_track_id] = initial_zone
+
         self.repository.create_track(global_track_id, camera_id)
+
+        # Create track sighting with entry zone
+        try:
+            self.repository.create_track_sighting(
+                global_track_id, camera_id, entry_zone=initial_zone
+            )
+        except Exception as e:
+            logger.debug(f"Failed to create sighting for {global_track_id}: {e}")
+
+        # Persist initial zone to extra_data
+        if initial_zone:
+            try:
+                self.repository.update_track(
+                    global_track_id, extra_data={"zone": initial_zone}
+                )
+            except Exception:
+                pass
+
         self.repository.create_event(
             camera_id=camera_id,
             event_type="track_created",
@@ -493,6 +527,29 @@ class GlobalTrackManager:
                 logger.debug(
                     f"Flushed Re-ID gallery for face-identified track {global_track_id}"
                 )
+
+        # End track sighting with exit zone and set estimated location
+        last_zone = self._track_zones.get(global_track_id)
+        try:
+            self.repository.end_track_sighting(
+                global_track_id, camera_id, exit_zone=last_zone
+            )
+        except Exception as e:
+            logger.debug(f"Failed to end sighting for {global_track_id}: {e}")
+
+        # Compute estimated zone (exit destination if configured, else last zone)
+        estimated_zone = last_zone
+        if last_zone and self.zone_manager:
+            exit_dest = self.zone_manager.get_exit_destination(last_zone)
+            if exit_dest:
+                estimated_zone = exit_dest
+        if estimated_zone:
+            try:
+                self.repository.update_track(
+                    global_track_id, extra_data={"estimated_zone": estimated_zone}
+                )
+            except Exception as e:
+                logger.debug(f"Failed to persist estimated_zone for {global_track_id}: {e}")
 
         # Mark as lost — keep _local_to_global mapping alive so ByteTrack
         # re-detection of the same local ID can recover the global track.
@@ -571,6 +628,7 @@ class GlobalTrackManager:
                 if time_since_seen > grace:
                     track.state = TrackState.REMOVED
                     self._recently_lost_tracks.discard(track_id)
+                    self._track_zones.pop(track_id, None)
                     self._cleanup_mappings_for_track(track_id)
 
                     # Emit track_lost event
@@ -606,19 +664,19 @@ class GlobalTrackManager:
                         f"Track {track_id} exceeded LOST grace ({time_since_seen:.1f}s > {grace:.1f}s), marked REMOVED and archived in DB"
                     )
 
-    def _try_zone_identity_propagation(self):
-        """Propagate identity between simultaneously active tracks in shared zones.
+    def _update_track_zones(self) -> dict[str, dict[str, list[tuple[str, tuple]]]]:
+        """Update zone for each active track and persist on zone changes.
 
-        For each zone visible on multiple cameras, if camera A sees exactly 1 person
-        and camera B sees exactly 1 person, and one is face-identified while the other
-        is unidentified, transfer identity via handover method.
+        Iterates active local-to-global mappings, computes zone via ZoneManager,
+        updates _track_zones, and persists to Track.extra_data["zone"] on change.
+
+        Returns:
+            zone_camera_tracks map for use by identity propagation
         """
-        if not self.zone_manager:
-            return
-
-        # Build a map of active tracks per (zone, camera)
-        # zone_name -> camera_id -> list of (global_track_id, bbox)
         zone_camera_tracks: dict[str, dict[str, list[tuple[str, tuple]]]] = {}
+
+        if not self.zone_manager:
+            return zone_camera_tracks
 
         for (camera_id, local_track_id), global_track_id in self._local_to_global.items():
             global_track = self._tracks.get(global_track_id)
@@ -635,6 +693,19 @@ class GlobalTrackManager:
 
             frame_w, frame_h = frame_dims
             zone_name = self.zone_manager.get_person_zone(camera_id, bbox, frame_w, frame_h)
+
+            # Update in-memory zone and persist on change
+            prev_zone = self._track_zones.get(global_track_id)
+            if zone_name != prev_zone:
+                self._track_zones[global_track_id] = zone_name
+                if zone_name is not None:
+                    try:
+                        self.repository.update_track(
+                            global_track_id, extra_data={"zone": zone_name}
+                        )
+                    except Exception as e:
+                        logger.debug(f"Failed to persist zone for {global_track_id}: {e}")
+
             if zone_name is None:
                 continue
 
@@ -643,6 +714,24 @@ class GlobalTrackManager:
             if camera_id not in zone_camera_tracks[zone_name]:
                 zone_camera_tracks[zone_name][camera_id] = []
             zone_camera_tracks[zone_name][camera_id].append((global_track_id, bbox))
+
+        return zone_camera_tracks
+
+    def get_track_zone(self, global_track_id: str) -> Optional[str]:
+        """Get the current zone for a global track."""
+        return self._track_zones.get(global_track_id)
+
+    def _try_zone_identity_propagation(
+        self, zone_camera_tracks: dict[str, dict[str, list[tuple[str, tuple]]]]
+    ):
+        """Propagate identity between simultaneously active tracks in shared zones.
+
+        For each zone visible on multiple cameras, if camera A sees exactly 1 person
+        and camera B sees exactly 1 person, and one is face-identified while the other
+        is unidentified, transfer identity via handover method.
+        """
+        if not self.zone_manager:
+            return
 
         # For each zone, check camera pairs
         for zone_name, cameras in zone_camera_tracks.items():
@@ -803,6 +892,7 @@ class GlobalTrackManager:
             self._cleanup_mappings_for_track(track_id)
             del self._tracks[track_id]
             self._recently_lost_tracks.discard(track_id)
+            self._track_zones.pop(track_id, None)
 
         if to_remove:
             logger.info(f"Cleaned up {len(to_remove)} old global tracks")

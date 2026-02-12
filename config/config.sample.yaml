@@ -89,6 +89,8 @@ zones:
   #     hallway:
   #       polygon: [[0.0, 0.2], [0.4, 0.2], [0.4, 1.0], [0.0, 1.0]]
   #   max_handover_sec: 5.0
+  #   # Estimated location when person disappears from this zone
+  #   exit_destination: "outside"
   []
 
 # =============================================================================

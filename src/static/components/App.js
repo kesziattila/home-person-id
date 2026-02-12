@@ -8,6 +8,7 @@ import AssignFaceModal from './AssignFaceModal.js';
 import EventDetailModal from './EventDetailModal.js';
 import AddPersonModal from './AddPersonModal.js';
 import ImagePreviewModal from './ImagePreviewModal.js';
+import TimelineModal from './TimelineModal.js';
 
 export default {
     components: {
@@ -21,6 +22,7 @@ export default {
         EventDetailModal,
         AddPersonModal,
         ImagePreviewModal,
+        TimelineModal,
     },
     template: `
         <div>
@@ -65,11 +67,16 @@ export default {
             <!-- Modals -->
             <add-person-modal :visible="showAddPersonModal" @close="showAddPersonModal = false" @person-added="handlePersonAdded"></add-person-modal>
             
-            <person-detail-modal :person-id="selectedPersonId" 
+            <person-detail-modal :person-id="selectedPersonId"
                                  @close="selectedPersonId = null"
                                  @person-deleted="handlePersonDeleted"
-                                 @preview-image="showImagePreview">
+                                 @preview-image="showImagePreview"
+                                 @show-timeline="showTimeline">
             </person-detail-modal>
+
+            <timeline-modal :person-id="timelinePersonId"
+                            @close="timelinePersonId = null">
+            </timeline-modal>
 
             <assign-face-modal :face-id="selectedFaceId"
                                @close="selectedFaceId = null"
@@ -104,6 +111,7 @@ export default {
             selectedEvent: null,
             eventFilter: null,
             previewImageUrl: null,
+            timelinePersonId: null,
         };
     },
     computed: {
@@ -150,6 +158,7 @@ export default {
             this.selectedFaceId = null;
             this.selectedEvent = null;
             this.previewImageUrl = null;
+            this.timelinePersonId = null;
         },
         showPersonDetail(personId) {
             this.selectedPersonId = personId;
@@ -162,6 +171,9 @@ export default {
         },
         showImagePreview(imageUrl) {
             this.previewImageUrl = imageUrl;
+        },
+        showTimeline(personId) {
+            this.timelinePersonId = personId;
         },
         handlePersonAdded() {
             if (this.activeTab === 'persons') {

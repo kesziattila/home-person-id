@@ -222,8 +222,13 @@ class Repository:
         status: Optional[str] = None,
         reid_embedding: Optional[np.ndarray] = None,
         face_embedding: Optional[np.ndarray] = None,
+        extra_data: Optional[dict] = None,
     ) -> Optional[Track]:
-        """Update track fields."""
+        """Update track fields.
+
+        Args:
+            extra_data: If provided, merges into existing extra_data (does not replace).
+        """
         with self.get_session() as session:
             track = session.query(Track).filter(Track.id == track_id).first()
             if not track:
@@ -239,6 +244,10 @@ class Repository:
                 track.reid_embedding = reid_embedding.astype(np.float32).tobytes()
             if face_embedding is not None:
                 track.face_embedding = face_embedding.astype(np.float32).tobytes()
+            if extra_data is not None:
+                current = track.extra_data or {}
+                current.update(extra_data)
+                track.extra_data = current
 
             track.last_seen = datetime.utcnow()
             session.commit()

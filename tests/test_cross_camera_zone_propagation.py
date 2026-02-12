@@ -115,7 +115,8 @@ class TestZoneIdentityPropagation:
             bbox=(200, 150, 400, 600),
         )
 
-        manager._try_zone_identity_propagation()
+        zone_camera_tracks = manager._update_track_zones()
+        manager._try_zone_identity_propagation(zone_camera_tracks)
 
         assert state_b.person_id == 42
         assert state_b.identified_by == "handover"
@@ -138,7 +139,8 @@ class TestZoneIdentityPropagation:
             person_id=7, identified_by="face", confidence=0.85,
         )
 
-        manager._try_zone_identity_propagation()
+        zone_camera_tracks = manager._update_track_zones()
+        manager._try_zone_identity_propagation(zone_camera_tracks)
 
         assert state_a.person_id == 7
         assert state_a.identified_by == "handover"
@@ -165,7 +167,8 @@ class TestZoneIdentityPropagation:
             bbox=(200, 150, 400, 600),
         )
 
-        manager._try_zone_identity_propagation()
+        zone_camera_tracks = manager._update_track_zones()
+        manager._try_zone_identity_propagation(zone_camera_tracks)
 
         # Should NOT propagate because cam_a has 2 persons in the zone
         assert state_b.person_id is None
@@ -188,7 +191,8 @@ class TestZoneIdentityPropagation:
             person_id=99, identified_by="reid", confidence=0.8,
         )
 
-        manager._try_zone_identity_propagation()
+        zone_camera_tracks = manager._update_track_zones()
+        manager._try_zone_identity_propagation(zone_camera_tracks)
 
         # state_b should keep its own identity
         assert state_b.person_id == 99
@@ -208,7 +212,8 @@ class TestZoneIdentityPropagation:
             bbox=(200, 150, 400, 600),
         )
 
-        manager._try_zone_identity_propagation()
+        zone_camera_tracks = manager._update_track_zones()
+        manager._try_zone_identity_propagation(zone_camera_tracks)
 
         assert state_a.person_id is None
         assert state_b.person_id is None
@@ -232,7 +237,8 @@ class TestZoneIdentityPropagation:
             person_id=99, identified_by="face", confidence=0.85,
         )
 
-        manager._try_zone_identity_propagation()
+        zone_camera_tracks = manager._update_track_zones()
+        manager._try_zone_identity_propagation(zone_camera_tracks)
 
         # Both identified -> no propagation attempt
         assert state_b.person_id == 99
@@ -252,7 +258,8 @@ class TestZoneIdentityPropagation:
             bbox=(200, 150, 400, 600),
         )
 
-        manager._try_zone_identity_propagation()
+        zone_camera_tracks = manager._update_track_zones()
+        manager._try_zone_identity_propagation(zone_camera_tracks)
 
         # No propagation
         assert state_b.person_id is None
@@ -272,9 +279,10 @@ class TestZoneIdentityPropagation:
             bbox=(200, 150, 400, 600),
         )
 
-        manager._try_zone_identity_propagation()
+        zone_camera_tracks = manager._update_track_zones()
+        manager._try_zone_identity_propagation(zone_camera_tracks)
 
-        manager.repository.update_track.assert_called_once_with("global_2", person_id=42)
+        manager.repository.update_track.assert_any_call("global_2", person_id=42)
 
     def test_lost_tracks_excluded(self):
         """LOST tracks should not participate in propagation."""
@@ -294,7 +302,8 @@ class TestZoneIdentityPropagation:
             bbox=(200, 150, 400, 600),
         )
 
-        manager._try_zone_identity_propagation()
+        zone_camera_tracks = manager._update_track_zones()
+        manager._try_zone_identity_propagation(zone_camera_tracks)
 
         # Lost track should be excluded
         assert state_b.person_id is None
@@ -320,7 +329,8 @@ class TestZoneIdentityPropagation:
             bbox=(300, 200, 500, 700),
         )
 
-        manager._try_zone_identity_propagation()
+        zone_camera_tracks = manager._update_track_zones()
+        manager._try_zone_identity_propagation(zone_camera_tracks)
 
         assert state_b.person_id == 42
         assert state_b.identified_by == "handover"
