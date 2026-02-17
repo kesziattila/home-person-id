@@ -1,6 +1,7 @@
 """RTSP stream client for reading camera frames."""
 
 import logging
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -113,7 +114,7 @@ class RTSPClient:
         # GStreamer pipeline for Jetson NVDEC hardware decoding
         # Supports H.264 and H.265 streams
         pipeline = (
-            f"rtspsrc location={self.rtsp_url} latency=0 ! "
+            f"rtspsrc location={self.rtsp_url} protocols=tcp latency=0 ! "
             "rtph264depay ! h264parse ! nvv4l2decoder ! "
             "nvvidconv ! video/x-raw,format=BGRx ! "
             "videoconvert ! video/x-raw,format=BGR ! "
@@ -124,6 +125,8 @@ class RTSPClient:
     def _connect(self) -> bool:
         """Connect to the RTSP stream."""
         self._release_capture()
+
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
         logger.info(f"Camera {self.camera_id}: Connecting to {self.rtsp_url}")
 
