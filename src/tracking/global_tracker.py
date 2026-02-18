@@ -649,16 +649,36 @@ class GlobalTrackManager:
             except Exception as e:
                 logger.debug(f"Failed to persist estimated_zone for {global_track_id}: {e}")
 
-        # Mark person zone as estimated — but only if no other active track
-        # for the same person exists (avoid overwriting a live observation)
+        # Mark person zone as estimated — but only if:
+        # 1. No other active track for the same person exists
+        # 2. The lost track's estimated zone matches the person's current observed zone
+        #    (just flip is_estimated flag), OR the person has no observed zone
+        # This prevents a stale lost track from overwriting a different, actively
+        # observed zone (e.g., track cycling while person is stationary)
         person_id = global_track.person_id
         if person_id is not None and not self._has_other_active_track_for_person(
             person_id, exclude_track_id=global_track_id
         ):
-            self._update_person_zone(
-                person_id, estimated_zone, is_estimated=True,
-                camera_id=camera_id, track_id=global_track_id,
-            )
+            try:
+                person = self.repository.get_person(person_id)
+                if (person and person.current_zone and not person.zone_is_estimated
+                        and person.current_zone != estimated_zone):
+                    # Person is actively observed in a DIFFERENT zone — don't
+                    # overwrite with estimated zone from a stale lost track
+                    logger.debug(
+                        f"Skipping estimated zone update for person {person_id}: "
+                        f"observed in '{person.current_zone}', lost track estimated '{estimated_zone}'"
+                    )
+                else:
+                    self._update_person_zone(
+                        person_id, estimated_zone, is_estimated=True,
+                        camera_id=camera_id, track_id=global_track_id,
+                    )
+            except Exception:
+                self._update_person_zone(
+                    person_id, estimated_zone, is_estimated=True,
+                    camera_id=camera_id, track_id=global_track_id,
+                )
 
         # Mark as lost — keep _local_to_global mapping alive so ByteTrack
         # re-detection of the same local ID can recover the global track.
