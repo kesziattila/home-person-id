@@ -98,6 +98,38 @@ class Repository:
                 query = query.filter(Person.is_active == True)
             return query.all()
 
+    def update_person_zone(
+        self, person_id: int, zone: Optional[str], is_estimated: bool
+    ) -> Optional[tuple[Optional[str], bool]]:
+        """Update the current zone state on a Person record.
+
+        Args:
+            person_id: Person ID
+            zone: Zone name (or None to clear)
+            is_estimated: True if person is no longer actively observed in this zone
+
+        Returns:
+            Tuple of (previous_zone, previous_is_estimated) if person was found
+            and the zone actually changed, else None (no change or person not found).
+        """
+        with self.get_session() as session:
+            person = session.query(Person).filter(Person.id == person_id).first()
+            if not person:
+                return None
+
+            prev_zone = person.current_zone
+            prev_estimated = person.zone_is_estimated
+
+            # Skip write if nothing changed
+            if prev_zone == zone and prev_estimated == is_estimated:
+                return None
+
+            person.current_zone = zone
+            person.zone_updated_at = datetime.utcnow()
+            person.zone_is_estimated = is_estimated
+            session.commit()
+            return (prev_zone, prev_estimated)
+
     def delete_person(self, person_id: int) -> bool:
         """Delete a person (soft delete by setting is_active=False)."""
         with self.get_session() as session:

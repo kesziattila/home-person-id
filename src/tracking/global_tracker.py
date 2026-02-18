@@ -18,6 +18,7 @@ import numpy as np
 from src.config import CameraTopologyConfig, ReIDConfig, SnapshotConfig, ZonesConfig
 from src.database.repository import Repository
 from src.detection.person_detector import compute_iou
+from src.events.mqtt_publisher import MQTTPublisher
 from src.recognition.identity_linker import IdentityLinker
 from src.recognition.identification_manager import CrossCameraMatch
 from src.tracking.track import GlobalTrack, LocalTrack, TrackState
@@ -54,6 +55,7 @@ class GlobalTrackManager:
         repository: Repository,
         zones_config: Optional[ZonesConfig] = None,
         snapshot_config: Optional[SnapshotConfig] = None,
+        mqtt_publisher: Optional[MQTTPublisher] = None,
     ):
         """Initialize global track manager.
 
@@ -64,12 +66,14 @@ class GlobalTrackManager:
             repository: Database repository
             zones_config: Optional polygon zones configuration for zone-based propagation
             snapshot_config: Optional snapshot configuration for event images
+            mqtt_publisher: Optional MQTT publisher for location events
         """
         self.topology_config = topology_config
         self.reid_config = reid_config
         self.identity_linker = identity_linker
         self.repository = repository
         self.snapshot_config = snapshot_config
+        self.mqtt_publisher = mqtt_publisher
 
         # Zone manager for zone-based identity propagation
         self.zone_manager: Optional[ZoneManager] = None
@@ -131,6 +135,75 @@ class GlobalTrackManager:
         except Exception:
             logger.debug(f"Failed to save {event_type} snapshot", exc_info=True)
             return None
+
+    def _sync_person_id(self, global_track_id: str, person_id: int) -> None:
+        """Keep GlobalTrack.person_id in sync after identification."""
+        gt = self._tracks.get(global_track_id)
+        if gt:
+            gt.person_id = person_id
+
+    def _has_other_active_track_for_person(self, person_id: int, exclude_track_id: str) -> bool:
+        """Check if another active (TRACKED/NEW) track exists for this person.
+
+        Used to avoid marking a person's zone as estimated when only one of
+        their tracks is lost but another is still actively observed.
+        """
+        for track_id, track in self._tracks.items():
+            if track_id == exclude_track_id:
+                continue
+            if track.state in (TrackState.TRACKED, TrackState.NEW) and track.person_id == person_id:
+                return True
+        return False
+
+    def _update_person_zone(
+        self,
+        person_id: Optional[int],
+        zone: Optional[str],
+        is_estimated: bool,
+        camera_id: str = "unknown",
+        track_id: Optional[str] = None,
+    ) -> None:
+        """Update zone state on the Person record and emit event on change.
+
+        Args:
+            person_id: Person ID (skipped if None)
+            zone: Zone name
+            is_estimated: Whether the zone is estimated (person not actively observed)
+            camera_id: Camera that triggered the update
+            track_id: Global track that triggered the update
+        """
+        if person_id is None:
+            return
+        try:
+            result = self.repository.update_person_zone(person_id, zone, is_estimated)
+            if result is not None:
+                prev_zone, prev_estimated = result
+                self.repository.create_event(
+                    camera_id=camera_id,
+                    event_type="person_zone_change",
+                    track_id=track_id,
+                    person_id=person_id,
+                    extra_data={
+                        "prev_zone": prev_zone,
+                        "new_zone": zone,
+                        "is_estimated": is_estimated,
+                    },
+                )
+                # Publish to MQTT
+                if self.mqtt_publisher:
+                    person = self.repository.get_person(person_id)
+                    if person:
+                        self.mqtt_publisher.publish_person_location(
+                            person_name=person.name,
+                            person_id=person_id,
+                            zone=zone,
+                            is_estimated=is_estimated,
+                            prev_zone=prev_zone,
+                            camera_id=camera_id,
+                            track_id=track_id,
+                        )
+        except Exception as e:
+            logger.debug(f"Failed to update person zone for person_id={person_id}: {e}")
 
     def _load_next_track_id(self) -> int:
         """Load the next track ID from database to avoid duplicates.
@@ -272,9 +345,18 @@ class GlobalTrackManager:
                         state.confirm_identity(
                             person.id, gallery_match.similarity, "reid_gallery"
                         )
-                        # Update database
+                        # Update database and in-memory track
                         self.repository.update_track(
                             global_track_id, person_id=person.id
+                        )
+                        self._sync_person_id(global_track_id, person.id)
+
+                    # Sync current zone to person (active observation)
+                    current_zone = self._track_zones.get(global_track_id)
+                    if current_zone:
+                        self._update_person_zone(
+                            person.id, current_zone, is_estimated=False,
+                            camera_id=camera_id, track_id=global_track_id,
                         )
 
                 logger.info(
@@ -331,6 +413,10 @@ class GlobalTrackManager:
 
             # Process for identification
             if local_track.last_crop is not None:
+                # Capture person_id before processing to detect new identifications
+                state_before = self.identity_linker.get_track_state(global_track_id)
+                person_id_before = state_before.person_id if state_before else None
+
                 # Skip Re-ID if this track overlaps with another (num_persons > 1)
                 num_persons = 2 if local_track.track_id in overlapping_track_ids else 1
                 with profiler.measure("IdentityLinker.process_track"):
@@ -344,6 +430,18 @@ class GlobalTrackManager:
                         if local_track.last_reid_embedding is not None else None,
                         camera_id=camera_id,
                     )
+
+                # If track just became identified, sync in-memory + person zone
+                state_after = self.identity_linker.get_track_state(global_track_id)
+                if (state_after and state_after.person_id is not None
+                        and state_after.person_id != person_id_before):
+                    self._sync_person_id(global_track_id, state_after.person_id)
+                    current_zone = self._track_zones.get(global_track_id)
+                    if current_zone:
+                        self._update_person_zone(
+                            state_after.person_id, current_zone, is_estimated=False,
+                            camera_id=camera_id, track_id=global_track_id,
+                        )
 
         # Process lost local tracks
         for local_track_id in lost_track_ids:
@@ -551,6 +649,17 @@ class GlobalTrackManager:
             except Exception as e:
                 logger.debug(f"Failed to persist estimated_zone for {global_track_id}: {e}")
 
+        # Mark person zone as estimated — but only if no other active track
+        # for the same person exists (avoid overwriting a live observation)
+        person_id = global_track.person_id
+        if person_id is not None and not self._has_other_active_track_for_person(
+            person_id, exclude_track_id=global_track_id
+        ):
+            self._update_person_zone(
+                person_id, estimated_zone, is_estimated=True,
+                camera_id=camera_id, track_id=global_track_id,
+            )
+
         # Mark as lost — keep _local_to_global mapping alive so ByteTrack
         # re-detection of the same local ID can recover the global track.
         # Mapping is cleaned up when the track transitions to REMOVED.
@@ -705,6 +814,11 @@ class GlobalTrackManager:
                         )
                     except Exception as e:
                         logger.debug(f"Failed to persist zone for {global_track_id}: {e}")
+                    # Sync zone to Person record (active observation)
+                    self._update_person_zone(
+                        global_track.person_id, zone_name, is_estimated=False,
+                        camera_id=camera_id, track_id=global_track_id,
+                    )
 
             if zone_name is None:
                 continue
@@ -764,6 +878,12 @@ class GlobalTrackManager:
                         # Update DB
                         if state_a.person_id is not None:
                             self.repository.update_track(track_b_id, person_id=state_a.person_id)
+                            self._sync_person_id(track_b_id, state_a.person_id)
+                            # Sync zone to newly-identified person
+                            self._update_person_zone(
+                                state_a.person_id, zone_name, is_estimated=False,
+                                camera_id=cam_b, track_id=track_b_id,
+                            )
                         self.repository.create_event(
                             camera_id=cam_b,
                             event_type="cross_camera_propagation",
@@ -784,6 +904,12 @@ class GlobalTrackManager:
                         # Update DB
                         if state_b.person_id is not None:
                             self.repository.update_track(track_a_id, person_id=state_b.person_id)
+                            self._sync_person_id(track_a_id, state_b.person_id)
+                            # Sync zone to newly-identified person
+                            self._update_person_zone(
+                                state_b.person_id, zone_name, is_estimated=False,
+                                camera_id=cam_a, track_id=track_a_id,
+                            )
                         self.repository.create_event(
                             camera_id=cam_a,
                             event_type="cross_camera_propagation",

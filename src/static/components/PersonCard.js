@@ -16,7 +16,7 @@ export default {
                     </div>
                     <div class="space-y-1 text-sm text-gray-400">
                         <div>{{ person.face_count }} face(s)</div>
-                        <div v-if="estimatedLocationText" class="text-blue-400">{{ estimatedLocationText }}</div>
+                        <div v-if="estimatedLocationText" :class="locationColor">{{ estimatedLocationText }}</div>
                         <div v-if="location && location.current_camera_id">{{ location.current_camera_id }}</div>
                         <div v-if="location && location.last_seen">{{ formattedLastSeen }}</div>
                     </div>
@@ -43,20 +43,28 @@ export default {
         formattedLastSeen() {
             return this.location ? formatRelativeTime(this.location.last_seen) : '';
         },
+        locationColor() {
+            if (!this.location) return 'text-gray-400';
+            if (this.location.zone_is_estimated === false) return 'text-green-400';
+            return 'text-yellow-500';
+        },
         estimatedLocationText() {
             if (!this.location || !this.location.estimated_location) return '';
-            if (this.location.status === 'active') {
-                return this.location.estimated_location;
+            const zone = this.location.estimated_location;
+            const isEstimated = this.location.zone_is_estimated !== false;
+
+            if (!isEstimated) {
+                return zone;
             }
-            // Not active — show with relative time
+            // Estimated — show with ~ prefix and relative time
             const sec = this.location.time_since_seen_sec;
-            if (sec == null) return this.location.estimated_location;
+            if (sec == null) return `~ ${zone}`;
             let ago;
             if (sec < 60) ago = `${Math.floor(sec)}s ago`;
             else if (sec < 3600) ago = `${Math.floor(sec / 60)} min ago`;
             else if (sec < 86400) ago = `${Math.floor(sec / 3600)}h ago`;
             else ago = `${Math.floor(sec / 86400)}d ago`;
-            return `${this.location.estimated_location} (${ago})`;
+            return `~ ${zone} (${ago})`;
         }
     },
     async created() {

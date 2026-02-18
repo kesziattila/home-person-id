@@ -140,6 +140,12 @@ class PersonIDSystem:
             self.debug_overlay = DebugOverlayRenderer(self.identity_linker)
             logger.info("Debug Re-ID overlay enabled")
 
+        # Initialize MQTT publisher (optional)
+        self.mqtt_publisher = None
+        if self.config.mqtt.enabled:
+            from src.events.mqtt_publisher import MQTTPublisher
+            self.mqtt_publisher = MQTTPublisher(self.config.mqtt)
+
         # Initialize global tracking
         self.global_tracker = GlobalTrackManager(
             self.config.camera_topology,
@@ -148,6 +154,7 @@ class PersonIDSystem:
             self.repository,
             zones_config=self.config.zones,
             snapshot_config=self.config.snapshots,
+            mqtt_publisher=self.mqtt_publisher,
         )
 
         # Parallel processing queues
@@ -293,6 +300,13 @@ class PersonIDSystem:
                 reid.shutdown()
         except Exception:
             pass
+
+        # Stop MQTT publisher
+        if self.mqtt_publisher:
+            try:
+                self.mqtt_publisher.stop()
+            except Exception:
+                pass
 
         # Checkpoint WAL to prevent database corruption on unclean exit
         try:

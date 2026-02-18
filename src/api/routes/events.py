@@ -44,6 +44,8 @@ class LocationResponse(BaseModel):
     person_name: str
     current_camera_id: Optional[str] = None
     current_zone: Optional[str] = None
+    zone_is_estimated: Optional[bool] = None
+    zone_updated_at: Optional[datetime] = None
     estimated_location: Optional[str] = None
     time_since_seen_sec: Optional[float] = None
     last_seen: Optional[datetime] = None
@@ -190,12 +192,21 @@ def create_events_router(repository: Repository) -> APIRouter:
 
     @router.get("/persons/{person_id}/location", response_model=LocationResponse)
     async def get_person_location(person_id: int) -> LocationResponse:
-        """Get current location of a person."""
+        """Get current location of a person.
+
+        Zone information is read directly from the Person record (always up-to-date).
+        Active track info (camera, last_seen) still comes from tracks.
+        """
         person = repository.get_person(person_id)
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
 
-        # Find most recent active track for this person
+        # Zone state comes directly from Person
+        current_zone = person.current_zone
+        zone_is_estimated = person.zone_is_estimated
+        zone_updated_at = person.zone_updated_at
+
+        # Find most recent active track for camera/last_seen
         active_tracks = repository.get_active_tracks()
         person_track = None
         for track in active_tracks:
@@ -205,7 +216,8 @@ def create_events_router(repository: Repository) -> APIRouter:
 
         if person_track:
             extra = person_track.extra_data or {}
-            current_zone = extra.get("zone")
+            # Use Person zone if available, else fall back to track extra_data
+            effective_zone = current_zone or extra.get("zone")
             time_since = (
                 (datetime.utcnow() - person_track.last_seen).total_seconds()
                 if person_track.last_seen else None
@@ -214,14 +226,16 @@ def create_events_router(repository: Repository) -> APIRouter:
                 person_id=person.id,
                 person_name=person.name,
                 current_camera_id=person_track.last_camera_id,
-                current_zone=current_zone,
-                estimated_location=current_zone,
+                current_zone=effective_zone,
+                zone_is_estimated=zone_is_estimated,
+                zone_updated_at=zone_updated_at,
+                estimated_location=effective_zone,
                 time_since_seen_sec=time_since,
                 last_seen=person_track.last_seen,
                 status=person_track.status,
             )
         else:
-            # Not currently active, check recent tracks
+            # Not currently active, check recent tracks for last_seen/camera
             with repository.get_session() as session:
                 from src.database.models import Track
                 recent_track = (
@@ -233,8 +247,9 @@ def create_events_router(repository: Repository) -> APIRouter:
 
                 if recent_track:
                     extra = recent_track.extra_data or {}
-                    current_zone = extra.get("zone")
-                    estimated = extra.get("estimated_zone", current_zone)
+                    # Use Person zone if available, else fall back to track extra_data
+                    effective_zone = current_zone or extra.get("zone")
+                    estimated = current_zone or extra.get("estimated_zone", effective_zone)
                     time_since = (
                         (datetime.utcnow() - recent_track.last_seen).total_seconds()
                         if recent_track.last_seen else None
@@ -243,7 +258,9 @@ def create_events_router(repository: Repository) -> APIRouter:
                         person_id=person.id,
                         person_name=person.name,
                         current_camera_id=recent_track.last_camera_id,
-                        current_zone=current_zone,
+                        current_zone=effective_zone,
+                        zone_is_estimated=zone_is_estimated,
+                        zone_updated_at=zone_updated_at,
                         estimated_location=estimated,
                         time_since_seen_sec=time_since,
                         last_seen=recent_track.last_seen,
@@ -253,6 +270,9 @@ def create_events_router(repository: Repository) -> APIRouter:
                     return LocationResponse(
                         person_id=person.id,
                         person_name=person.name,
+                        current_zone=current_zone,
+                        zone_is_estimated=zone_is_estimated,
+                        zone_updated_at=zone_updated_at,
                         status="never_seen",
                     )
 

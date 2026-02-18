@@ -33,6 +33,11 @@ class Person(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     is_active = Column(Boolean, default=True)
 
+    # Zone state (persisted so it's available even without active tracks)
+    current_zone = Column(String(64), nullable=True)
+    zone_updated_at = Column(DateTime, nullable=True)
+    zone_is_estimated = Column(Boolean, default=True)
+
     # Relationships
     face_embeddings = relationship("FaceEmbedding", back_populates="person", cascade="all, delete-orphan")
     reid_embeddings = relationship("ReIDEmbedding", back_populates="person", cascade="all, delete-orphan")
@@ -224,6 +229,27 @@ class UnidentifiedFace(Base):
         return f"<UnidentifiedFace(id={self.id}, camera='{self.camera_id}', score={self.best_match_score})>"
 
 
+def migrate_database(engine):
+    """Run lightweight schema migrations for new columns.
+
+    Uses ALTER TABLE ADD COLUMN with error handling for columns that already exist.
+    Called after create_all() so new databases get columns from the model,
+    while existing databases get them via ALTER TABLE.
+    """
+    migrations = [
+        "ALTER TABLE persons ADD COLUMN current_zone VARCHAR(64)",
+        "ALTER TABLE persons ADD COLUMN zone_updated_at DATETIME",
+        "ALTER TABLE persons ADD COLUMN zone_is_estimated BOOLEAN DEFAULT 1",
+    ]
+    with engine.connect() as conn:
+        for sql in migrations:
+            try:
+                conn.execute(text(sql))
+            except Exception:
+                pass  # Column already exists
+        conn.commit()
+
+
 def init_database(db_path: str) -> tuple:
     """Initialize database and return engine and session maker.
 
@@ -252,5 +278,6 @@ def init_database(db_path: str) -> tuple:
         conn.commit()
 
     Base.metadata.create_all(engine)
+    migrate_database(engine)
     SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
     return engine, SessionLocal
