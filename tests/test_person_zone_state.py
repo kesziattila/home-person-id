@@ -196,10 +196,9 @@ class TestPersonZoneState(unittest.TestCase):
         self.assertEqual(person.current_zone, "kitchen")
         self.assertFalse(person.zone_is_estimated)
 
-    def test_stale_lost_track_does_not_overwrite_different_observed_zone(self):
-        """When a track is lost with a different exit zone than the person's current
-        observed zone, the estimated zone should NOT overwrite the observed zone.
-        This prevents track cycling from causing spurious zone changes."""
+    def test_lost_track_uses_estimated_zone_when_no_active_tracks(self):
+        """When a track is lost and no other active tracks exist, the person's zone
+        is updated to the lost track's estimated zone (marked as estimated)."""
         lt = self._make_local_track(track_id=1, camera_id="cam1")
         r = self._process("cam1", [lt])
         g1 = r.new_global_tracks[0]
@@ -208,16 +207,16 @@ class TestPersonZoneState(unittest.TestCase):
         # Person is observed in living_room
         self.repository.update_person_zone(self.person.id, "living_room", is_estimated=False)
 
-        # Track's last zone was "kitchen" (exit zone) — different from living_room
+        # Track's last zone was "kitchen" (exit zone)
         self.gtm._track_zones[g1] = "kitchen"
 
         # Lose the track — no other active tracks exist
         self._process("cam1", [], new_ids=[], lost_ids=[1])
 
-        # Person zone should still be living_room (observed), NOT kitchen (estimated)
+        # With no active tracks, the resolver uses the lost track's estimated zone
         person = self.repository.get_person(self.person.id)
-        self.assertEqual(person.current_zone, "living_room")
-        self.assertFalse(person.zone_is_estimated)
+        self.assertEqual(person.current_zone, "kitchen")
+        self.assertTrue(person.zone_is_estimated)
 
     def test_lost_track_marks_estimated_when_same_zone(self):
         """When a track is lost and its zone matches the person's current observed zone,
@@ -240,6 +239,57 @@ class TestPersonZoneState(unittest.TestCase):
         person = self.repository.get_person(self.person.id)
         self.assertEqual(person.current_zone, "living_room")
         self.assertTrue(person.zone_is_estimated)
+
+    # ---- Test: resolver picks most recently seen active track ----
+
+    def test_resolver_picks_most_recently_seen_active_track(self):
+        """With multiple active tracks for a person, resolver picks the most recently seen zone."""
+        lt1 = self._make_local_track(track_id=1, camera_id="cam1")
+        r1 = self._process("cam1", [lt1])
+        g1 = r1.new_global_tracks[0]
+        self._identify_track(g1, self.person.id)
+        self.gtm._track_zones[g1] = "kitchen"
+
+        lt2 = self._make_local_track(track_id=2, camera_id="cam1")
+        r2 = self._process("cam1", [lt2], new_ids=[2], lost_ids=[])
+        g2 = r2.new_global_tracks[0]
+        self._identify_track(g2, self.person.id)
+        self.gtm._track_zones[g2] = "living_room"
+
+        # Make g2 more recently seen
+        self.gtm._tracks[g2].last_seen = datetime.now()
+        self.gtm._tracks[g1].last_seen = datetime.now() - timedelta(seconds=5)
+
+        # Resolve — should pick g2's zone (living_room)
+        self.gtm._resolve_person_location(self.person.id, camera_id="cam1")
+
+        person = self.repository.get_person(self.person.id)
+        self.assertEqual(person.current_zone, "living_room")
+        self.assertFalse(person.zone_is_estimated)
+
+    # ---- Test: lost track with active track present keeps active zone ----
+
+    def test_lost_track_with_active_track_keeps_active_zone(self):
+        """When a track is lost but another active track exists for the same person,
+        the resolver uses the active track's zone (not estimated)."""
+        lt1 = self._make_local_track(track_id=1, camera_id="cam1")
+        r1 = self._process("cam1", [lt1])
+        g1 = r1.new_global_tracks[0]
+        self._identify_track(g1, self.person.id)
+        self.gtm._track_zones[g1] = "kitchen"
+
+        lt2 = self._make_local_track(track_id=2, camera_id="cam1")
+        r2 = self._process("cam1", [lt2], new_ids=[2], lost_ids=[])
+        g2 = r2.new_global_tracks[0]
+        self._identify_track(g2, self.person.id)
+        self.gtm._track_zones[g2] = "living_room"
+
+        # Lose g1 (kitchen) — g2 (living_room) is still active
+        self._process("cam1", [lt2], new_ids=[], lost_ids=[1])
+
+        person = self.repository.get_person(self.person.id)
+        self.assertEqual(person.current_zone, "living_room")
+        self.assertFalse(person.zone_is_estimated)
 
     # ---- Test: zone synced on gallery match ----
 

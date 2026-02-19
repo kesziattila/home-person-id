@@ -142,18 +142,73 @@ class GlobalTrackManager:
         if gt:
             gt.person_id = person_id
 
-    def _has_other_active_track_for_person(self, person_id: int, exclude_track_id: str) -> bool:
-        """Check if another active (TRACKED/NEW) track exists for this person.
+    def _get_active_tracks_for_person(self, person_id: int) -> list[str]:
+        """Return global_track_ids of active (TRACKED/NEW) tracks for this person."""
+        return [
+            tid for tid, t in self._tracks.items()
+            if t.state in (TrackState.TRACKED, TrackState.NEW) and t.person_id == person_id
+        ]
 
-        Used to avoid marking a person's zone as estimated when only one of
-        their tracks is lost but another is still actively observed.
+    def _resolve_person_location(
+        self,
+        person_id: int,
+        lost_track_id: Optional[str] = None,
+        camera_id: str = "unknown",
+    ) -> None:
+        """Evaluate ALL tracks for a person and update their zone from the best source.
+
+        Logic:
+        1. Among active tracks with a zone, pick the most recently seen one (is_estimated=False)
+        2. If no active track has a zone and lost_track_id is given, use its estimated zone
+        3. Otherwise, no update
+
+        Args:
+            person_id: Person to resolve location for
+            lost_track_id: Optional just-lost track to consider for estimated zone
+            camera_id: Camera that triggered this resolution
         """
-        for track_id, track in self._tracks.items():
-            if track_id == exclude_track_id:
+        active_ids = self._get_active_tracks_for_person(person_id)
+
+        # Find active track with a zone, preferring most recently seen
+        best_track_id = None
+        best_zone = None
+        best_last_seen = None
+        for tid in active_ids:
+            zone = self._track_zones.get(tid)
+            if zone is None:
                 continue
-            if track.state in (TrackState.TRACKED, TrackState.NEW) and track.person_id == person_id:
-                return True
-        return False
+            track = self._tracks.get(tid)
+            if track is None:
+                continue
+            if best_last_seen is None or track.last_seen > best_last_seen:
+                best_track_id = tid
+                best_zone = zone
+                best_last_seen = track.last_seen
+
+        if best_zone is not None:
+            self._update_person_zone(
+                person_id, best_zone, is_estimated=False,
+                camera_id=self._tracks[best_track_id].current_camera_id or camera_id,
+                track_id=best_track_id,
+            )
+            return
+
+        # No active track with a zone — use lost track's estimated zone
+        if lost_track_id is not None:
+            last_zone = self._track_zones.get(lost_track_id)
+            estimated_zone = last_zone
+            if last_zone and self.zone_manager:
+                exit_dest = self.zone_manager.get_exit_destination(last_zone)
+                if exit_dest:
+                    estimated_zone = exit_dest
+            if estimated_zone:
+                lost_track = self._tracks.get(lost_track_id)
+                lost_camera = lost_track.current_camera_id if lost_track else camera_id
+                self._update_person_zone(
+                    person_id, estimated_zone, is_estimated=True,
+                    camera_id=lost_camera or camera_id,
+                    track_id=lost_track_id,
+                )
 
     def _update_person_zone(
         self,
@@ -351,13 +406,8 @@ class GlobalTrackManager:
                         )
                         self._sync_person_id(global_track_id, person.id)
 
-                    # Sync current zone to person (active observation)
-                    current_zone = self._track_zones.get(global_track_id)
-                    if current_zone:
-                        self._update_person_zone(
-                            person.id, current_zone, is_estimated=False,
-                            camera_id=camera_id, track_id=global_track_id,
-                        )
+                    # Resolve person location from all active tracks
+                    self._resolve_person_location(person.id, camera_id=camera_id)
 
                 logger.info(
                     f"Re-ID gallery: new track {global_track_id} on {camera_id} "
@@ -436,12 +486,7 @@ class GlobalTrackManager:
                 if (state_after and state_after.person_id is not None
                         and state_after.person_id != person_id_before):
                     self._sync_person_id(global_track_id, state_after.person_id)
-                    current_zone = self._track_zones.get(global_track_id)
-                    if current_zone:
-                        self._update_person_zone(
-                            state_after.person_id, current_zone, is_estimated=False,
-                            camera_id=camera_id, track_id=global_track_id,
-                        )
+                    self._resolve_person_location(state_after.person_id, camera_id=camera_id)
 
         # Process lost local tracks
         for local_track_id in lost_track_ids:
@@ -635,7 +680,7 @@ class GlobalTrackManager:
         except Exception as e:
             logger.debug(f"Failed to end sighting for {global_track_id}: {e}")
 
-        # Compute estimated zone (exit destination if configured, else last zone)
+        # Compute estimated zone for track record (exit destination if configured)
         estimated_zone = last_zone
         if last_zone and self.zone_manager:
             exit_dest = self.zone_manager.get_exit_destination(last_zone)
@@ -649,42 +694,17 @@ class GlobalTrackManager:
             except Exception as e:
                 logger.debug(f"Failed to persist estimated_zone for {global_track_id}: {e}")
 
-        # Mark person zone as estimated — but only if:
-        # 1. No other active track for the same person exists
-        # 2. The lost track's estimated zone matches the person's current observed zone
-        #    (just flip is_estimated flag), OR the person has no observed zone
-        # This prevents a stale lost track from overwriting a different, actively
-        # observed zone (e.g., track cycling while person is stationary)
-        person_id = global_track.person_id
-        if person_id is not None and not self._has_other_active_track_for_person(
-            person_id, exclude_track_id=global_track_id
-        ):
-            try:
-                person = self.repository.get_person(person_id)
-                if (person and person.current_zone and not person.zone_is_estimated
-                        and person.current_zone != estimated_zone):
-                    # Person is actively observed in a DIFFERENT zone — don't
-                    # overwrite with estimated zone from a stale lost track
-                    logger.debug(
-                        f"Skipping estimated zone update for person {person_id}: "
-                        f"observed in '{person.current_zone}', lost track estimated '{estimated_zone}'"
-                    )
-                else:
-                    self._update_person_zone(
-                        person_id, estimated_zone, is_estimated=True,
-                        camera_id=camera_id, track_id=global_track_id,
-                    )
-            except Exception:
-                self._update_person_zone(
-                    person_id, estimated_zone, is_estimated=True,
-                    camera_id=camera_id, track_id=global_track_id,
-                )
-
-        # Mark as lost — keep _local_to_global mapping alive so ByteTrack
-        # re-detection of the same local ID can recover the global track.
-        # Mapping is cleaned up when the track transitions to REMOVED.
+        # Mark as lost BEFORE resolving location, so the resolver excludes
+        # this track from active tracks and treats it via lost_track_id path.
         global_track.state = TrackState.LOST
         self._recently_lost_tracks.add(global_track_id)
+
+        # Resolve person location centrally — considers all active tracks
+        person_id = global_track.person_id
+        if person_id is not None:
+            self._resolve_person_location(
+                person_id, lost_track_id=global_track_id, camera_id=camera_id,
+            )
 
     def _try_gallery_match(
         self,
@@ -834,11 +854,11 @@ class GlobalTrackManager:
                         )
                     except Exception as e:
                         logger.debug(f"Failed to persist zone for {global_track_id}: {e}")
-                    # Sync zone to Person record (active observation)
-                    self._update_person_zone(
-                        global_track.person_id, zone_name, is_estimated=False,
-                        camera_id=camera_id, track_id=global_track_id,
-                    )
+                    # Resolve person location from all active tracks
+                    if global_track.person_id is not None:
+                        self._resolve_person_location(
+                            global_track.person_id, camera_id=camera_id,
+                        )
 
             if zone_name is None:
                 continue
@@ -899,11 +919,7 @@ class GlobalTrackManager:
                         if state_a.person_id is not None:
                             self.repository.update_track(track_b_id, person_id=state_a.person_id)
                             self._sync_person_id(track_b_id, state_a.person_id)
-                            # Sync zone to newly-identified person
-                            self._update_person_zone(
-                                state_a.person_id, zone_name, is_estimated=False,
-                                camera_id=cam_b, track_id=track_b_id,
-                            )
+                            self._resolve_person_location(state_a.person_id, camera_id=cam_b)
                         self.repository.create_event(
                             camera_id=cam_b,
                             event_type="cross_camera_propagation",
@@ -925,11 +941,7 @@ class GlobalTrackManager:
                         if state_b.person_id is not None:
                             self.repository.update_track(track_a_id, person_id=state_b.person_id)
                             self._sync_person_id(track_a_id, state_b.person_id)
-                            # Sync zone to newly-identified person
-                            self._update_person_zone(
-                                state_b.person_id, zone_name, is_estimated=False,
-                                camera_id=cam_a, track_id=track_a_id,
-                            )
+                            self._resolve_person_location(state_b.person_id, camera_id=cam_a)
                         self.repository.create_event(
                             camera_id=cam_a,
                             event_type="cross_camera_propagation",

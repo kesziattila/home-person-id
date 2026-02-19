@@ -196,6 +196,16 @@ ReIDGalleryManager
 3. Track → Re-ID embedding → Gallery update (if face-identified)
 4. New track → Re-ID match → Identity transfer (cross-camera)
 5. Active tracks in shared zone → Zone identity propagation (face-identified → unidentified)
+6. Any identity/zone event → `_resolve_person_location()` → Person zone update
+
+### Person Location Resolution
+All person zone updates go through `_resolve_person_location()` in `GlobalTrackManager`.
+This single method evaluates ALL tracks for a person to determine the best location:
+1. **Active track with zone** → pick the most recently seen one (`is_estimated=False`)
+2. **No active track, lost track provided** → use lost track's estimated zone (`is_estimated=True`)
+3. **Nothing found** → no update
+
+`_update_person_zone()` handles the DB write, event creation, and MQTT — called only from the resolver.
 
 ---
 
@@ -241,3 +251,4 @@ This catches basic errors like:
 - [ ] Interactive zone drawing UI
 - [x] Zone-based handover logic instead of camera-pair transitions
 - [x] Cross-camera zone identity propagation (simultaneous tracks in shared zone)
+- [ ] Grace period before marking person zone as estimated — if ByteTrack instability causes too frequent estimated↔not-estimated flapping for the same zone, add a short delay before transitioning to estimated state
