@@ -1,6 +1,5 @@
 """Tests for person zone state persistence on the Person record."""
 
-import time
 import unittest
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
@@ -78,7 +77,7 @@ class TestPersonZoneState(unittest.TestCase):
             last_crop=crop,
         )
 
-    def _process(self, camera_id, tracks, new_ids=None, lost_ids=None):
+    def _process(self, camera_id, tracks, new_ids=None, lost_ids=None, removed_ids=None):
         if new_ids is None:
             new_ids = [t.track_id for t in tracks]
         if lost_ids is None:
@@ -90,6 +89,7 @@ class TestPersonZoneState(unittest.TestCase):
             frame=frame,
             new_track_ids=new_ids,
             lost_track_ids=lost_ids,
+            removed_track_ids=removed_ids or [],
         )
 
     def _identify_track(self, global_track_id: str, person_id: int):
@@ -142,7 +142,7 @@ class TestPersonZoneState(unittest.TestCase):
     # ---- Test: zone becomes estimated on track lost ----
 
     def test_zone_becomes_estimated_on_track_lost(self):
-        """When an identified track is lost, Person zone becomes estimated."""
+        """When an identified track is lost and ByteTrack removes it, Person zone becomes estimated."""
         lt = self._make_local_track()
         result = self._process("cam1", [lt])
         global_id = result.new_global_tracks[0]
@@ -152,8 +152,11 @@ class TestPersonZoneState(unittest.TestCase):
         # Set zone first
         self.gtm._track_zones[global_id] = "living_room"
 
-        # Lose the track
+        # Lose the track — enters GRACE (zone stays non-estimated)
         self._process("cam1", [], new_ids=[], lost_ids=[1])
+
+        # ByteTrack permanently removes the track — GRACE → LOST, zone becomes estimated
+        self._process("cam1", [], new_ids=[], lost_ids=[], removed_ids=[1])
 
         person = self.repository.get_person(self.person.id)
         self.assertTrue(person.zone_is_estimated)
@@ -166,6 +169,71 @@ class TestPersonZoneState(unittest.TestCase):
         self.assertGreaterEqual(len(events), 1)
         latest = events[0]
         self.assertTrue(latest.extra_data["is_estimated"])
+
+    # ---- Test: grace period cancels estimated update on track recovery ----
+
+    def test_grace_period_cancels_on_recovery(self):
+        """When a track is lost but recovered (ByteTrack re-detects), zone stays non-estimated."""
+        lt = self._make_local_track()
+        result = self._process("cam1", [lt])
+        global_id = result.new_global_tracks[0]
+
+        self._identify_track(global_id, self.person.id)
+        self.gtm._track_zones[global_id] = "living_room"
+
+        # Establish non-estimated zone in DB
+        self.repository.update_person_zone(self.person.id, "living_room", is_estimated=False)
+
+        # Lose the track — track should enter GRACE state
+        self._process("cam1", [], new_ids=[], lost_ids=[1])
+
+        self.assertEqual(self.gtm._tracks[global_id].state, TrackState.GRACE)
+
+        # Zone is still non-estimated (grace period hasn't expired)
+        person = self.repository.get_person(self.person.id)
+        self.assertFalse(person.zone_is_estimated)
+
+        # Track re-appears (ByteTrack re-detected) — GRACE → TRACKED
+        self._process("cam1", [lt], new_ids=[], lost_ids=[])
+
+        self.assertEqual(self.gtm._tracks[global_id].state, TrackState.TRACKED)
+
+        # Zone should still be non-estimated
+        person = self.repository.get_person(self.person.id)
+        self.assertFalse(person.zone_is_estimated)
+
+    # ---- Test: grace period transitions to LOST after expiry ----
+
+    def test_grace_period_flushes_after_expiry(self):
+        """When ByteTrack removes the local track, GRACE → LOST and zone becomes estimated."""
+        lt = self._make_local_track()
+        result = self._process("cam1", [lt])
+        global_id = result.new_global_tracks[0]
+
+        self._identify_track(global_id, self.person.id)
+        self.gtm._track_zones[global_id] = "living_room"
+
+        # Establish non-estimated zone in DB
+        self.repository.update_person_zone(self.person.id, "living_room", is_estimated=False)
+
+        # Lose the track — track enters GRACE state
+        self._process("cam1", [], new_ids=[], lost_ids=[1])
+
+        self.assertEqual(self.gtm._tracks[global_id].state, TrackState.GRACE)
+
+        # Zone is still non-estimated during GRACE window
+        person = self.repository.get_person(self.person.id)
+        self.assertFalse(person.zone_is_estimated)
+
+        # ByteTrack permanently removes the track — fires GRACE → LOST
+        self._process("cam1", [], new_ids=[], lost_ids=[], removed_ids=[1])
+
+        self.assertEqual(self.gtm._tracks[global_id].state, TrackState.LOST)
+
+        # Zone should now be estimated
+        person = self.repository.get_person(self.person.id)
+        self.assertEqual(person.current_zone, "living_room")
+        self.assertTrue(person.zone_is_estimated)
 
     # ---- Test: lost track does NOT overwrite active track's zone ----
 
@@ -197,29 +265,28 @@ class TestPersonZoneState(unittest.TestCase):
         self.assertFalse(person.zone_is_estimated)
 
     def test_lost_track_uses_estimated_zone_when_no_active_tracks(self):
-        """When a track is lost and no other active tracks exist, the person's zone
-        is updated to the lost track's estimated zone (marked as estimated)."""
+        """When a track is removed by ByteTrack and no other active tracks exist,
+        the person's zone is updated to the lost track's estimated zone (marked as estimated)."""
         lt = self._make_local_track(track_id=1, camera_id="cam1")
         r = self._process("cam1", [lt])
         g1 = r.new_global_tracks[0]
         self._identify_track(g1, self.person.id)
 
-        # Person is observed in living_room
-        self.repository.update_person_zone(self.person.id, "living_room", is_estimated=False)
-
         # Track's last zone was "kitchen" (exit zone)
         self.gtm._track_zones[g1] = "kitchen"
 
-        # Lose the track — no other active tracks exist
+        # Lose the track — enters GRACE, no other active tracks exist
         self._process("cam1", [], new_ids=[], lost_ids=[1])
 
-        # With no active tracks, the resolver uses the lost track's estimated zone
+        # ByteTrack permanently removes — GRACE → LOST, resolver uses lost track's estimated zone
+        self._process("cam1", [], new_ids=[], lost_ids=[], removed_ids=[1])
+
         person = self.repository.get_person(self.person.id)
         self.assertEqual(person.current_zone, "kitchen")
         self.assertTrue(person.zone_is_estimated)
 
     def test_lost_track_marks_estimated_when_same_zone(self):
-        """When a track is lost and its zone matches the person's current observed zone,
+        """When ByteTrack removes a track whose zone matches the person's current observed zone,
         the zone should be marked as estimated (person no longer being tracked)."""
         lt = self._make_local_track(track_id=1, camera_id="cam1")
         r = self._process("cam1", [lt])
@@ -232,8 +299,11 @@ class TestPersonZoneState(unittest.TestCase):
         # Track's last zone is also living_room (same zone)
         self.gtm._track_zones[g1] = "living_room"
 
-        # Lose the track
+        # Lose the track — enters GRACE
         self._process("cam1", [], new_ids=[], lost_ids=[1])
+
+        # ByteTrack permanently removes — GRACE → LOST, zone becomes estimated
+        self._process("cam1", [], new_ids=[], lost_ids=[], removed_ids=[1])
 
         # Zone stays living_room but becomes estimated
         person = self.repository.get_person(self.person.id)
@@ -270,7 +340,7 @@ class TestPersonZoneState(unittest.TestCase):
     # ---- Test: lost track with active track present keeps active zone ----
 
     def test_lost_track_with_active_track_keeps_active_zone(self):
-        """When a track is lost but another active track exists for the same person,
+        """When a track is removed but another active track exists for the same person,
         the resolver uses the active track's zone (not estimated)."""
         lt1 = self._make_local_track(track_id=1, camera_id="cam1")
         r1 = self._process("cam1", [lt1])
@@ -284,8 +354,11 @@ class TestPersonZoneState(unittest.TestCase):
         self._identify_track(g2, self.person.id)
         self.gtm._track_zones[g2] = "living_room"
 
-        # Lose g1 (kitchen) — g2 (living_room) is still active
+        # Lose g1 (kitchen) — g2 (living_room) is still active; g1 enters GRACE
         self._process("cam1", [lt2], new_ids=[], lost_ids=[1])
+
+        # ByteTrack permanently removes g1 — GRACE → LOST; resolver picks g2's zone
+        self._process("cam1", [lt2], new_ids=[], lost_ids=[], removed_ids=[1])
 
         person = self.repository.get_person(self.person.id)
         self.assertEqual(person.current_zone, "living_room")

@@ -1086,6 +1086,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
                         frame=frame,
                         new_track_ids=result.new_track_ids,
                         lost_track_ids=result.lost_track_ids,
+                        removed_track_ids=result.removed_track_ids,
                         has_motion=result.has_motion,
                     )
 

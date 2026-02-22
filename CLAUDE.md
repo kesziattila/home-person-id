@@ -251,4 +251,4 @@ This catches basic errors like:
 - [ ] Interactive zone drawing UI
 - [x] Zone-based handover logic instead of camera-pair transitions
 - [x] Cross-camera zone identity propagation (simultaneous tracks in shared zone)
-- [ ] Grace period before marking person zone as estimated — if ByteTrack instability causes too frequent estimated↔not-estimated flapping for the same zone, add a short delay before transitioning to estimated state
+- [x] Grace period before marking person zone as estimated — `TrackState.GRACE` holds the zone as non-estimated for `reid.estimated_zone_grace_period` seconds; transitions to `LOST` (emitting estimated update) only after expiry

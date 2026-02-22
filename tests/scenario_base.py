@@ -52,19 +52,20 @@ class GlobalTrackerScenarioTest(unittest.TestCase):
             state=TrackState.TRACKED
         )
 
-    def process_frame(self, camera_id, local_tracks, new_ids=None, lost_ids=None):
+    def process_frame(self, camera_id, local_tracks, new_ids=None, lost_ids=None, removed_ids=None):
         if new_ids is None:
             new_ids = [t.track_id for t in local_tracks]
         if lost_ids is None:
             lost_ids = []
-            
+
         # Create dummy frame for Re-ID extraction if not provided
         frame = np.zeros((100, 100, 3), dtype=np.uint8)
-            
+
         return self.gtm.process_local_tracks(
             camera_id=camera_id,
             local_tracks=local_tracks,
             frame=frame,
             new_track_ids=new_ids,
-            lost_track_ids=lost_ids
+            lost_track_ids=lost_ids,
+            removed_track_ids=removed_ids or [],
         )

@@ -143,10 +143,15 @@ class GlobalTrackManager:
             gt.person_id = person_id
 
     def _get_active_tracks_for_person(self, person_id: int) -> list[str]:
-        """Return global_track_ids of active (TRACKED/NEW) tracks for this person."""
+        """Return global_track_ids of active (TRACKED/NEW/GRACE) tracks for this person.
+
+        GRACE tracks are included so their zone is treated as non-estimated during
+        the grace window after detection loss.
+        """
         return [
             tid for tid, t in self._tracks.items()
-            if t.state in (TrackState.TRACKED, TrackState.NEW) and t.person_id == person_id
+            if t.state in (TrackState.TRACKED, TrackState.NEW, TrackState.GRACE)
+            and t.person_id == person_id
         ]
 
     def _resolve_person_location(
@@ -334,6 +339,7 @@ class GlobalTrackManager:
         frame: Optional[np.ndarray],
         new_track_ids: list[int],
         lost_track_ids: list[int],
+        removed_track_ids: list[int] = [],
         has_motion: bool = True,
     ) -> GlobalTrackingResult:
         """Process local tracks from a camera and update global state.
@@ -344,6 +350,7 @@ class GlobalTrackManager:
             frame: Current frame for Re-ID extraction (can be None in testing if Re-ID not needed)
             new_track_ids: IDs of newly created local tracks
             lost_track_ids: IDs of lost local tracks
+            removed_track_ids: IDs permanently removed by ByteTrack (triggers GRACE→LOST)
             has_motion: Whether motion was detected in this frame
 
         Returns:
@@ -364,7 +371,7 @@ class GlobalTrackManager:
             # Try to get from cache or use defaults for testing
             frame_w, frame_h = self._frame_dimensions.get(camera_id, (1920, 1080))
 
-        # Clean up stale LOST tracks
+        # Clean up stale LOST/GRACE tracks (handles GRACE→LOST and LOST→REMOVED transitions)
         self._cleanup_lost_tracks(current_time)
 
         # Find tracks with overlapping bounding boxes (skip Re-ID for these)
@@ -437,11 +444,12 @@ class GlobalTrackManager:
             if global_track is None:
                 continue
 
-            # If ByteTrack is reporting this track but we marked it LOST,
+            # If ByteTrack is reporting this track but we marked it LOST or GRACE,
             # detection recovered — restore to TRACKED
-            if global_track.state == TrackState.LOST:
+            if global_track.state in (TrackState.LOST, TrackState.GRACE):
                 global_track.state = TrackState.TRACKED
                 self._recently_lost_tracks.discard(global_track_id)
+
                 if self.reid_config.log_track_recovery:
                     self.repository.create_event(
                         camera_id=camera_id,
@@ -491,6 +499,10 @@ class GlobalTrackManager:
         # Process lost local tracks
         for local_track_id in lost_track_ids:
             self._handle_lost_local_track(camera_id, local_track_id, current_time)
+
+        # Transition GRACE → LOST when ByteTrack permanently removes the local track
+        for local_track_id in removed_track_ids:
+            self._handle_removed_local_track(camera_id, local_track_id)
 
         # Zone tracking + cross-camera identity propagation
         if self.zone_manager and current_time - self._last_cross_camera_check > self.reid_config.cross_camera_interval:
@@ -694,17 +706,31 @@ class GlobalTrackManager:
             except Exception as e:
                 logger.debug(f"Failed to persist estimated_zone for {global_track_id}: {e}")
 
-        # Mark as lost BEFORE resolving location, so the resolver excludes
-        # this track from active tracks and treats it via lost_track_id path.
-        global_track.state = TrackState.LOST
-        self._recently_lost_tracks.add(global_track_id)
-
-        # Resolve person location centrally — considers all active tracks
+        # Always enter GRACE so ByteTrack can still recover during its track_buffer window.
+        # GRACE → LOST fires when ByteTrack emits removed_track_ids (_handle_removed_local_track).
+        # The resolver treats GRACE as active, so the zone stays non-estimated during the window.
         person_id = global_track.person_id
+        global_track.state = TrackState.GRACE
+        self._recently_lost_tracks.add(global_track_id)
         if person_id is not None:
+            self._resolve_person_location(person_id, camera_id=camera_id)
+
+    def _handle_removed_local_track(self, camera_id: str, local_track_id: int) -> None:
+        """Transition a GRACE global track to LOST when ByteTrack removes its local track."""
+        global_track_id = self._local_to_global.get((camera_id, local_track_id))
+        if global_track_id is None:
+            return
+        global_track = self._tracks.get(global_track_id)
+        if global_track is None or global_track.state != TrackState.GRACE:
+            return
+        global_track.state = TrackState.LOST
+        if global_track.person_id is not None:
             self._resolve_person_location(
-                person_id, lost_track_id=global_track_id, camera_id=camera_id,
+                global_track.person_id,
+                lost_track_id=global_track_id,
+                camera_id=global_track.current_camera_id or camera_id,
             )
+        logger.debug(f"Track {global_track_id} GRACE→LOST (ByteTrack removed local track)")
 
     def _try_gallery_match(
         self,
@@ -760,21 +786,40 @@ class GlobalTrackManager:
         )
 
     def _cleanup_lost_tracks(self, current_time: float):
-        """Retire stale LOST tracks that exceeded the grace period.
+        """Handle state transitions for GRACE and LOST tracks.
 
-        Any LOST global track that hasn't reappeared within the Re-ID grace
-        period (reid.global_id_grace_period) is marked REMOVED so it can be
-        fully cleaned up by periodic cleanup.
+        GRACE tracks normally transition to LOST via _handle_removed_local_track when
+        ByteTrack permanently removes the local track. This fallback handles GRACE tracks
+        that linger if a camera disconnects and the removal signal is never received.
+
+        LOST tracks whose global_id_grace_period has expired are marked REMOVED.
         """
         if not self._tracks:
             return
 
         cutoff = datetime.now()
-        grace = self.reid_config.global_id_grace_period
+        global_grace = self.reid_config.global_id_grace_period
+
         for track_id, track in list(self._tracks.items()):
-            if track.state == TrackState.LOST:
-                time_since_seen = (cutoff - track.last_seen).total_seconds()
-                if time_since_seen > grace:
+            time_since_seen = (cutoff - track.last_seen).total_seconds()
+
+            if track.state == TrackState.GRACE:
+                if time_since_seen > global_grace:
+                    # Fallback: GRACE tracks accumulate if camera disconnects and ByteTrack
+                    # never emits removed_track_ids. Use global_id_grace_period as ceiling.
+                    track.state = TrackState.LOST
+                    camera_id = track.current_camera_id or "unknown"
+                    if track.person_id is not None:
+                        self._resolve_person_location(
+                            track.person_id, lost_track_id=track_id, camera_id=camera_id,
+                        )
+                    logger.debug(
+                        f"Track {track_id} GRACE→LOST fallback ({time_since_seen:.1f}s > "
+                        f"{global_grace:.1f}s), zone now estimated"
+                    )
+
+            elif track.state == TrackState.LOST:
+                if time_since_seen > global_grace:
                     track.state = TrackState.REMOVED
                     self._recently_lost_tracks.discard(track_id)
                     self._track_zones.pop(track_id, None)
@@ -810,7 +855,7 @@ class GlobalTrackManager:
                         logger.warning(f"Failed to update track status in DB: {e}")
 
                     logger.debug(
-                        f"Track {track_id} exceeded LOST grace ({time_since_seen:.1f}s > {grace:.1f}s), marked REMOVED and archived in DB"
+                        f"Track {track_id} exceeded LOST grace ({time_since_seen:.1f}s > {global_grace:.1f}s), marked REMOVED and archived in DB"
                     )
 
     def _update_track_zones(self) -> dict[str, dict[str, list[tuple[str, tuple]]]]:
@@ -983,7 +1028,8 @@ class GlobalTrackManager:
 
         Returns True when detection should keep running, including:
         - TRACKED/NEW tracks on this camera
-        - LOST tracks within the grace period (so ByteTrack can re-detect)
+        - GRACE tracks (still within ByteTrack's track_buffer window)
+        - LOST tracks within global_id_grace_period (so ByteTrack can re-detect)
 
         Args:
             camera_id: Camera identifier
@@ -992,16 +1038,16 @@ class GlobalTrackManager:
             True if detection should keep running on this camera
         """
         now = datetime.now()
-        grace = self.reid_config.global_id_grace_period
+        global_grace = self.reid_config.global_id_grace_period
 
         for track in self._tracks.values():
             if track.current_camera_id != camera_id:
                 continue
-            if track.state in (TrackState.TRACKED, TrackState.NEW):
+            if track.state in (TrackState.TRACKED, TrackState.NEW, TrackState.GRACE):
                 return True
             if track.state == TrackState.LOST:
                 time_since_seen = (now - track.last_seen).total_seconds()
-                if time_since_seen < grace:
+                if time_since_seen < global_grace:
                     return True
 
         return False
@@ -1040,7 +1086,7 @@ class GlobalTrackManager:
         for track_id, track in self._tracks.items():
             if track.state == TrackState.REMOVED:
                 to_remove.append(track_id)
-            elif track.state == TrackState.LOST:
+            elif track.state in (TrackState.LOST, TrackState.GRACE):
                 hours_since_seen = (cutoff - track.last_seen).total_seconds() / 3600
                 if hours_since_seen > max_age_hours:
                     to_remove.append(track_id)

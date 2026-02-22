@@ -516,6 +516,7 @@ class PersonIDSystem:
                 frame=frame_image,
                 new_track_ids=track_result.new_track_ids,
                 lost_track_ids=track_result.lost_track_ids,
+                removed_track_ids=track_result.removed_track_ids,
                 has_motion=motion_result.has_motion,
             )
 

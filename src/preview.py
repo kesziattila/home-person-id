@@ -82,6 +82,7 @@ class FrameResult:
     identified_count: int
     new_track_ids: list[int] = field(default_factory=list)
     lost_track_ids: list[int] = field(default_factory=list)
+    removed_track_ids: list[int] = field(default_factory=list)
     match_events: list[MatchEvent] = field(default_factory=list)
 
 
@@ -326,6 +327,7 @@ class CameraProcessor:
             identified_count=identified_count,
             new_track_ids=track_result.new_track_ids,
             lost_track_ids=list(lost_ids),
+            removed_track_ids=track_result.removed_track_ids,
             match_events=match_events,
         )
 

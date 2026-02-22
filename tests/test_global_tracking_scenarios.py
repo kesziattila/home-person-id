@@ -29,8 +29,12 @@ class TestGlobalTrackingScenarios(GlobalTrackerScenarioTest):
         res1 = self.process_frame(cam1, [lt1])
         global_id = res1.new_global_tracks[0]
 
-        # 2. Track is lost
+        # 2. Track is lost — enters GRACE state
         self.process_frame(cam1, [], new_ids=[], lost_ids=[1])
+        self.assertEqual(self.gtm._tracks[global_id].state, TrackState.GRACE)
+
+        # ByteTrack permanently removes — GRACE → LOST
+        self.process_frame(cam1, [], new_ids=[], lost_ids=[], removed_ids=[1])
         self.assertEqual(self.gtm._tracks[global_id].state, TrackState.LOST)
 
         # 3. After grace period, should be REMOVED

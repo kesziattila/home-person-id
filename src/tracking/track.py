@@ -13,7 +13,8 @@ class TrackState(Enum):
 
     NEW = "new"  # Just created, not confirmed
     TRACKED = "tracked"  # Actively being tracked
-    LOST = "lost"  # Lost but still in memory
+    GRACE = "grace"  # Recently lost; zone still treated as non-estimated during grace period
+    LOST = "lost"  # Lost and grace period expired; zone is now estimated
     REMOVED = "removed"  # Marked for removal
 
 
