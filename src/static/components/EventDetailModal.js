@@ -68,6 +68,20 @@ export default {
                             </div>
                         </section>
 
+                        <!-- Source Camera Crop section for cross_camera_propagation -->
+                        <section v-if="hasCrossCamera">
+                            <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Source Camera</h4>
+                            <div class="bg-gray-700/50 rounded-lg p-4 text-center">
+                                <img v-if="event.extra_data.from_snapshot_path"
+                                     :src="'/api/v1/events/' + event.id + '/from_snapshot'"
+                                     class="max-w-48 max-h-48 object-contain rounded shadow-lg mx-auto border border-gray-600"
+                                     alt="Source Camera Crop">
+                                <p v-else class="text-sm text-gray-500 italic">No snapshot available</p>
+                                <p class="mt-2 text-xs text-gray-400">{{ event.extra_data.from_camera }}</p>
+                                <p v-if="event.extra_data.from_track" class="text-xs text-gray-500 font-mono">{{ event.extra_data.from_track }}</p>
+                            </div>
+                        </section>
+
                         <section>
                             <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Metadata</h4>
                             <pre class="bg-gray-900 text-green-400 p-4 rounded-lg text-xs overflow-x-auto border border-gray-700 font-mono">{{ formattedExtra }}</pre>
@@ -126,8 +140,13 @@ export default {
                 && this.event.extra_data && this.event.extra_data.face_id;
         },
         hasGalleryMatch() {
-            return this.event && this.event.event_type === 'reid_match'
+            return this.event &&
+                (this.event.event_type === 'reid_match' || this.event.event_type === 'reid_gallery_updated')
                 && this.event.extra_data && this.event.extra_data.original_reid_embedding_id;
+        },
+        hasCrossCamera() {
+            return this.event?.event_type === 'cross_camera_propagation'
+                && this.event.extra_data?.from_camera;
         }
     },
     methods: {

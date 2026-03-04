@@ -240,7 +240,10 @@ class IdentityLinker:
             # Store embeddings in shared gallery if face-identified
             if was_face_identified and state.is_identified and self.reid_gallery_manager:
                 track_id_num = hash(global_track_id) % (10**9)
-                self.reid_gallery_manager.on_track_lost(track_id_num, was_face_identified=True)
+                self.reid_gallery_manager.on_track_lost(
+                    track_id_num, was_face_identified=True,
+                    global_track_id=global_track_id,
+                )
 
             del self._track_states[global_track_id]
             logger.debug(f"Unregistered track {global_track_id}")

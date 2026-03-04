@@ -106,6 +106,9 @@ class GlobalTrackManager:
         # Throttle for cross-camera zone identity propagation
         self._last_cross_camera_check: float = 0.0
 
+        # Last known crop per global track (for event snapshots)
+        self._last_crops: dict[str, np.ndarray] = {}
+
     def _save_event_snapshot(self, crop: np.ndarray, event_type: str, label: str = "") -> Optional[str]:
         """Save a person crop as an event snapshot.
 
@@ -195,6 +198,7 @@ class GlobalTrackManager:
                 person_id, best_zone, is_estimated=False,
                 camera_id=self._tracks[best_track_id].current_camera_id or camera_id,
                 track_id=best_track_id,
+                crop=self._last_crops.get(best_track_id),
             )
             return
 
@@ -213,6 +217,7 @@ class GlobalTrackManager:
                     person_id, estimated_zone, is_estimated=True,
                     camera_id=lost_camera or camera_id,
                     track_id=lost_track_id,
+                    crop=self._last_crops.get(lost_track_id),
                 )
 
     def _update_person_zone(
@@ -222,6 +227,7 @@ class GlobalTrackManager:
         is_estimated: bool,
         camera_id: str = "unknown",
         track_id: Optional[str] = None,
+        crop: Optional[np.ndarray] = None,
     ) -> None:
         """Update zone state on the Person record and emit event on change.
 
@@ -231,6 +237,7 @@ class GlobalTrackManager:
             is_estimated: Whether the zone is estimated (person not actively observed)
             camera_id: Camera that triggered the update
             track_id: Global track that triggered the update
+            crop: Optional person crop for snapshot
         """
         if person_id is None:
             return
@@ -238,11 +245,15 @@ class GlobalTrackManager:
             result = self.repository.update_person_zone(person_id, zone, is_estimated)
             if result is not None:
                 prev_zone, prev_estimated = result
+                snapshot_path = None
+                if crop is not None:
+                    snapshot_path = self._save_event_snapshot(crop, "person_zone_change")
                 self.repository.create_event(
                     camera_id=camera_id,
                     event_type="person_zone_change",
                     track_id=track_id,
                     person_id=person_id,
+                    snapshot_path=snapshot_path,
                     extra_data={
                         "prev_zone": prev_zone,
                         "new_zone": zone,
@@ -469,6 +480,10 @@ class GlobalTrackManager:
             # Update location and time
             global_track.last_seen = datetime.now()
 
+            # Cache last crop for event snapshot use
+            if local_track.last_crop is not None:
+                self._last_crops[global_track_id] = local_track.last_crop
+
             # Process for identification
             if local_track.last_crop is not None:
                 # Capture person_id before processing to detect new identifications
@@ -544,6 +559,7 @@ class GlobalTrackManager:
         for key in keys_to_remove:
             del self._local_to_global[key]
             self._last_bboxes.pop(key, None)
+        self._last_crops.pop(global_track_id, None)
 
     def _create_global_track(
         self,
@@ -676,7 +692,8 @@ class GlobalTrackManager:
         if self.identity_linker.reid_gallery_manager:
             track_id_num = hash(global_track_id) % (10**9)
             self.identity_linker.reid_gallery_manager.on_track_lost(
-                track_id_num, was_face_identified=was_face_identified
+                track_id_num, was_face_identified=was_face_identified,
+                global_track_id=global_track_id,
             )
             if was_face_identified:
                 logger.debug(
@@ -755,29 +772,6 @@ class GlobalTrackManager:
 
         if not match_result.matched:
             return None
-
-        # Emit reid_match event
-        if self.repository:
-            person = self.repository.get_person_by_name(match_result.person_name)
-            person_id = person.id if person else None
-            snapshot_path = self._save_event_snapshot(
-                local_track.last_crop, "reid_match", match_result.person_name
-            )
-            self.repository.create_event(
-                camera_id=camera_id,
-                event_type="reid_match",
-                track_id=f"temp_{camera_id}_{local_track.track_id}",
-                person_id=person_id,
-                confidence=match_result.score,
-                reid_embedding_id=match_result.db_id,
-                snapshot_path=snapshot_path,
-                extra_data={
-                    "match_policy": "gallery",
-                    "threshold": self.reid_config.similarity_threshold,
-                    "top1_score": match_result.best_score,
-                    "original_reid_embedding_id": match_result.db_id,
-                }
-            )
 
         return CrossCameraMatch(
             matched_track_id=None,
@@ -954,54 +948,42 @@ class GlobalTrackManager:
                     if state_a is None or state_b is None:
                         continue
 
-                    # Determine which is identified and which is not
-                    a_identified = state_a.is_identified
-                    b_identified = state_b.is_identified
+                    # Determine source (identified) and receiver (unidentified)
+                    if state_a.is_identified and not state_b.is_identified:
+                        src_track, src_cam, src_state = track_a_id, cam_a, state_a
+                        rcv_track, rcv_cam = track_b_id, cam_b
+                    elif state_b.is_identified and not state_a.is_identified:
+                        src_track, src_cam, src_state = track_b_id, cam_b, state_b
+                        rcv_track, rcv_cam = track_a_id, cam_a
+                    else:
+                        continue
 
-                    if a_identified and not b_identified:
-                        self.identity_linker.transfer_identity(track_a_id, track_b_id)
-                        # Update DB
-                        if state_a.person_id is not None:
-                            self.repository.update_track(track_b_id, person_id=state_a.person_id)
-                            self._sync_person_id(track_b_id, state_a.person_id)
-                            self._resolve_person_location(state_a.person_id, camera_id=cam_b)
-                        self.repository.create_event(
-                            camera_id=cam_b,
-                            event_type="cross_camera_propagation",
-                            track_id=track_b_id,
-                            person_id=state_a.person_id,
-                            extra_data={
-                                "zone": zone_name,
-                                "from_track": track_a_id,
-                                "from_camera": cam_a,
-                            }
-                        )
-                        logger.info(
-                            f"Zone identity propagation: zone='{zone_name}' "
-                            f"{track_a_id} -> {track_b_id} (person_id={state_a.person_id})"
-                        )
-                    elif b_identified and not a_identified:
-                        self.identity_linker.transfer_identity(track_b_id, track_a_id)
-                        # Update DB
-                        if state_b.person_id is not None:
-                            self.repository.update_track(track_a_id, person_id=state_b.person_id)
-                            self._sync_person_id(track_a_id, state_b.person_id)
-                            self._resolve_person_location(state_b.person_id, camera_id=cam_a)
-                        self.repository.create_event(
-                            camera_id=cam_a,
-                            event_type="cross_camera_propagation",
-                            track_id=track_a_id,
-                            person_id=state_b.person_id,
-                            extra_data={
-                                "zone": zone_name,
-                                "from_track": track_b_id,
-                                "from_camera": cam_b,
-                            }
-                        )
-                        logger.info(
-                            f"Zone identity propagation: zone='{zone_name}' "
-                            f"{track_b_id} -> {track_a_id} (person_id={state_b.person_id})"
-                        )
+                    self.identity_linker.transfer_identity(src_track, rcv_track)
+                    if src_state.person_id is not None:
+                        self.repository.update_track(rcv_track, person_id=src_state.person_id)
+                        self._sync_person_id(rcv_track, src_state.person_id)
+                        self._resolve_person_location(src_state.person_id, camera_id=rcv_cam)
+                    src_crop = self._last_crops.get(src_track)
+                    rcv_crop = self._last_crops.get(rcv_track)
+                    src_snapshot = self._save_event_snapshot(src_crop, "cross_camera_propagation", src_cam) if src_crop is not None else None
+                    rcv_snapshot = self._save_event_snapshot(rcv_crop, "cross_camera_propagation", rcv_cam) if rcv_crop is not None else None
+                    self.repository.create_event(
+                        camera_id=rcv_cam,
+                        event_type="cross_camera_propagation",
+                        track_id=rcv_track,
+                        person_id=src_state.person_id,
+                        snapshot_path=rcv_snapshot,
+                        extra_data={
+                            "zone": zone_name,
+                            "from_track": src_track,
+                            "from_camera": src_cam,
+                            "from_snapshot_path": src_snapshot,
+                        }
+                    )
+                    logger.info(
+                        f"Zone identity propagation: zone='{zone_name}' "
+                        f"{src_track} -> {rcv_track} (person_id={src_state.person_id})"
+                    )
 
     def get_global_track(self, global_track_id: str) -> Optional[GlobalTrack]:
         """Get a global track by ID."""

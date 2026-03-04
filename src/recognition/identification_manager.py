@@ -183,12 +183,19 @@ class IdentificationManager:
         if self._reid_gallery_manager is None and self.reid_config.enabled:
             extractor = self.reid_extractor
             if extractor:
+                gallery_snapshot_dir = None
+                if self.config.snapshots.enabled:
+                    from pathlib import Path
+                    gallery_snapshot_dir = str(
+                        Path(self.config.snapshots.path) / "reid_gallery"
+                    )
                 self._reid_gallery_manager = ReIDGalleryManager(
                     reid_extractor=extractor,
                     similarity_threshold=self.reid_config.similarity_threshold,
                     max_reappear_time_sec=self.reid_config.max_reappear_time_sec,
                     max_embeddings_per_person=self.reid_config.gallery_size,
                     crop_cache_path=self.reid_config.crop_cache_path,
+                    gallery_snapshot_dir=gallery_snapshot_dir,
                     face_recognizer=self.face_recognizer,
                     repository=self.repository,
                     debug_saver=self._debug_saver,

@@ -9,6 +9,7 @@ This module provides a gallery-based Re-ID system that:
 """
 
 import logging
+import shutil
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -218,6 +219,7 @@ class ReIDGalleryManager:
         max_reappear_time_sec: float = 300.0,
         max_embeddings_per_person: int = 10,
         crop_cache_path: Optional[str] = None,
+        gallery_snapshot_dir: Optional[str] = None,
         face_recognizer: Optional["FaceRecognizer"] = None,
         repository: Optional["Repository"] = None,
         debug_saver: Optional['DebugImageSaver'] = None,
@@ -230,6 +232,7 @@ class ReIDGalleryManager:
             max_reappear_time_sec: Time before gallery entries expire
             max_embeddings_per_person: Maximum embeddings to store per person
             crop_cache_path: Path for storing crop images on disk (reduces memory)
+            gallery_snapshot_dir: Permanent directory for gallery crops (survives cleanup)
             face_recognizer: Optional face recognizer for multi-face detection
             repository: Optional repository for database persistence
             debug_saver: Optional debug image saver
@@ -239,6 +242,7 @@ class ReIDGalleryManager:
         self.max_reappear_time_sec = max_reappear_time_sec
         self.max_embeddings_per_person = max_embeddings_per_person
         self.crop_cache_path = crop_cache_path
+        self.gallery_snapshot_dir = gallery_snapshot_dir
         self.face_recognizer = face_recognizer
         self.repository = repository
         self.debug_saver = debug_saver
@@ -352,14 +356,15 @@ class ReIDGalleryManager:
 
         return True
 
-    def on_track_lost(self, track_id: int, was_face_identified: bool) -> bool:
+    def on_track_lost(self, track_id: int, was_face_identified: bool, global_track_id: Optional[str] = None) -> bool:
         """Handle a track being lost.
 
         If the track was face-identified, store its embeddings in the gallery.
 
         Args:
-            track_id: Track ID that was lost
+            track_id: Integer key used for _track_data lookup
             was_face_identified: Whether the track was identified by face recognition
+            global_track_id: Original global track ID string for event logging
 
         Returns:
             True if embeddings were stored in gallery
@@ -397,32 +402,51 @@ class ReIDGalleryManager:
             if person:
                 person_id = person.id
 
+        event_track_id = global_track_id or f"global_{track_id}"
+        last_db_id = None
+
         for te in data.entries:
-            # Crop already saved to disk during tracking — reuse the path
+            # Copy crop to permanent gallery snapshot dir so it survives cache cleanup
+            permanent_crop_path = te.crop_path
+            if te.crop_path and self.gallery_snapshot_dir:
+                try:
+                    dest_dir = Path(self.gallery_snapshot_dir)
+                    dest_dir.mkdir(parents=True, exist_ok=True)
+                    dest_path = dest_dir / Path(te.crop_path).name
+                    shutil.copy2(te.crop_path, dest_path)
+                    permanent_crop_path = str(dest_path)
+                except Exception:
+                    logger.debug("Failed to copy gallery crop to permanent dir", exc_info=True)
+
             db_id = None
             if self.repository:
                 reid_emb = self.repository.add_reid_embedding(
                     camera_id="unknown",
                     embedding=te.embedding,
-                    track_id=f"global_{track_id}",
+                    track_id=event_track_id,
                     person_id=person_id,
-                    snapshot_path=te.crop_path,
+                    snapshot_path=permanent_crop_path,
                 )
                 db_id = reid_emb.id
+                last_db_id = db_id
 
-                self.repository.create_event(
-                    camera_id="unknown",
-                    event_type="reid_gallery_updated",
-                    track_id=f"global_{track_id}",
-                    person_id=person_id,
-                    reid_embedding_id=db_id,
-                    extra_data={
-                        "policy": "append",
-                        "gallery_count": len(entry.embeddings) + 1
-                    }
-                )
+            entry._add_embedding_with_path(te.embedding, permanent_crop_path, db_id=db_id)
 
-            entry._add_embedding_with_path(te.embedding, te.crop_path, db_id=db_id)
+        # Emit a single event for the whole flush (not one per embedding)
+        if self.repository and last_db_id is not None:
+            self.repository.create_event(
+                camera_id="unknown",
+                event_type="reid_gallery_updated",
+                track_id=event_track_id,
+                person_id=person_id,
+                reid_embedding_id=last_db_id,
+                extra_data={
+                    "policy": "append",
+                    "embeddings_added": len(data.entries),
+                    "gallery_count": len(entry.embeddings),
+                    "original_reid_embedding_id": last_db_id,
+                }
+            )
 
         entry.last_seen = time.time()
 
@@ -431,7 +455,7 @@ class ReIDGalleryManager:
         if self.debug_saver and last_crop is not None:
             self.debug_saver.save_gallery_stored(last_crop, person_name, len(entry.embeddings))
 
-        logger.info(f"Track #{track_id} lost - Re-ID gallery updated: {person_name} ({len(entry.embeddings)} embeddings)")
+        logger.info(f"Track {event_track_id} lost - Re-ID gallery updated: {person_name} ({len(entry.embeddings)} embeddings)")
 
         return True
 
