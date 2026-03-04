@@ -287,6 +287,36 @@ class LoggingConfig:
 
 
 @dataclass
+class VLMConfig:
+    """VLM (Visual Language Model) configuration for scene understanding."""
+
+    enabled: bool = False
+    # Base URL of the OpenAI-compatible server (e.g. llama.cpp: llama-server --port 8080)
+    url: str = "http://localhost:8080"
+    model: str = "qwen3-vl"
+    timeout_sec: float = 10.0
+    # Maximum tokens in response (keep low: JSON outputs are ~15-25 tokens)
+    max_tokens: int = 30
+    # Resize images so the longest edge does not exceed this value before sending.
+    # Reduces input tokens and network transfer. Set to 0 to disable resizing.
+    max_image_size: int = 512
+    # Run activity/appearance analysis on unidentified tracks
+    analyze_unidentified: bool = True
+    # Run periodic activity analysis per active track
+    analyze_activity: bool = True
+    # Minimum seconds between VLM calls per global_track_id
+    activity_interval_sec: float = 10.0
+    # Enable periodic house overview (camera scenes + aggregated summary)
+    house_overview: bool = True
+    # Seconds between house overview generations
+    overview_interval_sec: float = 30.0
+    # Resize overview frames to this longest-edge before sending (0 = use max_image_size)
+    overview_image_size: int = 256
+    # Max tokens for the overview response (must cover summary + N camera scenes)
+    overview_max_tokens: int = 150
+
+
+@dataclass
 class APIConfig:
     """API server configuration."""
 
@@ -313,6 +343,7 @@ class Config:
     snapshots: SnapshotConfig = field(default_factory=SnapshotConfig)
     debug: DebugConfig = field(default_factory=DebugConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
+    vlm: VLMConfig = field(default_factory=VLMConfig)
 
     def get_camera(self, camera_id: str) -> Optional[CameraConfig]:
         """Get camera configuration by ID."""
@@ -384,6 +415,7 @@ def load_config(config_path: str | Path) -> Config:
     snapshots = SnapshotConfig(**data.get("snapshots", {}))
     debug = DebugConfig(**data.get("debug", {}))
     logging_config = LoggingConfig(**data.get("logging", {}))
+    vlm = VLMConfig(**data.get("vlm", {}))
 
     return Config(
         cameras=cameras,
@@ -401,4 +433,5 @@ def load_config(config_path: str | Path) -> Config:
         snapshots=snapshots,
         debug=debug,
         logging=logging_config,
+        vlm=vlm,
     )

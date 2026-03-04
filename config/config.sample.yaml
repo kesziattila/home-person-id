@@ -463,6 +463,61 @@ debug:
   log_reid_details: false
 
 # =============================================================================
+# VLM (Visual Language Model) — Scene Understanding
+# =============================================================================
+# Uses a local multimodal LLM (e.g. Qwen3-VL via llama.cpp) to add:
+#   - Per-person activity, appearance, gender, age analysis
+#   - Per-camera scene descriptions
+#   - Aggregated house overview published to MQTT
+#
+# Start the server: ./llama-server -m qwen3-vl.gguf --port 8080
+
+vlm:
+  # Enable VLM integration (disabled by default — requires a running VLM server)
+  enabled: false
+
+  # Base URL of the OpenAI-compatible server
+  url: "http://localhost:8080"
+
+  # Model name to pass in API requests
+  model: "qwen3-vl"
+
+  # Request timeout in seconds
+  timeout_sec: 10.0
+
+  # Maximum tokens in VLM response (JSON outputs are ~15-25 tokens, keep low)
+  max_tokens: 30
+
+  # Resize images so the longest edge does not exceed this value before sending.
+  # Reduces input tokens and network transfer. Set to 0 to disable resizing.
+  max_image_size: 512
+
+  # Run activity/appearance analysis on unidentified tracks
+  analyze_unidentified: true
+
+  # Run periodic activity analysis per active track
+  analyze_activity: true
+
+  # Minimum seconds between VLM calls per person (per global_track_id)
+  activity_interval_sec: 10.0
+
+  # Enable periodic house overview (camera scenes + aggregated summary)
+  # Publishes to MQTT: {topic_prefix}/overview
+  house_overview: true
+
+  # Seconds between house overview generations
+  overview_interval_sec: 30.0
+
+  # Resize overview frames to this longest-edge before sending (0 = use max_image_size).
+  # Smaller = fewer tokens per image, lower cost. 256 is sufficient for scene understanding.
+  overview_image_size: 256
+
+  # Maximum tokens for the overview response.
+  # Must cover: summary (~20 tokens) + N × scene (~15 tokens) + JSON overhead (~20 tokens).
+  # For 3 cameras: ~95 tokens. Default 150 covers up to ~7 cameras.
+  overview_max_tokens: 150
+
+# =============================================================================
 # LOGGING
 # =============================================================================
 

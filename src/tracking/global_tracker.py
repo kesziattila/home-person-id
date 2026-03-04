@@ -8,6 +8,7 @@ Manages global tracks that span multiple cameras, handling:
 """
 
 import logging
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -15,7 +16,7 @@ from typing import Optional
 
 import numpy as np
 
-from src.config import CameraTopologyConfig, ReIDConfig, SnapshotConfig, ZonesConfig
+from src.config import CameraTopologyConfig, ReIDConfig, SnapshotConfig, VLMConfig, ZonesConfig
 from src.database.repository import Repository
 from src.detection.person_detector import compute_iou
 from src.events.mqtt_publisher import MQTTPublisher
@@ -56,6 +57,7 @@ class GlobalTrackManager:
         zones_config: Optional[ZonesConfig] = None,
         snapshot_config: Optional[SnapshotConfig] = None,
         mqtt_publisher: Optional[MQTTPublisher] = None,
+        vlm_config: Optional[VLMConfig] = None,
     ):
         """Initialize global track manager.
 
@@ -67,6 +69,7 @@ class GlobalTrackManager:
             zones_config: Optional polygon zones configuration for zone-based propagation
             snapshot_config: Optional snapshot configuration for event images
             mqtt_publisher: Optional MQTT publisher for location events
+            vlm_config: Optional VLM configuration for scene understanding
         """
         self.topology_config = topology_config
         self.reid_config = reid_config
@@ -74,6 +77,24 @@ class GlobalTrackManager:
         self.repository = repository
         self.snapshot_config = snapshot_config
         self.mqtt_publisher = mqtt_publisher
+
+        # VLM analyzer (lazy-initialized when first needed)
+        self._vlm_config = vlm_config
+        self._vlm_analyzer = None
+        if vlm_config and vlm_config.enabled:
+            from src.vlm.vlm_analyzer import VLMAnalyzer
+            self._vlm_analyzer = VLMAnalyzer(vlm_config)
+            logger.info(f"VLM analysis enabled: url={vlm_config.url} model={vlm_config.model}")
+
+        # VLM state: accumulated crops and call timestamps per global_track_id
+        self._vlm_crops: dict[str, list[np.ndarray]] = {}
+        self._vlm_last_called: dict[str, float] = {}
+        # Cached VLM results per global_track_id (for house overview aggregation)
+        self._vlm_results: dict[str, "VLMResult"] = {}  # noqa: F821
+        # Latest full frames per camera (for house overview scene calls)
+        self._last_full_frames: dict[str, np.ndarray] = {}
+        # House overview timer
+        self._vlm_last_overview: float = 0.0
 
         # Zone manager for zone-based identity propagation
         self.zone_manager: Optional[ZoneManager] = None
@@ -525,6 +546,41 @@ class GlobalTrackManager:
             zone_camera_tracks = self._update_track_zones()
             if self.topology_config.enable_cross_camera_propagation:
                 self._try_zone_identity_propagation(zone_camera_tracks)
+
+        # VLM per-person analysis (throttled per global_track_id)
+        if self._vlm_analyzer and self._vlm_config:
+            # Store latest full frame for house overview
+            if frame is not None and frame.shape[0] > 10:
+                self._last_full_frames[camera_id] = frame
+
+            if self._vlm_config.analyze_activity:
+                for local_track in local_tracks:
+                    if local_track.last_crop is None:
+                        continue
+                    global_track_id = self._local_to_global.get((camera_id, local_track.track_id))
+                    if global_track_id is None:
+                        continue
+                    # Accumulate crops from all cameras for multi-view accuracy
+                    self._vlm_crops.setdefault(global_track_id, []).append(local_track.last_crop)
+                    # Fire VLM call once per interval per global_track_id
+                    last_call = self._vlm_last_called.get(global_track_id, 0.0)
+                    if current_time - last_call >= self._vlm_config.activity_interval_sec:
+                        self._vlm_last_called[global_track_id] = current_time
+                        crops = self._vlm_crops.pop(global_track_id, [local_track.last_crop])
+                        threading.Thread(
+                            target=self._run_vlm_person,
+                            args=(global_track_id, crops),
+                            daemon=True,
+                        ).start()
+
+            # Periodic house overview
+            if (self._vlm_config.house_overview
+                    and current_time - self._vlm_last_overview >= self._vlm_config.overview_interval_sec):
+                self._vlm_last_overview = current_time
+                threading.Thread(
+                    target=self._run_vlm_house_overview,
+                    daemon=True,
+                ).start()
 
         # Build result
         for global_track in self._tracks.values():
@@ -997,6 +1053,97 @@ class GlobalTrackManager:
         if global_track_id:
             return self._tracks.get(global_track_id)
         return None
+
+    def _run_vlm_person(self, global_track_id: str, crops: list[np.ndarray]) -> None:
+        """Analyze a person with VLM and store/persist result (runs in background thread)."""
+        if not self._vlm_analyzer:
+            return
+        try:
+            result = self._vlm_analyzer.analyze_person(crops)
+            if result is None:
+                return
+            self._vlm_results[global_track_id] = result
+            track = self._tracks.get(global_track_id)
+            person_id = track.person_id if track else None
+            snapshot_path = self._save_event_snapshot(crops[0], "vlm_activity", global_track_id)
+            self.repository.create_event(
+                camera_id=track.current_camera_id or "unknown" if track else "unknown",
+                event_type="vlm_activity",
+                track_id=global_track_id,
+                person_id=person_id,
+                snapshot_path=snapshot_path,
+                extra_data=result.to_dict(),
+            )
+            logger.debug(
+                f"VLM person analysis {global_track_id}: "
+                f"activity={result.activity} gender={result.gender} age={result.age_group}"
+            )
+        except Exception:
+            logger.debug(f"VLM person analysis failed for {global_track_id}", exc_info=True)
+
+    def _run_vlm_house_overview(self) -> None:
+        """Generate house overview in a single VLM call (background thread)."""
+        if not self._vlm_analyzer:
+            return
+        try:
+            # Snapshot current frames and track states
+            frames_snapshot = dict(self._last_full_frames)
+            active_tracks = self.get_active_tracks()
+
+            # Collect person states
+            person_states = []
+            for track in active_tracks:
+                state = self.identity_linker.get_track_state(track.track_id)
+                if state and state.person_id is not None:
+                    person = self.repository.get_person(state.person_id)
+                    name = person.name if person else f"person_{state.person_id}"
+                else:
+                    name = "unknown"
+                vlm_result = self._vlm_results.get(track.track_id)
+                person_states.append({
+                    "name": name,
+                    "zone": self._track_zones.get(track.track_id),
+                    "activity": vlm_result.activity if vlm_result else None,
+                    "gender": vlm_result.gender if vlm_result else None,
+                    "age_group": vlm_result.age_group if vlm_result else None,
+                })
+
+            # Save camera snapshots to disk before the VLM call
+            camera_snapshot_paths: dict[str, str] = {}
+            for cam_id, frm in frames_snapshot.items():
+                path = self._save_event_snapshot(frm, "camera_scene", cam_id)
+                if path:
+                    camera_snapshot_paths[cam_id] = path
+
+            # Single VLM call: all frames + person context → summary + per-camera scenes
+            overview = self._vlm_analyzer.generate_house_overview(person_states, frames_snapshot)
+            if overview is None:
+                return
+
+            # Create camera_scene events with descriptions from the overview
+            for cam_id, desc in overview.camera_scenes.items():
+                self.repository.create_event(
+                    camera_id=cam_id,
+                    event_type="camera_scene",
+                    snapshot_path=camera_snapshot_paths.get(cam_id),
+                    extra_data={"description": desc},
+                )
+
+            overview_data = overview.to_dict()
+            overview_data["camera_snapshot_paths"] = camera_snapshot_paths
+
+            self.repository.create_event(
+                camera_id="global",
+                event_type="house_overview",
+                extra_data=overview_data,
+            )
+
+            if self.mqtt_publisher:
+                self.mqtt_publisher.publish_house_overview(overview)
+
+            logger.info(f"House overview: {overview.summary}")
+        except Exception:
+            logger.debug("VLM house overview failed", exc_info=True)
 
     def get_active_tracks(self) -> list[GlobalTrack]:
         """Get all active global tracks."""
