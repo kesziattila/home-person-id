@@ -920,6 +920,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
         config.camera_topology, config.reid, identity_linker, repo,
         zones_config=config.zones,
         snapshot_config=config.snapshots,
+        vlm_config=config.vlm,
     )
 
     # Initialize zone manager and renderer

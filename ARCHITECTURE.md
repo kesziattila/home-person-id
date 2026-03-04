@@ -224,7 +224,34 @@ The frontend is a modern, single-page application (SPA) built with **Vue.js** an
 - `encode_jpeg(image, quality, use_nvjpeg)`: JPEG encoding with optional hardware acceleration
 - Hardware-accelerated encoding via nvJPEG on Jetson
 
-### 8. Configuration (`src/config.py`)
+### 8. VLM Scene Understanding (`src/vlm/`)
+
+Optional integration with a local OpenAI-compatible multimodal LLM server (e.g., Qwen3-VL via llama.cpp). Disabled by default; enabled by `vlm.enabled: true` in config.
+
+**VLMClient** (`vlm_client.py`)
+- Sends requests to `{url}/v1` using the `openai` SDK with `api_key="dummy"`.
+- `_encode_image(image, max_size)`: resizes to longest-edge limit then base64-encodes as JPEG.
+- `call(prompt, images, max_tokens, image_max_size)`: accepts per-call overrides for token budget and image size so different call types can be tuned independently.
+- `call_text_only(prompt)`: text-only variant (used for testing / non-image calls).
+
+**VLMAnalyzer** (`vlm_analyzer.py`)
+- `analyze_person(crops)`: sends one or more person crops, parses `{"activity", "appearance", "gender", "age_group"}` JSON. Profiled as `VLM.analyze_person`.
+- `generate_house_overview(person_states, frames, camera_names)`: **single-call** overview.
+  - Builds a structured prompt listing cameras by number and name, plus person context (name, zone, activity/gender/age if known).
+  - Sends all camera frames as images in a single request with `overview_image_size` resize and `overview_max_tokens` limit.
+  - Parses `{"summary": "...", "scenes": {"cam_id": "...", ...}}` JSON. Falls back to raw text as summary if JSON parsing fails.
+  - Profiled as `VLM.house_overview`.
+
+**Events produced per cycle:**
+- `camera_scene` event per camera (description from `scenes` key, snapshot saved before VLM call)
+- `house_overview` event on `global` camera (full `HouseOverview` dict + `camera_snapshot_paths`)
+- MQTT publish to `{topic_prefix}/overview`
+
+**Token budget (default):**
+- Per-person: `max_tokens=30`, image resized to 512px
+- Overview: `overview_max_tokens=150`, images resized to 256px (~95 tokens for 3 cameras)
+
+### 9. Configuration (`src/config.py`)
 
 Dataclasses for all configuration sections:
 - CameraConfig, CameraTopologyConfig
@@ -232,6 +259,7 @@ Dataclasses for all configuration sections:
 - ReIDConfig, FaceRecognitionConfig
 - UnidentifiedFacesConfig (capture faces below threshold for manual review)
 - MQTTConfig, DatabaseConfig, SnapshotConfig, APIConfig
+- VLMConfig (scene understanding; `overview_image_size` and `overview_max_tokens` tune the single-call house overview)
 
 Loaded from YAML file via `load_config()`.
 
@@ -296,6 +324,13 @@ Loaded from YAML file via `load_config()`.
 
 7. PreviewBuffer.update(camera_id, frame, metadata)
    └── Pushes annotated frame data to buffer for API server
+
+8. VLMAnalyzer (background threads, when vlm.enabled)
+   ├── analyze_person(crops) → VLMResult per active track (activity, appearance, gender, age_group)
+   └── generate_house_overview(person_states, frames) → HouseOverview
+       ├── Single call: all camera frames + person context → {"summary", "scenes"} JSON
+       ├── Saves camera_scene events + house_overview event to DB
+       └── Publishes to MQTT {topic_prefix}/overview
 ```
 
 ## Key Algorithms

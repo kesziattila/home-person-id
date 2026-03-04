@@ -155,6 +155,7 @@ class PersonIDSystem:
             zones_config=self.config.zones,
             snapshot_config=self.config.snapshots,
             mqtt_publisher=self.mqtt_publisher,
+            vlm_config=self.config.vlm,
         )
 
         # Parallel processing queues

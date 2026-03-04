@@ -104,7 +104,36 @@ A real-time web dashboard is available for monitoring all camera streams:
 
 Default access: `http://localhost:8000`
 
-### 6. Unidentified Faces Feature
+### 6. VLM Scene Understanding (Optional)
+
+When a local multimodal LLM server is running (e.g., Qwen3-VL via llama.cpp), the system can analyse each person and generate a periodic house overview:
+
+- **Per-person analysis**: activity, appearance, gender, age group — derived from the track's camera crop(s).
+- **House overview**: a single VLM call sends all camera frames together with person context and gets back a one-sentence summary plus per-camera scene descriptions in one JSON response. This replaces the previous N+1 call design (one per camera + one text summary), cutting latency and token cost proportionally to the number of cameras.
+
+Overview response format expected from the model:
+```json
+{"summary": "Ati is sitting in the living room.", "scenes": {"living_room": "...", "front_door": "..."}}
+```
+
+Results are:
+- Stored as `camera_scene` and `house_overview` events in the database (with frame snapshots)
+- Published to MQTT: `{topic_prefix}/overview`
+
+Start the server before enabling:
+```bash
+./llama-server -m qwen3-vl.gguf --port 8080
+```
+
+Enable in config:
+```yaml
+vlm:
+  enabled: true
+  url: "http://localhost:8080"
+  model: "qwen3-vl"
+```
+
+### 7. Unidentified Faces Feature
 When a face is detected but doesn't match any known person (below similarity threshold):
 - Face is automatically captured with quality scoring (size, sharpness, brightness)
 - **FFT-based blur detection** rejects motion blur and focus blur (~8-10ms overhead)
@@ -164,6 +193,9 @@ home-person-id/
 │   └── database/
 │       ├── models.py            # SQLAlchemy ORM models
 │       └── repository.py        # Database CRUD operations
+│   ├── vlm/
+│   │   ├── vlm_client.py        # OpenAI-compatible HTTP client (image encoding, per-call overrides)
+│   │   └── vlm_analyzer.py      # Prompts, JSON parsing, VLMResult / HouseOverview dataclasses
 │   ├── utils/
 │   │   ├── image_utils.py       # Crop utilities and JPEG encoding
 │   │   └── profiler.py          # Performance profiling
@@ -189,6 +221,7 @@ home-person-id/
 | Person Re-ID | OSNet (torchreid) | Cross-camera appearance matching |
 | Database | SQLite + SQLAlchemy | Store persons, tracks, events |
 | Streaming | OpenCV | RTSP camera reading |
+| Scene Understanding | Any OpenAI-compatible VLM (e.g. Qwen3-VL) | Per-person analysis, house overview |
 
 ## Installation & Testing
 
@@ -379,6 +412,17 @@ See `config/config.yaml` for all options. Key settings:
 | `unidentified_faces.min_sharpness_score` | Min sharpness for blur rejection (0-1) | 0.4 |
 | `unidentified_faces.min_face_size` | Min face size for capture (pixels) | 60 |
 | `unidentified_faces.retention_days` | Days to keep before cleanup | 30 |
+| `vlm.enabled` | Enable VLM integration | false |
+| `vlm.url` | OpenAI-compatible server base URL | http://localhost:8080 |
+| `vlm.model` | Model name passed in API requests | qwen3-vl |
+| `vlm.max_tokens` | Max tokens for per-person analysis responses | 30 |
+| `vlm.max_image_size` | Longest-edge resize for per-person images (px, 0=off) | 512 |
+| `vlm.analyze_activity` | Run periodic per-track activity/appearance analysis | true |
+| `vlm.activity_interval_sec` | Seconds between VLM calls per person | 10.0 |
+| `vlm.house_overview` | Enable periodic house overview | true |
+| `vlm.overview_interval_sec` | Seconds between overview generations | 30.0 |
+| `vlm.overview_image_size` | Longest-edge resize for overview frames (px, 0=use max_image_size) | 256 |
+| `vlm.overview_max_tokens` | Max tokens for overview response | 150 |
 
 ## Profiling
 

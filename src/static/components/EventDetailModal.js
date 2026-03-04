@@ -68,6 +68,70 @@ export default {
                             </div>
                         </section>
 
+                        <!-- VLM Activity section -->
+                        <section v-if="isVlmActivity">
+                            <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">VLM Analysis</h4>
+                            <div class="bg-gray-700/50 rounded-lg p-4 grid grid-cols-2 gap-3">
+                                <div v-if="event.extra_data.activity">
+                                    <p class="text-xs text-gray-500 uppercase tracking-wider">Activity</p>
+                                    <p class="font-medium capitalize">{{ event.extra_data.activity }}</p>
+                                </div>
+                                <div v-if="event.extra_data.gender">
+                                    <p class="text-xs text-gray-500 uppercase tracking-wider">Gender</p>
+                                    <p class="font-medium capitalize">{{ event.extra_data.gender }}</p>
+                                </div>
+                                <div v-if="event.extra_data.age_group">
+                                    <p class="text-xs text-gray-500 uppercase tracking-wider">Age Group</p>
+                                    <p class="font-medium capitalize">{{ event.extra_data.age_group }}</p>
+                                </div>
+                                <div v-if="event.extra_data.appearance" class="col-span-2">
+                                    <p class="text-xs text-gray-500 uppercase tracking-wider">Appearance</p>
+                                    <p class="font-medium">{{ event.extra_data.appearance }}</p>
+                                </div>
+                            </div>
+                        </section>
+
+                        <!-- Camera Scene section -->
+                        <section v-if="isCameraScene">
+                            <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Scene Description</h4>
+                            <div class="bg-gray-700/50 rounded-lg p-4">
+                                <p class="text-sm italic text-gray-200">{{ event.extra_data.description }}</p>
+                            </div>
+                        </section>
+
+                        <!-- House Overview section -->
+                        <section v-if="isHouseOverview">
+                            <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Summary</h4>
+                            <div class="bg-blue-900/30 border border-blue-700/40 rounded-lg p-4 mb-3">
+                                <p class="text-sm text-blue-200 italic">{{ event.extra_data.summary }}</p>
+                            </div>
+                            <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">People</h4>
+                            <div class="space-y-2 mb-3">
+                                <div v-for="p in event.extra_data.persons" :key="p.name"
+                                     class="bg-gray-700/50 rounded-lg px-3 py-2 flex items-center gap-3 text-sm">
+                                    <span class="font-medium text-blue-300">{{ p.name }}</span>
+                                    <span class="text-gray-400">{{ p.zone || '?' }}</span>
+                                    <span v-if="p.activity" class="text-gray-300 capitalize">· {{ p.activity }}</span>
+                                    <span v-if="p.gender && p.gender !== 'unknown'" class="text-gray-400 capitalize">· {{ p.gender }}</span>
+                                    <span v-if="p.age_group && p.age_group !== 'unknown'" class="text-gray-400 capitalize">· {{ p.age_group }}</span>
+                                </div>
+                            </div>
+                            <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Camera Scenes</h4>
+                            <div class="grid grid-cols-2 gap-3">
+                                <div v-for="(desc, camId) in event.extra_data.camera_scenes" :key="camId"
+                                     class="bg-gray-700/50 rounded-lg overflow-hidden">
+                                    <img v-if="event.extra_data.camera_snapshot_paths && event.extra_data.camera_snapshot_paths[camId]"
+                                         :src="'/api/v1/events/' + event.id + '/camera_snapshot/' + camId"
+                                         class="w-full h-28 object-cover"
+                                         :alt="camId">
+                                    <div class="p-2">
+                                        <p class="text-xs font-mono text-gray-400">{{ camId }}</p>
+                                        <p class="text-xs text-gray-300 mt-1 italic">{{ desc }}</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
                         <!-- Source Camera Crop section for cross_camera_propagation -->
                         <section v-if="hasCrossCamera">
                             <h4 class="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Source Camera</h4>
@@ -147,6 +211,15 @@ export default {
         hasCrossCamera() {
             return this.event?.event_type === 'cross_camera_propagation'
                 && this.event.extra_data?.from_camera;
+        },
+        isVlmActivity() {
+            return this.event?.event_type === 'vlm_activity';
+        },
+        isCameraScene() {
+            return this.event?.event_type === 'camera_scene';
+        },
+        isHouseOverview() {
+            return this.event?.event_type === 'house_overview';
         }
     },
     methods: {

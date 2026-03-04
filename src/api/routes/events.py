@@ -168,6 +168,25 @@ def create_events_router(repository: Repository) -> APIRouter:
 
             return FileResponse(from_snapshot_path, media_type="image/jpeg")
 
+    @router.get("/events/{event_id}/camera_snapshot/{camera_id}")
+    async def get_house_overview_camera_snapshot(event_id: int, camera_id: str):
+        """Get a camera frame snapshot stored in a house_overview event's extra_data."""
+        with repository.get_session() as session:
+            from src.database.models import Event
+            event = session.query(Event).filter(Event.id == event_id).first()
+            if not event or not event.extra_data:
+                raise HTTPException(status_code=404, detail="Event not found")
+
+            paths = event.extra_data.get("camera_snapshot_paths", {})
+            path = paths.get(camera_id)
+            if not path:
+                raise HTTPException(status_code=404, detail="No snapshot for this camera")
+
+            if not os.path.exists(path):
+                raise HTTPException(status_code=404, detail="Snapshot file not found")
+
+            return FileResponse(path, media_type="image/jpeg")
+
     @router.get("/reid-embeddings/{embedding_id}/image")
     async def get_reid_embedding_image(embedding_id: int):
         """Get the snapshot for a Re-ID embedding."""

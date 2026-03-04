@@ -108,6 +108,22 @@ class MQTTPublisher:
         except Exception as e:
             logger.warning(f"MQTT publish failed: {e}")
 
+    def publish_house_overview(self, overview: "HouseOverview") -> None:  # noqa: F821
+        """Publish a house overview to MQTT.
+
+        Topic: {topic_prefix}/overview
+        Payload: JSON with summary, persons, camera_scenes, timestamp.
+        """
+        if not self._client:
+            return
+
+        topic = f"{self._config.topic_prefix}/overview"
+        try:
+            self._client.publish(topic, json.dumps(overview.to_dict()), qos=1, retain=True)
+            logger.debug(f"MQTT published house overview to {topic}")
+        except Exception as e:
+            logger.warning(f"MQTT house overview publish failed: {e}")
+
     def stop(self):
         """Disconnect and stop the MQTT client loop."""
         if self._client:

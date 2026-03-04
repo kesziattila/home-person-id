@@ -37,6 +37,9 @@ uvicorn>=0.23.0
 # Home Assistant Integration
 paho-mqtt>=1.6.0
 
+# VLM integration (local Qwen3-VL via llama.cpp OpenAI-compatible API)
+openai>=1.0.0
+
 # CLI
 click>=8.0.0
 
