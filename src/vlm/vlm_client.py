@@ -97,6 +97,45 @@ class VLMClient:
             logger.warning(f"VLM call failed: {e}")
             return None
 
+    def call_parts(
+        self,
+        parts: list,
+        max_tokens: Optional[int] = None,
+        image_max_size: Optional[int] = None,
+    ) -> Optional[str]:
+        """Call the VLM with interleaved text and image parts.
+
+        Args:
+            parts: List of str (text) or np.ndarray (BGR image), in order.
+                   Interleaving labels and images lets the model associate each
+                   image with its corresponding camera name.
+            max_tokens: Override config max_tokens for this call
+            image_max_size: Override config max_image_size for encoding images
+
+        Returns:
+            Model response text, or None on failure
+        """
+        content: list[dict] = []
+        for part in parts:
+            if isinstance(part, str):
+                content.append({"type": "text", "text": part})
+            else:
+                b64 = self._encode_image(part, max_size=image_max_size)
+                content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+
+        try:
+            client = self._get_client()
+            response = client.chat.completions.create(
+                model=self._config.model,
+                messages=[{"role": "user", "content": content}],
+                max_tokens=max_tokens if max_tokens is not None else self._config.max_tokens,
+                timeout=self._config.timeout_sec,
+            )
+            return response.choices[0].message.content
+        except Exception as e:
+            logger.warning(f"VLM call failed: {e}")
+            return None
+
     def call_text_only(self, prompt: str) -> Optional[str]:
         """Call the VLM with text only (no images).
 

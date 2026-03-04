@@ -135,17 +135,22 @@ class VLMAnalyzer:
 
         camera_names = camera_names or {}
         ordered_ids = list(frames.keys())
-        ordered_frames = [frames[cam_id] for cam_id in ordered_ids]
-
-        prompt = self._build_overview_prompt(person_states, ordered_ids, camera_names)
-
         image_max_size = self._config.overview_image_size if self._config.overview_image_size > 0 else None
+
+        # Interleave camera label + image so the model can associate each image
+        # with its camera name. Sending all images first then the prompt causes
+        # the model to describe all cameras identically.
+        parts: list = []
+        for i, cam_id in enumerate(ordered_ids):
+            display = camera_names.get(cam_id, cam_id)
+            parts.append(f"Camera {i + 1} ({display}):\n")
+            parts.append(frames[cam_id])
+        parts.append(self._build_overview_prompt(person_states, ordered_ids, camera_names))
 
         from src.utils.profiler import profiler
         with profiler.measure("VLM.house_overview"):
-            raw = self._client.call(
-                prompt,
-                images=ordered_frames if ordered_frames else None,
+            raw = self._client.call_parts(
+                parts,
                 max_tokens=self._config.overview_max_tokens,
                 image_max_size=image_max_size,
             )
@@ -219,12 +224,12 @@ class VLMAnalyzer:
         camera_ids: list[str],
         camera_names: dict[str, str],
     ) -> str:
-        """Build a compact prompt for the single-call house overview."""
-        lines = ["Home cameras:"]
-        for i, cam_id in enumerate(camera_ids, 1):
-            display = camera_names.get(cam_id, cam_id)
-            lines.append(f"{i}. {cam_id} ({display})")
+        """Build the trailing instruction block for the house overview.
 
+        Camera labels are interleaved with images by the caller, so this method
+        only adds person context and the JSON reply instruction.
+        """
+        lines = []
         if person_states:
             parts = []
             for p in person_states:
