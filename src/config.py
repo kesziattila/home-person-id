@@ -284,6 +284,8 @@ class LoggingConfig:
 
     level: str = "INFO"
     file: Optional[str] = None
+    max_bytes: int = 20_000_000  # Rotate log file when it exceeds this size
+    backup_count: int = 5  # Number of rotated files to keep (app.log.1 .. .5)
 
 
 @dataclass

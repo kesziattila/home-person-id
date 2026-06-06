@@ -2,6 +2,8 @@
 
 import argparse
 import logging
+import logging.handlers
+import os
 import signal
 import sys
 import time
@@ -190,12 +192,25 @@ class PersonIDSystem:
         else:
             log_level = getattr(logging, self.config.logging.level.upper(), logging.INFO)
 
-        handlers = [logging.StreamHandler()]
+        handlers = []
 
         if self.config.logging.file:
             log_path = Path(self.config.logging.file)
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            handlers.append(logging.FileHandler(log_path))
+            handlers.append(
+                logging.handlers.RotatingFileHandler(
+                    log_path,
+                    maxBytes=self.config.logging.max_bytes,
+                    backupCount=self.config.logging.backup_count,
+                )
+            )
+
+        # Console output, unless suppressed for detached runs: when stdout is
+        # redirected to a file (scripts/remote/restart.sh sets HPID_NO_CONSOLE_LOG=1)
+        # the console handler would duplicate every line of the file log.
+        # Only honored when a file handler exists, so logging never goes dark.
+        if not (handlers and os.environ.get("HPID_NO_CONSOLE_LOG")):
+            handlers.insert(0, logging.StreamHandler())
 
         logging.basicConfig(
             level=log_level,
