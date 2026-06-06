@@ -691,8 +691,11 @@ def tracks(ctx, active):
 def draw_zones(ctx, camera, scale):
     """Interactively draw polygon zones on camera.
 
+    Existing zones for this camera are loaded from config on startup.
+
     Controls:
-    - LEFT CLICK: Add polygon point
+    - LEFT CLICK on empty area: Add polygon point
+    - LEFT CLICK + DRAG on existing point: Move that point
     - RIGHT CLICK: Complete current polygon
     - 'n': Start new zone (prompts for name)
     - 'u': Undo last point
@@ -713,9 +716,18 @@ def draw_zones(ctx, camera, scale):
     import numpy as np
 
     # State for zone drawing
-    zones = []  # List of (name, polygon_points)
+    zones = []  # List of [name, list_of_points]  (mutable lists for in-place editing)
     current_polygon = []  # Points being drawn
     current_zone_name = "zone_1"
+    zones_loaded = False  # Whether we've loaded zones from config
+
+    # Drag state
+    GRAB_RADIUS = 10  # pixels in display space
+    drag_zone_idx = None   # None = dragging in current_polygon, int = index in zones
+    drag_point_idx = None
+    dragging = False
+    hover_zone_idx = None
+    hover_point_idx = None
 
     # Colors for zones (cycling through)
     zone_colors = [
@@ -731,32 +743,94 @@ def draw_zones(ctx, camera, scale):
     frame_w, frame_h = 0, 0
     display_scale = scale
 
+    def _find_nearest_point(disp_x, disp_y):
+        """Return (zone_idx, point_idx) of nearest point within GRAB_RADIUS.
+
+        zone_idx=None means the point is in current_polygon.
+        Returns (None, None) if nothing is close enough.
+        """
+        best_dist = GRAB_RADIUS
+        best_zone = "none"
+        best_pt = None
+
+        # Check completed zones
+        for zi, (_, polygon) in enumerate(zones):
+            for pi, (px, py) in enumerate(polygon):
+                dx = disp_x - px * display_scale
+                dy = disp_y - py * display_scale
+                dist = (dx * dx + dy * dy) ** 0.5
+                if dist < best_dist:
+                    best_dist = dist
+                    best_zone = zi
+                    best_pt = pi
+
+        # Check current polygon
+        for pi, (px, py) in enumerate(current_polygon):
+            dx = disp_x - px * display_scale
+            dy = disp_y - py * display_scale
+            dist = (dx * dx + dy * dy) ** 0.5
+            if dist < best_dist:
+                best_dist = dist
+                best_zone = None
+                best_pt = pi
+
+        if best_pt is None:
+            return ("none", None)
+        return (best_zone, best_pt)
+
     def mouse_callback(event, x, y, flags, param):
         nonlocal current_polygon, zones, current_zone_name
+        nonlocal dragging, drag_zone_idx, drag_point_idx
+        nonlocal hover_zone_idx, hover_point_idx
 
-        # Adjust for scale
         actual_x = int(x / display_scale)
         actual_y = int(y / display_scale)
 
-        if event == cv2.EVENT_LBUTTONDOWN:
-            # Add point to current polygon
-            current_polygon.append((actual_x, actual_y))
-            click.echo(f"Added point: ({actual_x}, {actual_y})")
+        if event == cv2.EVENT_MOUSEMOVE:
+            if dragging:
+                # Update the dragged point
+                if drag_zone_idx is None:
+                    current_polygon[drag_point_idx] = (actual_x, actual_y)
+                else:
+                    zones[drag_zone_idx][1][drag_point_idx] = (actual_x, actual_y)
+            else:
+                # Update hover highlight
+                zi, pi = _find_nearest_point(x, y)
+                hover_zone_idx = zi
+                hover_point_idx = pi
+
+        elif event == cv2.EVENT_LBUTTONDOWN:
+            zi, pi = _find_nearest_point(x, y)
+            if pi is not None:
+                # Start dragging existing point
+                dragging = True
+                drag_zone_idx = zi
+                drag_point_idx = pi
+            else:
+                # Add new point to current polygon
+                current_polygon.append((actual_x, actual_y))
+                click.echo(f"Added point: ({actual_x}, {actual_y})")
+
+        elif event == cv2.EVENT_LBUTTONUP:
+            if dragging:
+                dragging = False
+                drag_zone_idx = None
+                drag_point_idx = None
 
         elif event == cv2.EVENT_RBUTTONDOWN:
             # Complete current polygon
             if len(current_polygon) >= 3:
-                zones.append((current_zone_name, current_polygon.copy()))
+                zones.append([current_zone_name, current_polygon.copy()])
                 click.echo(f"Completed zone '{current_zone_name}' with {len(current_polygon)} points")
                 current_polygon = []
-                # Auto-increment zone name
                 current_zone_name = f"zone_{len(zones) + 1}"
             else:
                 click.echo("Need at least 3 points to complete a polygon")
 
     click.echo(f"Drawing zones on camera: {cam_config.name}")
     click.echo("Controls:")
-    click.echo("  LEFT CLICK: Add polygon point")
+    click.echo("  LEFT CLICK (empty area): Add polygon point")
+    click.echo("  LEFT CLICK + DRAG (on point): Move that point")
     click.echo("  RIGHT CLICK: Complete current polygon")
     click.echo("  'n': Start new zone (prompts for name)")
     click.echo("  'u': Undo last point")
@@ -764,7 +838,7 @@ def draw_zones(ctx, camera, scale):
     click.echo("  'p': Print YAML output")
     click.echo("  'q': Quit")
 
-    cv2.namedWindow("Draw Zones")
+    cv2.namedWindow("Draw Zones", cv2.WINDOW_NORMAL)
     cv2.setMouseCallback("Draw Zones", mouse_callback)
 
     with RTSPClient(camera, cam_config.rtsp_url, target_fps=cam_config.fps, use_nvdec=cam_config.use_nvdec) as client:
@@ -775,6 +849,23 @@ def draw_zones(ctx, camera, scale):
 
             display = frame.image.copy()
             frame_h, frame_w = display.shape[:2]
+
+            # Load existing zones from config on first frame (needs frame dimensions)
+            if not zones_loaded:
+                zones_loaded = True
+                loaded = 0
+                for zone_cfg in config.zones.zones:
+                    if camera in zone_cfg.cameras:
+                        norm_poly = zone_cfg.cameras[camera].polygon
+                        pixel_poly = [
+                            (int(p[0] * frame_w), int(p[1] * frame_h))
+                            for p in norm_poly
+                        ]
+                        zones.append([zone_cfg.name, pixel_poly])
+                        loaded += 1
+                if loaded:
+                    click.echo(f"Loaded {loaded} zone(s) from config")
+                    current_zone_name = f"zone_{len(zones) + 1}"
 
             # Draw completed zones (filled semi-transparent)
             for i, (zone_name, polygon) in enumerate(zones):
@@ -796,22 +887,42 @@ def draw_zones(ctx, camera, scale):
                     cv2.putText(display, zone_name, (centroid_x - 30, centroid_y),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
 
-            # Draw current polygon being created (green dashed)
+                # Draw vertex handles
+                for pi, (px, py) in enumerate(polygon):
+                    is_hovered = (hover_zone_idx == i and hover_point_idx == pi)
+                    is_dragged = (dragging and drag_zone_idx == i and drag_point_idx == pi)
+                    if is_dragged:
+                        cv2.circle(display, (px, py), 8, (255, 255, 255), -1)
+                    elif is_hovered:
+                        cv2.circle(display, (px, py), 8, (255, 255, 255), 2)
+                    else:
+                        cv2.circle(display, (px, py), 5, color, -1)
+
+            # Draw current polygon being created
             if current_polygon:
                 pts = np.array(current_polygon, np.int32).reshape((-1, 1, 2))
                 cv2.polylines(display, [pts], False, (0, 255, 0), 2)
 
-                # Draw points
-                for px, py in current_polygon:
-                    cv2.circle(display, (px, py), 5, (0, 255, 0), -1)
+                for pi, (px, py) in enumerate(current_polygon):
+                    is_hovered = (hover_zone_idx is None and hover_point_idx == pi)
+                    is_dragged = (dragging and drag_zone_idx is None and drag_point_idx == pi)
+                    if is_dragged:
+                        cv2.circle(display, (px, py), 8, (255, 255, 255), -1)
+                    elif is_hovered:
+                        cv2.circle(display, (px, py), 8, (255, 255, 255), 2)
+                    else:
+                        cv2.circle(display, (px, py), 5, (0, 255, 0), -1)
 
-                # Draw line to close polygon (dashed preview)
+                # Draw closing preview line
                 if len(current_polygon) >= 2:
                     cv2.line(display, current_polygon[-1], current_polygon[0],
                              (0, 255, 0), 1, cv2.LINE_AA)
 
             # Status bar
-            status = f"Zone: {current_zone_name} | Points: {len(current_polygon)} | Completed: {len(zones)}"
+            if dragging:
+                status = f"DRAGGING | Zone: {current_zone_name} | Completed: {len(zones)}"
+            else:
+                status = f"Zone: {current_zone_name} | Points: {len(current_polygon)} | Completed: {len(zones)}"
             cv2.putText(display, status, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
             # Scale display if needed
@@ -831,7 +942,7 @@ def draw_zones(ctx, camera, scale):
                 name = click.prompt("Enter zone name", default=current_zone_name)
                 current_zone_name = name
                 current_polygon = []
-                cv2.namedWindow("Draw Zones")
+                cv2.namedWindow("Draw Zones", cv2.WINDOW_NORMAL)
                 cv2.setMouseCallback("Draw Zones", mouse_callback)
                 click.echo(f"Started new zone: {current_zone_name}")
             elif key == ord('u'):
@@ -854,7 +965,6 @@ def draw_zones(ctx, camera, scale):
                     click.echo(f"  - name: \"{zone_name}\"")
                     click.echo("    cameras:")
                     click.echo(f"      {camera}:")
-                    # Convert to normalized coordinates
                     norm_polygon = [
                         [round(p[0] / frame_w, 4), round(p[1] / frame_h, 4)]
                         for p in polygon
