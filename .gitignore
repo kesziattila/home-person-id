@@ -75,6 +75,7 @@ Thumbs.db
 .env
 .env.local
 credentials.json
+scripts/remote/remote.env
 
 # Testing
 .pytest_cache/
@@ -90,7 +91,8 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 /local/
-/.claude/
+/.claude/*
+!/.claude/skills/
 /tests/test-images/sensitive/
 /.output.txt
 DEV_NOTES.md

@@ -245,6 +245,32 @@ This catches basic errors like:
 
 ---
 
+## Live Jetson Remote Access
+
+The system runs live on a Jetson; `scripts/remote/` provides SSH-based tooling for it.
+Configuration: copy `scripts/remote/remote.env.example` to `scripts/remote/remote.env`
+(gitignored — never commit it) and set `JETSON_HOST` / `REMOTE_PROJECT_DIR`.
+The `/diag-remote` skill encodes the full triage workflow — use it for live quality issues.
+
+### Script catalog
+- `rstatus.sh` — health check: process up, DB/WAL/log sizes, disk, capabilities
+- `deploy.sh [--restart] [--dry-run]` — rsync local code to the Jetson (never touches remote `data/`, `venv/`, `config/config.yaml`, models)
+- `restart.sh [start|stop|restart|status]` — control the server; logging goes to rotated `data/app.log`, raw stdout (perf reports) to `data/stdout.log` (console handler suppressed via `HPID_NO_CONSOLE_LOG=1`), pid in `data/app.pid`
+- `rquery.sh '<SQL>'` / `rquery_file.sh <name> [key=value]` — read-only SQL against the live DB (canned queries in `scripts/remote/queries/`, see its `index.md`)
+- `sync_db.sh` — pull a consistent DB copy (`.backup`-based) to `local/remote/database.db`
+- `fetch_snapshots.sh --event <ids> | --query <name> | --path <p>` — pull snapshot JPEGs to `local/remote/snapshots/` for visual inspection
+- `fetch_config.sh` — pull the live config to `local/remote/config.jetson-live.yaml`
+- `rlog.sh tail|grep|around|errors|perf|stdout` — bounded log access (never dump the whole log into context); `perf`/`stdout` read `data/stdout.log`
+
+### Conventions
+- DB timestamps are **UTC**; log timestamps are Jetson **local time**
+- `events.snapshot_path` is project-relative (`data/snapshots/...`) — prefix `REMOTE_PROJECT_DIR` to fetch
+- Always open the remote DB read-only (`-readonly` + `mode=ro`); never copy db/-wal/-shm files individually (use `sync_db.sh`)
+- Prefer canned `.sql` files over inline SQL through ssh (quoting)
+- **Reproduce locally before fixing**: pull the live config + involved snapshots, write a test in `tests/` with the same thresholds/models as the Jetson (TensorRT vs PyTorch backends may differ by ~0.01–0.03 in scores), then fix, test, `deploy.sh --restart`
+
+---
+
 ## Pending Improvements
 
 - [x] Polygon-based room zones for camera handover
