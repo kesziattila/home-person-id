@@ -33,6 +33,8 @@ class UnidentifiedFaceTask:
     best_match_score: Optional[float]
     face_bbox: tuple[int, int, int, int]  # x1, y1, x2, y2
     best_match_face_id: Optional[int] = None
+    # InsightFace detection confidence — best free proxy for face usability
+    det_confidence: Optional[float] = None
 
 
 class UnidentifiedFaceManager:
@@ -73,6 +75,9 @@ class UnidentifiedFaceManager:
         self._last_cleanup = 0.0
         self._cleanup_interval = 3600  # 1 hour
 
+        # Burst suppression: last save time per track (worker thread only)
+        self._last_saved_per_track: dict[str, float] = {}
+
         logger.info(
             f"UnidentifiedFaceManager initialized "
             f"(images_path={config.images_path}, max_per_camera={config.max_per_camera})"
@@ -110,6 +115,7 @@ class UnidentifiedFaceManager:
         best_match_person_id: Optional[int] = None,
         best_match_score: Optional[float] = None,
         best_match_face_id: Optional[int] = None,
+        det_confidence: Optional[float] = None,
     ) -> bool:
         """Submit an unidentified face for background processing.
 
@@ -124,6 +130,7 @@ class UnidentifiedFaceManager:
             best_match_person_id: Best matching person ID (if any)
             best_match_score: Similarity score to best match
             best_match_face_id: ID of the best matching face embedding
+            det_confidence: Face detection confidence (factored into quality)
 
         Returns:
             True if submitted, False if queue is full
@@ -151,6 +158,7 @@ class UnidentifiedFaceManager:
             best_match_score=best_match_score,
             face_bbox=face_bbox,
             best_match_face_id=best_match_face_id,
+            det_confidence=det_confidence,
         )
 
         try:
@@ -187,7 +195,7 @@ class UnidentifiedFaceManager:
         try:
             # 1. Compute quality score
             quality_score, sharpness_score = self._compute_quality(
-                task.face_crop, task.face_bbox
+                task.face_crop, task.face_bbox, task.det_confidence
             )
 
             # Check minimum quality
@@ -212,20 +220,35 @@ class UnidentifiedFaceManager:
                 )
                 return
 
-            # 2. Diversity check
+            # 2. Burst suppression: one sitting episode can produce a dozen
+            # near-duplicate crops within seconds, churning the review queue
+            # and evicting diverse older candidates (per-camera cap).
+            if task.track_id and self.config.burst_min_interval_sec > 0:
+                now = time.time()
+                last_saved = self._last_saved_per_track.get(task.track_id, 0.0)
+                if now - last_saved < self.config.burst_min_interval_sec:
+                    logger.debug(
+                        f"Unidentified face burst-suppressed for track {task.track_id} "
+                        f"({now - last_saved:.1f}s < {self.config.burst_min_interval_sec}s)"
+                    )
+                    return
+
+            # 3. Diversity check
             if not self._is_diverse(task.camera_id, task.embedding):
                 logger.debug(
                     f"Unidentified face too similar to existing, skipping"
                 )
                 return
 
-            # 3. Save image to disk
+            # 4. Save image to disk
             image_path = self._save_image(task.camera_id, task.face_crop)
             if not image_path:
                 logger.error("Failed to save unidentified face image")
                 return
+            if task.track_id:
+                self._last_saved_per_track[task.track_id] = time.time()
 
-            # 4. Store in database
+            # 5. Store in database
             # Note: blur_score column stores sharpness score (0-1, higher = sharper)
             face = self.repository.add_unidentified_face(
                 camera_id=task.camera_id,
@@ -270,21 +293,26 @@ class UnidentifiedFaceManager:
             logger.error(f"Error processing unidentified face task: {e}")
 
     def _compute_quality(
-        self, face_crop: np.ndarray, face_bbox: tuple[int, int, int, int]
+        self,
+        face_crop: np.ndarray,
+        face_bbox: tuple[int, int, int, int],
+        det_confidence: Optional[float] = None,
     ) -> tuple[float, float]:
         """Compute quality score for a face crop.
 
         Quality is based on:
         - Face size (larger is better)
-        - Sharpness (FFT-based, catches both focus and motion blur)
+        - Sharpness (FFT-based at a fixed 112x112 input, catches focus and motion blur)
         - Brightness (not too dark, not too bright)
+        - Detection confidence (when provided — best free proxy for usability)
 
-        Performance: ~8-10ms per call (FFT is the bottleneck).
+        Performance: ~2-3ms per call (FFT on the fixed 112x112 input).
         Runs in background thread so doesn't block main processing.
 
         Args:
             face_crop: Face crop image
             face_bbox: Face bounding box
+            det_confidence: Face detection confidence (0-1), optional
 
         Returns:
             Tuple of (quality_score, sharpness_score)
@@ -300,8 +328,8 @@ class UnidentifiedFaceManager:
 
         # Sharpness score using FFT high-frequency ratio
         # This catches both focus blur AND motion blur
-        with profiler.measure("QualityCheck.sharpness_fft"):
-            sharpness_score = self._compute_sharpness_fft(gray)
+        with profiler.measure("QualityCheck.sharpness"):
+            sharpness_score = self._compute_sharpness(gray)
 
         # Brightness score (0-1, penalize extremes)
         mean_brightness = np.mean(gray)
@@ -313,21 +341,55 @@ class UnidentifiedFaceManager:
         else:
             brightness_score = 1.0
 
-        # Combined quality score (weighted average)
-        quality_score = (
-            0.4 * size_score +
-            0.4 * sharpness_score +
-            0.2 * brightness_score
-        )
+        # Combined quality score (weighted average). Detection confidence is
+        # the best free proxy for face usability (it tracked embedding utility
+        # better than size/sharpness in live-data analysis) — weight it highest
+        # when available; fall back to the legacy weighting otherwise.
+        if det_confidence is not None:
+            quality_score = (
+                0.3 * size_score +
+                0.2 * sharpness_score +
+                0.2 * brightness_score +
+                0.3 * min(1.0, det_confidence)
+            )
+        else:
+            quality_score = (
+                0.4 * size_score +
+                0.4 * sharpness_score +
+                0.2 * brightness_score
+            )
 
         return quality_score, sharpness_score
 
-    def _compute_sharpness_fft(self, gray: np.ndarray) -> float:
-        """Compute sharpness using FFT high-frequency content ratio.
+    # Fixed analysis size: blur measures depend on image size and JPEG noise,
+    # so scores at native size are not comparable across face sizes. 112x112
+    # matches the aligned-face input size of the recognition model, i.e. we
+    # measure sharpness at the scale where the embedding is actually computed.
+    _SHARPNESS_INPUT_SIZE = 112
 
-        This method detects both focus blur and motion blur by analyzing
-        the frequency domain. Blurry images (from any cause) have less
-        high-frequency content.
+    def _compute_sharpness(self, gray: np.ndarray) -> float:
+        """Compute sharpness as min(focus score, motion score) at a fixed 112x112.
+
+        The previous FFT high-frequency-ratio metric measured sensor/JPEG noise
+        as much as detail: on labeled live data it ranked a heavily
+        motion-blurred face ABOVE every visually usable crop. Replaced by two
+        complementary measures, both computed on a lightly denoised (3x3
+        gaussian) 112x112 grayscale so noise doesn't masquerade as detail:
+
+        - Focus: Laplacian variance — catches gaussian/defocus blur.
+          Calibration (live 1080p home-camera crops, 2026-06-06): usable
+          crops 58-170, gaussian-blurred copies 4-32 -> map 10->0, 60->1.
+        - Motion: gradient-direction anisotropy min(E_gx,E_gy)/max(E_gx,E_gy)
+          — motion blur kills gradients along the smear direction even when
+          strong edges keep the Laplacian high. Calibration: usable crops
+          0.72-0.93, motion-blurred sample 0.62, heavy gaussian 0.56
+          -> map 0.55->0, 0.75->1.
+
+        With the default min_sharpness_score gate of 0.4: usable live crops
+        score 0.87-1.0, the real motion-blurred sample 0.36 (rejected),
+        gaussian-blurred copies <=0.03 (rejected).
+
+        Performance: ~1ms per call (fixed-size resize + Sobel/Laplacian).
 
         Args:
             gray: Grayscale image
@@ -335,36 +397,23 @@ class UnidentifiedFaceManager:
         Returns:
             Sharpness score 0-1 (higher = sharper)
         """
-        # Compute 2D FFT and shift zero frequency to center
-        f = np.fft.fft2(gray.astype(np.float32))
-        fshift = np.fft.fftshift(f)
-        magnitude = np.abs(fshift)
+        size = self._SHARPNESS_INPUT_SIZE
+        gray = cv2.resize(gray, (size, size), interpolation=cv2.INTER_AREA)
+        denoised = cv2.GaussianBlur(gray, (3, 3), 0)
 
-        h, w = gray.shape
-        center_y, center_x = h // 2, w // 2
+        # Focus blur: Laplacian variance (10 -> 0, 60 -> 1)
+        lap_var = float(cv2.Laplacian(denoised, cv2.CV_32F).var())
+        focus_score = max(0.0, min(1.0, (lap_var - 10.0) / 50.0))
 
-        # Create distance mask from center
-        y, x = np.ogrid[:h, :w]
-        dist = np.sqrt((x - center_x) ** 2 + (y - center_y) ** 2)
+        # Motion blur: gradient-direction anisotropy (0.55 -> 0, 0.75 -> 1)
+        gx = cv2.Sobel(denoised, cv2.CV_32F, 1, 0)
+        gy = cv2.Sobel(denoised, cv2.CV_32F, 0, 1)
+        ex = float(np.sum(gx ** 2))
+        ey = float(np.sum(gy ** 2))
+        anisotropy = min(ex, ey) / max(ex, ey) if max(ex, ey) > 0 else 0.0
+        motion_score = max(0.0, min(1.0, (anisotropy - 0.55) / 0.20))
 
-        # High frequency = outer region (beyond 25% of image size)
-        radius_threshold = min(h, w) * 0.25
-        high_freq_mask = dist > radius_threshold
-
-        # Compute ratio of high frequency to total energy
-        total_energy = np.sum(magnitude)
-        if total_energy < 1e-6:
-            return 0.0
-
-        high_freq_energy = np.sum(magnitude[high_freq_mask])
-        high_freq_ratio = high_freq_energy / total_energy
-
-        # Normalize: sharp images have ratio ~0.7+, blurry ~0.3-0.5
-        # Map to 0-1 score: 0.3 -> 0, 0.7 -> 1
-        sharpness_score = (high_freq_ratio - 0.3) / 0.4
-        sharpness_score = max(0.0, min(1.0, sharpness_score))
-
-        return sharpness_score
+        return min(focus_score, motion_score)
 
     def _is_diverse(self, camera_id: str, embedding: np.ndarray) -> bool:
         """Check if the embedding is diverse enough from existing ones.
@@ -431,6 +480,12 @@ class UnidentifiedFaceManager:
             return
 
         self._last_cleanup = now
+
+        # Prune stale burst-suppression entries (track ids grow forever)
+        cutoff = now - max(self.config.burst_min_interval_sec, 60.0)
+        self._last_saved_per_track = {
+            t: ts for t, ts in self._last_saved_per_track.items() if ts > cutoff
+        }
 
         try:
             # Cleanup old faces

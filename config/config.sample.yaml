@@ -360,12 +360,14 @@ unidentified_faces:
   max_per_camera: 20
 
   # Minimum quality score (0-1) to save a face
-  # Quality is based on: face size, sharpness, brightness
+  # Quality is based on: face size, sharpness, brightness, detection confidence
   min_quality_score: 0.3
 
   # Minimum sharpness score (0-1) to save a face
-  # Uses FFT-based detection to reject motion blur and focus blur
-  # 0.4 = moderate blur tolerance, 0.5 = stricter
+  # min(Laplacian focus score, gradient-anisotropy motion score) at a fixed
+  # 112x112 input — comparable across face sizes, catches focus AND motion blur.
+  # Calibrated on 1080p home-camera crops: usable crops score 0.87+,
+  # motion-blurred ~0.36, so the 0.4 default gate is meaningful
   min_sharpness_score: 0.4
 
   # Minimum face size (pixels) for bbox width
@@ -378,6 +380,11 @@ unidentified_faces:
   # Embedding similarity threshold for diversity check
   # Skips faces too similar to already stored ones
   embedding_similarity_threshold: 0.7
+
+  # Minimum seconds between saved faces of the same track (burst suppression).
+  # Prevents one sitting episode from flooding the review queue with
+  # near-duplicates and evicting diverse older candidates. 0 = disabled
+  burst_min_interval_sec: 10.0
 
   # Days to keep unidentified faces before auto-cleanup
   retention_days: 30

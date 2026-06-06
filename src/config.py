@@ -230,6 +230,9 @@ class UnidentifiedFacesConfig:
     min_match_score: float = 0.3
     # Embedding similarity threshold for diversity check (skip if too similar to existing)
     embedding_similarity_threshold: float = 0.7
+    # Minimum seconds between saved faces of the same track (burst suppression —
+    # one sitting episode produced 13 near-duplicate crops in 17s)
+    burst_min_interval_sec: float = 10.0
     # Days to keep unidentified faces before cleanup
     retention_days: int = 30
     # Queue size for background processing

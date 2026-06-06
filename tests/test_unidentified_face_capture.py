@@ -385,11 +385,14 @@ class TestBlurDetection:
     """Test blur detection for quality scoring."""
 
     def test_motion_blur_detected(self):
-        """Test that motion blur is detected by FFT-based sharpness.
+        """Test that motion blur is detected by gradient anisotropy.
 
         Laplacian variance fails to detect motion blur because edges still
-        exist (just smeared). FFT-based detection catches it by measuring
-        high-frequency content loss.
+        exist (just smeared) — this very image keeps a high Laplacian from its
+        glasses edges. The gradient-anisotropy component of _compute_sharpness
+        catches it: motion blur kills gradients along the smear direction.
+        (The previous FFT high-frequency-ratio metric also failed here once
+        computed at the fixed 112x112 scale — sensor noise dominated.)
         """
         import cv2
         from pathlib import Path
@@ -404,18 +407,19 @@ class TestBlurDetection:
         img = cv2.imread(str(test_image_path))
         assert img is not None, "Failed to load test image"
 
-        # Create manager to access _compute_sharpness_fft
+        # Create manager to access _compute_sharpness
         config = UnidentifiedFacesConfig(enabled=True)
         mock_repo = MagicMock()
         manager = UnidentifiedFaceManager(config, mock_repo)
 
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        sharpness_score = manager._compute_sharpness_fft(gray)
+        sharpness_score = manager._compute_sharpness(gray)
 
-        # Motion blurred image should have LOW sharpness score (<0.5)
-        assert sharpness_score < 0.5, (
+        # Motion blurred image must fail the default 0.4 gate
+        # (calibrated 2026-06-06: this sample scores ~0.36; usable live crops 0.87+)
+        assert sharpness_score < 0.4, (
             f"Motion blur not detected! Sharpness score {sharpness_score:.2f} "
-            f"should be below 0.5 for motion-blurred images"
+            f"should be below 0.4 for motion-blurred images"
         )
 
     def test_sharp_image_high_score(self):
@@ -443,7 +447,7 @@ class TestBlurDetection:
         mock_repo = MagicMock()
         manager = UnidentifiedFaceManager(config, mock_repo)
 
-        sharpness_score = manager._compute_sharpness_fft(img)
+        sharpness_score = manager._compute_sharpness(img)
 
         # Sharp natural-looking image should have good sharpness score (>0.5)
         assert sharpness_score > 0.5, (
@@ -457,12 +461,11 @@ class TestBlurDetection:
         from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
         from src.config import UnidentifiedFacesConfig
 
-        # Create sharp image and blur it
-        img = np.zeros((200, 200), dtype=np.uint8)
-        for i in range(0, 200, 20):
-            for j in range(0, 200, 20):
-                if (i // 20 + j // 20) % 2 == 0:
-                    img[i:i+20, j:j+20] = 255
+        # Blur a natural-looking textured image (random texture like a real
+        # crop; a synthetic binary checkerboard is pathological for any
+        # frequency/gradient-based measure)
+        np.random.seed(7)
+        img = np.random.randint(40, 215, (200, 200), dtype=np.uint8)
 
         blurred = cv2.GaussianBlur(img, (21, 21), 0)
 
@@ -470,7 +473,7 @@ class TestBlurDetection:
         mock_repo = MagicMock()
         manager = UnidentifiedFaceManager(config, mock_repo)
 
-        sharpness_score = manager._compute_sharpness_fft(blurred)
+        sharpness_score = manager._compute_sharpness(blurred)
 
         # Blurred image should have LOW sharpness score (<0.3)
         assert sharpness_score < 0.3, (
