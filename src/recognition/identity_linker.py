@@ -55,6 +55,12 @@ class IdentificationResult:
     stationary_time: Optional[int] = None
 
 
+# A track counts as "currently active on a camera" for the duplicate-person guard
+# if it was processed within this window. Tracks are processed several times per
+# second, so 5s comfortably covers active tracks while excluding GRACE/LOST ones.
+SAME_CAMERA_ACTIVE_WINDOW_SEC = 5.0
+
+
 @dataclass
 class TrackIdentityState:
     """Identity state for a global track.
@@ -73,15 +79,24 @@ class TrackIdentityState:
     # Re-ID gallery for stable matching (per-track)
     reid_gallery: EmbeddingGallery = field(default_factory=EmbeddingGallery)
 
-    # Consecutive match tracking for stability
+    # Consecutive match tracking for stability (face path)
     candidate_person_id: Optional[int] = None
     consecutive_matches: int = 0
+
+    # Consecutive match tracking for the Re-ID gallery recheck path.
+    # Separate from the face counters so the two paths don't interfere.
+    gallery_candidate_person_id: Optional[int] = None
+    gallery_consecutive_matches: int = 0
 
     # Timestamps
     first_seen: float = field(default_factory=time.time)
     last_face_check: float = 0.0
     last_gallery_check: float = 0.0
     identified_at: Optional[float] = None
+
+    # Where the track was last processed (for the same-camera duplicate-person guard)
+    last_camera_id: Optional[str] = None
+    last_seen_time: float = field(default_factory=time.time)
 
     @property
     def is_identified(self) -> bool:
@@ -318,6 +333,11 @@ class IdentityLinker:
         """
         state = self.register_track(global_track_id)
         current_time = time.time()
+
+        # Track camera presence for the same-camera duplicate-person guard
+        if camera_id:
+            state.last_camera_id = camera_id
+        state.last_seen_time = current_time
 
         # If already identified, just update Re-ID gallery
         if state.is_identified:
@@ -611,6 +631,44 @@ class IdentityLinker:
 
     # ==================== Gallery Recheck ====================
 
+    def is_person_active_on_camera(
+        self,
+        camera_id: str,
+        exclude_track_id: Optional[str] = None,
+        person_id: Optional[int] = None,
+        person_name: Optional[str] = None,
+    ) -> bool:
+        """Check whether a person is already held by another active track on a camera.
+
+        Same-camera duplicate-person guard: two simultaneous tracks on the SAME
+        camera cannot be the same physical person, so gallery matches proposing
+        an already-present person are rejected (observed live: a second person
+        scoring just above the Re-ID threshold was labeled as the person sitting
+        next to them).
+
+        Args:
+            camera_id: Camera to check
+            exclude_track_id: Track asking the question (excluded from the scan)
+            person_id: Person to look for (preferred)
+            person_name: Person name alternative when no id is available
+
+        Returns:
+            True if another recently-processed track on this camera has the person
+        """
+        now = time.time()
+        for track_id, state in self._track_states.items():
+            if track_id == exclude_track_id or not state.is_identified:
+                continue
+            if state.last_camera_id != camera_id:
+                continue
+            if now - state.last_seen_time > SAME_CAMERA_ACTIVE_WINDOW_SEC:
+                continue
+            if person_id is not None and state.person_id == person_id:
+                return True
+            if person_name is not None and self._get_person_name(state.person_id) == person_name:
+                return True
+        return False
+
     def _try_gallery_identification(
         self,
         state: TrackIdentityState,
@@ -646,11 +704,43 @@ class IdentityLinker:
             )
 
         if not match_result.matched:
+            # A miss breaks the consecutive-match streak
+            state.gallery_candidate_person_id = None
+            state.gallery_consecutive_matches = 0
             return False
 
         # Resolve person name to person_id
         person = self.repository.get_person_by_name(match_result.person_name)
         if not person:
+            return False
+
+        # Same-camera duplicate-person guard
+        if camera_id and self.is_person_active_on_camera(
+            camera_id, exclude_track_id=state.global_track_id, person_id=person.id
+        ):
+            logger.info(
+                f"Gallery recheck rejected for {state.global_track_id}: "
+                f"{match_result.person_name} (sim={match_result.score:.2f}) is already "
+                f"active on {camera_id} (duplicate-person guard)"
+            )
+            return False
+
+        # Enforce reid.min_consecutive_matches: a single noisy frame (e.g. a
+        # lying-down pose OSNet embeds badly) must not flip a track's identity.
+        # Previously this config option was parsed but never applied here.
+        if state.gallery_candidate_person_id == person.id:
+            state.gallery_consecutive_matches += 1
+        else:
+            state.gallery_candidate_person_id = person.id
+            state.gallery_consecutive_matches = 1
+
+        min_consecutive = max(1, self.reid_config.min_consecutive_matches)
+        if state.gallery_consecutive_matches < min_consecutive:
+            logger.info(
+                f"Gallery recheck: {state.global_track_id} candidate "
+                f"{match_result.person_name} (sim={match_result.score:.2f}), "
+                f"{state.gallery_consecutive_matches}/{min_consecutive} consecutive — waiting"
+            )
             return False
 
         state.confirm_identity(person.id, match_result.score, "reid_gallery")

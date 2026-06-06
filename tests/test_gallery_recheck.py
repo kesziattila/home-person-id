@@ -20,8 +20,12 @@ from src.recognition.identity_linker import IdentityLinker, TrackIdentityState
 
 def _make_identity_linker(
     gallery_recheck_interval: float = 0.0,
+    min_consecutive_matches: int = 1,
 ) -> tuple[IdentityLinker, MagicMock, MagicMock]:
     """Create an IdentityLinker with mocked dependencies.
+
+    min_consecutive_matches defaults to 1 here so single-recheck tests confirm
+    immediately; consecutive-match behavior is tested in test_duplicate_person_guard.py.
 
     Returns:
         (linker, mock_repository, mock_gallery_manager)
@@ -29,6 +33,7 @@ def _make_identity_linker(
     reid_config = ReIDConfig(
         enabled=True,
         gallery_recheck_interval=gallery_recheck_interval,
+        min_consecutive_matches=min_consecutive_matches,
     )
     face_config = FaceRecognitionConfig(enabled=False)
     repo = MagicMock()

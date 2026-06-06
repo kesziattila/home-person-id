@@ -439,6 +439,11 @@ class GlobalTrackManager:
                         state.confirm_identity(
                             person.id, gallery_match.similarity, "reid_gallery"
                         )
+                        # Make the new identity immediately visible to the
+                        # same-camera duplicate-person guard (process_track
+                        # hasn't stamped the camera yet)
+                        state.last_camera_id = camera_id
+                        state.last_seen_time = time.time()
                         # Update database and in-memory track
                         self.repository.update_track(
                             global_track_id, person_id=person.id
@@ -827,6 +832,18 @@ class GlobalTrackManager:
             )
 
         if not match_result.matched:
+            return None
+
+        # Same-camera duplicate-person guard: a new track cannot be a person who
+        # is already actively tracked on this same camera.
+        if self.identity_linker.is_person_active_on_camera(
+            camera_id, person_name=match_result.person_name
+        ):
+            logger.info(
+                f"Gallery match rejected for new track on {camera_id}: "
+                f"{match_result.person_name} (sim={match_result.score:.2f}) is already "
+                f"active on this camera (duplicate-person guard)"
+            )
             return None
 
         return CrossCameraMatch(
