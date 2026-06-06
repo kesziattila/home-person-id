@@ -58,7 +58,7 @@ class VLMClient:
         images: Optional[list[np.ndarray]] = None,
         max_tokens: Optional[int] = None,
         image_max_size: Optional[int] = None,
-        response_format: Optional[dict] = None,
+        json_schema: Optional[dict] = None,
     ) -> Optional[str]:
         """Call the VLM with text prompt and optional images.
 
@@ -67,7 +67,8 @@ class VLMClient:
             images: Optional list of numpy BGR images to include
             max_tokens: Override config max_tokens for this call
             image_max_size: Override config max_image_size for encoding images
-            response_format: Optional response format dict (e.g. {"type": "json_schema", ...})
+            json_schema: Optional JSON schema dict; generation is grammar-constrained
+                to match it (see call_parts for why not OpenAI response_format)
 
         Returns:
             Model response text, or None on failure
@@ -88,27 +89,40 @@ class VLMClient:
 
         try:
             client = self._get_client()
-            kwargs = {}
-            if response_format is not None:
-                kwargs["response_format"] = response_format
             response = client.chat.completions.create(
                 model=self._config.model,
                 messages=[{"role": "user", "content": content}],
                 max_tokens=max_tokens if max_tokens is not None else self._config.max_tokens,
                 timeout=self._config.timeout_sec,
-                **kwargs,
+                **self._json_schema_kwargs(json_schema),
             )
             return response.choices[0].message.content
         except Exception as e:
             logger.warning(f"VLM call failed: {e}")
             return None
 
+    @staticmethod
+    def _json_schema_kwargs(json_schema: Optional[dict]) -> dict:
+        """Build kwargs that grammar-constrain generation to a JSON schema.
+
+        Uses llama.cpp's top-level `json_schema` body parameter (sent via
+        extra_body), NOT the OpenAI `response_format` parameter: llama.cpp
+        (verified on b8233) silently skips response_format-based constraints
+        when the request contains images — the model then emits ```json fences
+        and unconstrained keys. The top-level json_schema param is converted to
+        a GBNF grammar and enforced during sampling even for multimodal
+        requests, so the response is always valid JSON matching the schema.
+        """
+        if json_schema is None:
+            return {}
+        return {"extra_body": {"json_schema": json_schema}}
+
     def call_parts(
         self,
         parts: list,
         max_tokens: Optional[int] = None,
         image_max_size: Optional[int] = None,
-        response_format: Optional[dict] = None,
+        json_schema: Optional[dict] = None,
     ) -> Optional[str]:
         """Call the VLM with interleaved text and image parts.
 
@@ -118,7 +132,8 @@ class VLMClient:
                    image with its corresponding camera name.
             max_tokens: Override config max_tokens for this call
             image_max_size: Override config max_image_size for encoding images
-            response_format: Optional response format dict (e.g. {"type": "json_schema", ...})
+            json_schema: Optional JSON schema dict; generation is grammar-constrained
+                to match it (see _json_schema_kwargs)
 
         Returns:
             Model response text, or None on failure
@@ -133,15 +148,12 @@ class VLMClient:
 
         try:
             client = self._get_client()
-            kwargs = {}
-            if response_format is not None:
-                kwargs["response_format"] = response_format
             response = client.chat.completions.create(
                 model=self._config.model,
                 messages=[{"role": "user", "content": content}],
                 max_tokens=max_tokens if max_tokens is not None else self._config.max_tokens,
                 timeout=self._config.timeout_sec,
-                **kwargs,
+                **self._json_schema_kwargs(json_schema),
             )
             return response.choices[0].message.content
         except Exception as e:

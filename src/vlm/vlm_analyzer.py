@@ -33,7 +33,30 @@ _PERSON_PROMPT_MULTI = (
 
 _VALID_ACTIVITIES = {"sitting", "standing", "walking", "at_door", "lying_down", "other"}
 
-_OVERVIEW_RESPONSE_FORMAT = {"type": "json_object"}
+
+def _build_overview_schema(camera_ids: list[str]) -> dict:
+    """Build the JSON schema for the house overview response.
+
+    Each camera id becomes a required key of "scenes", so the model cannot
+    invent or drop cameras. The schema is grammar-enforced by the VLM server
+    during sampling (see VLMClient._json_schema_kwargs), guaranteeing valid
+    raw JSON — no markdown fences, no missing keys.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "scenes": {
+                "type": "object",
+                "properties": {cam_id: {"type": "string"} for cam_id in camera_ids},
+                "required": list(camera_ids),
+                "additionalProperties": False,
+            },
+        },
+        "required": ["summary", "scenes"],
+        "additionalProperties": False,
+    }
+
 _VALID_GENDERS = {"male", "female", "unknown"}
 _VALID_AGE_GROUPS = {"child", "teen", "adult", "elderly", "unknown"}
 
@@ -155,19 +178,20 @@ class VLMAnalyzer:
                 parts,
                 max_tokens=self._config.overview_max_tokens,
                 image_max_size=image_max_size,
-                response_format=_OVERVIEW_RESPONSE_FORMAT,
+                json_schema=_build_overview_schema(ordered_ids),
             )
 
         if not raw:
             return None
 
-        # Parse JSON response — schema enforcement guarantees correct structure
+        # Grammar enforcement guarantees valid JSON; parse can still fail if
+        # generation was truncated by overview_max_tokens mid-document.
         try:
             data = json.loads(raw)
             summary = str(data.get("summary", "")).strip()
             camera_scenes = {k: str(v).strip() for k, v in data.get("scenes", {}).items() if v}
         except (ValueError, json.JSONDecodeError) as e:
-            logger.warning(f"VLM overview parse error: {e} | raw={raw!r}")
+            logger.warning(f"VLM overview parse error (truncated? raise overview_max_tokens): {e} | raw={raw!r}")
             return None
 
         if not summary:
