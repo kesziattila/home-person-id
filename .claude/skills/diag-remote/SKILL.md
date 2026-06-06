@@ -1,6 +1,6 @@
 ---
 name: diag-remote
-description: Diagnose identification-quality issues (misidentifications, missed matches, threshold tuning) on the LIVE Jetson system by pulling its DB/logs/snapshots over SSH, then reproduce locally and propose fixes. Use when the user reports wrong/missing person identifications on the live system, asks "why was X identified as Y", or wants thresholds tuned from live data.
+description: Triage identification quality on the LIVE Jetson (pull DB/logs/snapshots over SSH, reproduce locally, fix). Use for misidentifications, missed matches, "why was X identified as Y", or threshold tuning from live data.
 ---
 
 # Remote Triage Loop (live Jetson)

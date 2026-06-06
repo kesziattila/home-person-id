@@ -1,280 +1,88 @@
-# Claude Code Rules for Home Person ID
+# Claude Code Rules — Home Person ID
 
-## Meta Rules
+- Update this file when code changes introduce new patterns/conventions
+- Update README/docstrings on conceptual changes
+- Keep rules terse and actionable
 
-- **Update this file** when any code modification introduces new patterns, conventions, or learnings
-- **Update relevant documentation** (README.md, docstrings) when conceptual changes occur
-- **Keep rules actionable** - each rule should be something that can be verified or applied
-
----
+## Environment
+- Always: `source venv/bin/activate && PYTHONPATH=. python <script.py>`
+- Tests: `PYTHONPATH=. python -m pytest tests/`
 
 ## Code Organization
-
-### Environment & Execution
-- **Always use virtual environment**: When running any Python command (including tests, scripts, or the main application), activate the venv first: `source venv/bin/activate`
-- **Set PYTHONPATH**: Ensure the project root is in your python path: `PYTHONPATH=. python <script.py>`
-- **Combined command**: `source venv/bin/activate && PYTHONPATH=. python <script.py>`
-
-### Single Source of Truth
-- Avoid duplicate implementations of the same logic across files
-- When similar classes exist (e.g., `IdentificationManager` in preview vs production), consolidate into one class that works for both use cases
-- Use parameters or modes to handle different contexts (e.g., `face_gallery` param for preview, `repository` param for production)
-
-### Class Composition Pattern
-- Prefer composition over inheritance for extending functionality
-- Core logic goes in base class (e.g., `IdentificationManager`)
-- Production-specific features go in wrapper class (e.g., `IdentityLinker` wraps `IdentificationManager`)
-- Wrapper classes should delegate to core class, not duplicate logic
-
-### Type Safety & Data Structures
-- **Use dataclasses for method arguments and return values**: Avoid using raw tuples for complex data structures. Dataclasses provide better readability, type safety, and prevent unpacking errors.
-- **Standardize return types**: Use dedicated result dataclasses (e.g., `IdentificationResult`, `CrossCameraMatch`) to return multiple values from a method.
-- **Don't use `Optional` defaults for required dependencies**: Constructor parameters that are needed for correct operation (e.g., `repository`, `reid_extractor`) must NOT default to `None`. Making them required ensures missing arguments are caught immediately at the call site, not silently ignored at runtime. Use `Optional` only when the parameter is truly optional (i.e., the class works correctly without it).
-
-### Centralize Validation Logic
-- Put validation checks in one place, typically at the point where data enters the system
-- Example: Grayscale detection and multi-face checks belong in `ReIDGalleryManager.update_track_embedding()`, not scattered across callers
-- Callers should not need to know about validation rules
-
----
+- Single source of truth — no duplicate implementations; use params/modes for different contexts (e.g. `face_gallery` param for preview vs `repository` for production)
+- Composition over inheritance: core logic in base class (`IdentificationManager`), production features in a wrapper (`IdentityLinker`) that delegates, never duplicates
+- Dataclasses (not tuples) for complex method args/returns (e.g. `IdentificationResult`, `CrossCameraMatch`)
+- Required constructor deps (`repository`, `reid_extractor`, …) must NOT default to `None`; use `Optional` only when the class truly works without it
+- Centralize validation where data enters the system (e.g. grayscale/multi-face checks live in `ReIDGalleryManager.update_track_embedding()`), not in callers
 
 ## Performance & Memory
+- Never temporarily mutate shared config and restore it (not thread-safe); pass params instead — e.g. `detect_faces(crop, min_face_size=20)`
+- Keep distinct thresholds as distinct config options (`min_face_size` vs `multi_face_min_size`)
+- Lazy-load ML models: `@property` returning a private backing field, created on first access if enabled
+- Large temp data (crops, embeddings) goes to disk at configurable paths; lazy-load; clean up when done
+- Run expensive checks only when storing data, not per frame; cache stable results (TTL)
+- Wrap CPU/GPU-intensive code with `profiler.measure("ClassName.method_name")` (`from src.utils.profiler import profiler`) so it shows in the Performance Report
+- Note expected timing in the docstring (e.g. "~10ms for 400x400 image")
 
-### Avoid Mutating Shared State
-- Don't temporarily modify config objects and restore them (not thread-safe, error-prone)
-- Instead, pass parameters to methods that need different behavior
-- Example: `detect_faces(crop, min_face_size=20)` instead of modifying `config.min_face_size`
-- Keep different thresholds as separate config options (e.g., `min_face_size` vs `multi_face_min_size`)
+## Re-ID Rules
+- Skip grayscale/IR crops: HSV `mean_saturation < 15.0`
+- Skip multi-person crops: `len(face_result.faces) > 1`, detected with `config.multi_face_min_size` (default 20px, lower than recognition's 80px), passed as a param to `detect_faces()`
+- Skip low visibility (`min_visibility`)
+- Extract Re-ID only when `num_persons_in_frame == 1`
+- Gallery: store per-embedding source crops (each embedding may come from a different frame); cap gallery size per person
+- Save match-debug snapshots (current crop, gallery crop, similarity) to `data/snapshots/` with timestamp + person name
 
-### Lazy Loading for ML Models
-- Initialize ML models (face recognizer, Re-ID extractor) only when first accessed
-- Use `@property` with private backing field pattern:
-  ```python
-  @property
-  def face_recognizer(self) -> Optional[FaceRecognizer]:
-      if self._face_recognizer is None and self.face_config.enabled:
-          self._face_recognizer = FaceRecognizer(self.face_config)
-      return self._face_recognizer
-  ```
-
-### Disk-Based Storage for Large Data
-- Store large temporary data (image crops, embeddings) on disk rather than memory
-- Use configurable cache paths (e.g., `crop_cache_path` in config)
-- Load data only when needed (lazy loading)
-- Clean up temporary files when no longer needed
-
-### Skip Expensive Operations When Possible
-- Run expensive checks (like multi-face detection) only when storing data, not on every frame
-- Cache results that don't change frequently (e.g., face gallery with TTL)
-
-### Performance Measurement for CPU/GPU Intensive Code
-When adding CPU or GPU intensive code (FFT, ML inference, image processing, matrix operations):
-- **Always wrap with `profiler.measure()`** to track in Performance Report
-- **Document expected performance** in docstring (e.g., "Performance: ~8-10ms per call")
-- Import: `from src.utils.profiler import profiler`
-- Example pattern:
-  ```python
-  from src.utils.profiler import profiler
-
-  def expensive_operation(self, data):
-      """Process data. Performance: ~10ms for 400x400 image."""
-      with profiler.measure("MyModule.expensive_op"):
-          # ... expensive computation ...
-          result = compute(data)
-      return result
-  ```
-- The profiler aggregates stats and prints them periodically in `--- Performance Report ---`
-- Use descriptive names: `"ClassName.method_name"` or `"Feature.operation"`
-
----
-
-## Re-ID Specific Rules
-
-### Data Quality Filters
-- **Skip grayscale/IR images**: Use HSV saturation check (`mean_saturation < 15.0`)
-- **Skip multi-person crops**: Check `len(face_result.faces) > 1` before storing Re-ID embeddings
-  - Use `config.multi_face_min_size` (default 20px) for detection, lower than `min_face_size` (80px)
-  - Pass threshold as parameter: `detect_faces(crop, min_face_size=config.multi_face_min_size)`
-  - Gallery crops often have small faces that would be filtered by recognition threshold
-- **Skip low visibility**: Check quality score against `min_visibility` threshold
-- **Single person in frame**: Only extract Re-ID when `num_persons_in_frame == 1`
-
-### Gallery Management
-- Store embeddings with their source crops for debugging
-- Use per-embedding crops, not per-person crops (each embedding may come from different frame)
-- Maintain maximum gallery size per person to prevent unbounded growth
-
-### Debug Images
-- Save match snapshots showing: current crop, gallery crop, similarity score
-- Store in `data/snapshots/` with timestamp and person name in filename
-- Helps understand why matches succeed or fail
-
----
-
-## OpenCV / UI Rules
-
-### Preview Windows
-- Use `cv2.WINDOW_NORMAL` for resizable windows that maintain full image resolution
-- Set initial window size with `cv2.resizeWindow()`, not by resizing the image
-- This allows zooming in without losing quality
-
-### Drawing Conventions
-- Use consistent colors for different states (identified, unidentified, etc.)
-- Draw bounding boxes and labels at appropriate scale for readability
-- Show confidence scores to help with threshold tuning
-
----
+## OpenCV / UI
+- `cv2.WINDOW_NORMAL` + `cv2.resizeWindow()` for previews — never downscale the image itself
+- Consistent colors per state; readable boxes/labels; show confidence scores for threshold tuning
 
 ## Configuration
+- Dataclass config sections with sensible defaults; support both file-based and programmatic config
+- Every new config param also goes in `config/config.sample.yaml` with a comment
+- New config dataclasses need `load_config()` parser updates too
+- New dependency → both `requirements.txt` and `requirements-jetson.txt` (unless it needs special Jetson handling)
+- Jetson-relevant changes → update `docs/JETSON.md`
+- All storage paths configurable, auto-created, relative to project root where possible
 
-### Config Structure
-- Use dataclasses for configuration sections
-- Provide sensible defaults
-- Document all config options in sample config file
-- Support both file-based config and programmatic config
-- **When adding a new config parameter**: Always add it to `config/config.sample.yaml` with a descriptive comment
-- **When adding a new dependency**: Add to both `requirements.txt` and `requirements-jetson.txt` (unless it needs special Jetson handling)
-- **Jetson-specific changes**: Update `docs/JETSON.md` when changes affect Jetson deployment
-
-### Paths
-- Use configurable paths for all file storage (cache, snapshots, models)
-- Create directories automatically if they don't exist
-- Use relative paths from project root where possible
-
----
-
-## Git Conventions
-
-### Commit Messages
-- Use imperative mood ("Add feature" not "Added feature")
-- First line: brief summary (50 chars or less)
-- Body: explain what and why, not how
+## Git
+- Imperative mood, ≤50-char summary, body explains what/why
 - Include `Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>`
+- Never commit credentials, large binaries, caches, or gitignored files (`config/config.yaml`, DB files)
 
-### What to Commit
-- Source code and configuration
-- Sample/example configs (with placeholder credentials)
-- Documentation
-- **Do NOT commit/push gitignored files** (e.g., `config/config.yaml`, database files, caches)
+## Architecture
+- `IdentificationManager` — core face recognition + Re-ID matching + identity state; works in preview (no DB) or production (DB) mode
+- `IdentityLinker` — production wrapper: track lifecycle, consecutive-match stability, DB persistence, identity transfer
+- `ReIDGalleryManager` — per-person Re-ID embeddings, gallery matching, centralized validation, debug images
+- Flow: frame → detection → track → face recognition → Re-ID gallery update (if face-identified) → gallery match for new tracks → zone identity propagation (shared-zone tracks) → `_resolve_person_location()`
+- All person zone updates go through `_resolve_person_location()` in `GlobalTrackManager` — the ONLY caller of `_update_person_zone()` (DB write, event, MQTT)
+- Resolution order: active track with zone (most recently seen, `is_estimated=False`) → lost track's estimated zone (`is_estimated=True`) → no update
+- Grace period: `TrackState.GRACE` holds a lost track's zone as non-estimated for `reid.estimated_zone_grace_period` seconds, then transitions to `LOST` (emitting the estimated update)
 
-### What NOT to Commit
-- Actual credentials or API keys
-- Large binary files (models, videos)
-- Cache directories
-- User-specific data
-
----
-
-## Architecture Notes
-
-### Current Class Hierarchy
-
-```
-IdentificationManager (core logic)
-├── Face recognition
-├── Re-ID extraction and matching
-├── Identity state management
-└── Works in preview mode (no DB) or production mode (with DB)
-
-IdentityLinker (production wrapper)
-├── Uses IdentificationManager internally
-├── Track lifecycle (register/unregister)
-├── Consecutive match stability tracking
-├── Database persistence
-└── Identity transfer for camera handovers
-
-ReIDGalleryManager
-├── Manages Re-ID embeddings for known persons
-├── Handles matching new tracks against gallery
-├── Centralized validation (grayscale, multi-face)
-└── Debug image saving
-```
-
-### Data Flow
-1. Camera frame → Person detection → Track assignment
-2. Track → Face recognition → Identity (if face matched)
-3. Track → Re-ID embedding → Gallery update (if face-identified)
-4. New track → Re-ID match → Identity transfer (cross-camera)
-5. Active tracks in shared zone → Zone identity propagation (face-identified → unidentified)
-6. Any identity/zone event → `_resolve_person_location()` → Person zone update
-
-### Person Location Resolution
-All person zone updates go through `_resolve_person_location()` in `GlobalTrackManager`.
-This single method evaluates ALL tracks for a person to determine the best location:
-1. **Active track with zone** → pick the most recently seen one (`is_estimated=False`)
-2. **No active track, lost track provided** → use lost track's estimated zone (`is_estimated=True`)
-3. **Nothing found** → no update
-
-`_update_person_zone()` handles the DB write, event creation, and MQTT — called only from the resolver.
-
----
-
----
-
-## Testing Guidelines
-
-### New Features & Modifications
-- **Write unit tests**: When writing a test for a new or modified feature, write a correct unit test and keep it (do not delete).
-- **Automated coverage**: Prefer automated tests over manual verification for core logic and algorithms.
-
-### Bug Reports with Sample Images
-When user reports a bug with a sample image:
-1. **Create a test file** to reproduce the issue (don't use inline Python in Bash)
-2. **Use live code** - import actual classes from src/ to test real behavior
-3. **Save debug artifacts** to `data/debug/` for manual inspection
-4. **Test multiple configurations** (e.g., different threshold values) to diagnose root cause
-5. **Document findings** in test docstrings for future reference
-
-### Test File Location
-- Tests go in `tests/` directory
-- Use pytest fixtures for shared setup
-- Name tests descriptively: `test_<what>_<expected_behavior>`
-
-### Pre-commit Verification
-**Before committing any code changes**, verify the code is valid:
-1. **Run ALL tests**: `PYTHONPATH=. python3 -m pytest tests/` (or run specific test files)
-2. **Run syntax check**: `python -m py_compile <modified_file.py>`
-3. **Or use IDE diagnostics**: Check for errors/warnings in the IDE
-4. **For CLI changes**: Test the modified command (e.g., `python -m src.cli <command> --help`)
-5. **For import changes**: Verify imports work: `python -c "from src.module import Class"`
-
-This catches basic errors like:
-- Missing imports
-- Syntax errors
-- Typos in class/function names
-
----
+## Testing
+- Write and KEEP unit tests for new/modified features; prefer automated tests over manual checks
+- Bug report with sample image: create a test file (no inline Python via Bash), import real classes from `src/`, save artifacts to `data/debug/`, sweep configs/thresholds to find root cause, document findings in the test docstring
+- Tests live in `tests/`, use pytest fixtures, named `test_<what>_<expected_behavior>`
+- Before committing: run all tests, `python -m py_compile` changed files (or IDE diagnostics), test changed CLI commands, verify changed imports
 
 ## Live Jetson Remote Access
+System runs live on a Jetson; all remote interaction goes through `scripts/remote/` (config: copy `remote.env.example` → `remote.env`, gitignored, set `JETSON_HOST`/`REMOTE_PROJECT_DIR`). The `/diag-remote` skill encodes the full triage workflow.
 
-The system runs live on a Jetson; `scripts/remote/` provides SSH-based tooling for it.
-Configuration: copy `scripts/remote/remote.env.example` to `scripts/remote/remote.env`
-(gitignored — never commit it) and set `JETSON_HOST` / `REMOTE_PROJECT_DIR`.
-The `/diag-remote` skill encodes the full triage workflow — use it for live quality issues.
-
-### Script catalog
-- `rstatus.sh` — health check: process up, DB/WAL/log sizes, disk, capabilities
-- `deploy.sh [--restart] [--dry-run]` — rsync local code to the Jetson (never touches remote `data/`, `venv/`, `config/config.yaml`, models)
-- `restart.sh [start|stop|restart|status]` — control the server; logging goes to rotated `data/app.log`, raw stdout (perf reports) to `data/stdout.log` (console handler suppressed via `HPID_NO_CONSOLE_LOG=1`), pid in `data/app.pid`
-- `rquery.sh '<SQL>'` / `rquery_file.sh <name> [key=value]` — read-only SQL against the live DB (canned queries in `scripts/remote/queries/`, see its `index.md`)
-- `sync_db.sh` — pull a consistent DB copy (`.backup`-based) to `local/remote/database.db`
-- `fetch_snapshots.sh --event <ids> | --query <name> | --path <p>` — pull snapshot JPEGs to `local/remote/snapshots/` for visual inspection
-- `fetch_config.sh` — pull the live config to `local/remote/config.jetson-live.yaml`
-- `rlog.sh tail|grep|around|errors|perf|stdout` — bounded log access (never dump the whole log into context); `perf`/`stdout` read `data/stdout.log`
+### Scripts
+- `rstatus.sh` — health check
+- `deploy.sh [--restart] [--dry-run]` — rsync code (never touches remote `data/`, `venv/`, `config/config.yaml`, models)
+- `restart.sh start|stop|restart|status` — rotated `data/app.log`; perf stdout in `data/stdout.log` (console suppressed via `HPID_NO_CONSOLE_LOG=1`); pid `data/app.pid`
+- `rquery.sh '<SQL>'` / `rquery_file.sh <name> [k=v]` — read-only SQL (canned queries: `scripts/remote/queries/index.md`)
+- `sync_db.sh` — consistent DB copy → `local/remote/database.db`
+- `fetch_snapshots.sh --event|--query|--path` → `local/remote/snapshots/`
+- `fetch_config.sh` → `local/remote/config.jetson-live.yaml`
+- `rlog.sh tail|grep|around|errors|perf|stdout` — always bounded; never dump whole logs into context
 
 ### Conventions
-- DB timestamps are **UTC**; log timestamps are Jetson **local time**
-- `events.snapshot_path` is project-relative (`data/snapshots/...`) — prefix `REMOTE_PROJECT_DIR` to fetch
-- Always open the remote DB read-only (`-readonly` + `mode=ro`); never copy db/-wal/-shm files individually (use `sync_db.sh`)
-- Prefer canned `.sql` files over inline SQL through ssh (quoting)
-- **Reproduce locally before fixing**: pull the live config + involved snapshots, write a test in `tests/` with the same thresholds/models as the Jetson (TensorRT vs PyTorch backends may differ by ~0.01–0.03 in scores), then fix, test, `deploy.sh --restart`
-
----
+- DB timestamps are UTC; log timestamps are Jetson local time
+- `events.snapshot_path` is project-relative (prefix `REMOTE_PROJECT_DIR`)
+- Open the remote DB read-only; never copy db/-wal/-shm files individually (use `sync_db.sh`)
+- Prefer canned `.sql` files over inline SQL through ssh
+- **Reproduce locally before fixing**: pull live config + involved snapshots, write a test in `tests/` with the live thresholds/models (TensorRT vs PyTorch backends may differ ~0.01–0.03 in scores), then fix, test, `deploy.sh --restart`
 
 ## Pending Improvements
-
-- [x] Polygon-based room zones for camera handover
 - [ ] Interactive zone drawing UI
-- [x] Zone-based handover logic instead of camera-pair transitions
-- [x] Cross-camera zone identity propagation (simultaneous tracks in shared zone)
-- [x] Grace period before marking person zone as estimated — `TrackState.GRACE` holds the zone as non-estimated for `reid.estimated_zone_grace_period` seconds; transitions to `LOST` (emitting estimated update) only after expiry
