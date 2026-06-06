@@ -1001,11 +1001,18 @@ class IdentityLinker:
         ]
 
     def cleanup_old_tracks(self, max_age_seconds: float = 3600):
-        """Remove old track states to prevent memory growth."""
+        """Remove track states not seen for max_age_seconds (memory bound).
+
+        Eviction is keyed on last_seen_time (idle time), NOT first_seen (track
+        age): an actively-processed track must keep its identity indefinitely.
+        Evicting by age wiped face-confirmed identities from long-lived tracks
+        mid-tracking, letting zone propagation stamp a wrong person onto the
+        blank re-registered state (live misID incident, 2026-06-06).
+        """
         current_time = time.time()
         to_remove = [
             track_id for track_id, state in self._track_states.items()
-            if current_time - state.first_seen > max_age_seconds
+            if current_time - state.last_seen_time > max_age_seconds
         ]
 
         for track_id in to_remove:
