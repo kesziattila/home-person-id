@@ -364,11 +364,18 @@ unidentified_faces:
   min_quality_score: 0.3
 
   # Minimum sharpness score (0-1) to save a face
-  # min(Laplacian focus score, gradient-anisotropy motion score) at a fixed
-  # 112x112 input — comparable across face sizes, catches focus AND motion blur.
-  # Calibrated on 1080p home-camera crops: usable crops score 0.87+,
-  # motion-blurred ~0.36, so the 0.4 default gate is meaningful
+  # min(Laplacian focus, gradient-anisotropy motion, fine-grain detail) at a
+  # fixed 112x112 input — comparable across face sizes; catches focus blur,
+  # motion blur AND low-light NR over-smoothing. Calibrated on 1080p
+  # home-camera crops: usable crops score 0.83+, motion-blurred ~0.36,
+  # NR-smeared evening crops <=0.23, so the 0.4 default gate is meaningful
   min_sharpness_score: 0.4
+
+  # Minimum frontalness score (0-1) to save a face — rejects profile and
+  # looking-down poses (weak embeddings, unsuitable for enrollment).
+  # Computed from 5-point landmarks; calibrated on live crops: frontal
+  # faces score 0.79+, profile and look-down poses <=0.23. 0 = disabled
+  min_frontalness: 0.5
 
   # Minimum face size (pixels) for bbox width
   min_face_size: 60

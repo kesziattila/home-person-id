@@ -168,3 +168,102 @@ def test_real_live_crops_pass_default_sharpness_gate(path, min_expected):
     manager, _ = _make_manager()
     score = manager._compute_sharpness(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
     assert score >= min_expected
+
+
+@pytest.mark.parametrize("path", [
+    # Evening captures 2026-06-06 19:13 local: camera low-light temporal NR
+    # smeared away facial detail; the old metric scored these 0.48-1.0
+    "local/remote/snapshots/data/unidentified_faces/ground_floor/20260606_191410_25f69e7e.jpg",
+    "local/remote/snapshots/data/unidentified_faces/living_room/20260606_191355_bd921d2c.jpg",
+    "local/remote/snapshots/data/unidentified_faces/hallway/20260606_191352_ad2ea10d.jpg",
+    "local/remote/snapshots/data/unidentified_faces/entrance/20260606_191345_c70cebe9.jpg",
+])
+def test_nr_smeared_live_crops_fail_default_sharpness_gate(path):
+    """Calibration regression: NR-smeared low-light crops must FAIL the 0.4 gate.
+
+    These are the user-flagged 'noisy/blurry' captures: the fine-grain detail
+    component rejects them (they measure 0.64-1.00 vs 1.55+ for usable crops).
+    Skipped when the fetched live samples are not present on this machine.
+    """
+    img = cv2.imread(path)
+    if img is None:
+        pytest.skip(f"live sample not available: {path}")
+    manager, _ = _make_manager()
+    score = manager._compute_sharpness(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY))
+    assert score < 0.4
+
+
+def _landmarks(yaw_offset: float, ratio: float) -> np.ndarray:
+    """Synthesize 5-point landmarks with the given pose geometry.
+
+    Eyes at (-0.5, 0) and (0.5, 0) so eye_dist == 1; mouth midline at
+    y == ratio; nose offset along the eye axis from the face center.
+    """
+    le, re = np.array([-0.5, 0.0]), np.array([0.5, 0.0])
+    ml, mr = np.array([-0.25, ratio]), np.array([0.25, ratio])
+    nose = np.array([yaw_offset, ratio / 2.0])
+    return np.stack([le, re, nose, ml, mr])
+
+
+class TestFrontalness:
+    """Geometry values below are measurements from labeled live crops."""
+
+    @pytest.mark.parametrize("yaw,ratio", [
+        (0.316, 1.057),  # frontal gallery crop
+        (0.007, 1.028),  # frontal live crop
+        (0.442, 1.360),  # near-frontal live crop
+    ])
+    def test_frontal_passes_default_gate(self, yaw, ratio):
+        score = UnidentifiedFaceManager._compute_frontalness(_landmarks(yaw, ratio))
+        assert score >= 0.5
+
+    @pytest.mark.parametrize("yaw,ratio", [
+        (1.758, 6.468),  # full profile
+        (0.855, 2.088),  # 3/4 profile
+        (0.105, 0.656),  # looking straight down
+    ])
+    def test_profile_and_lookdown_fail_default_gate(self, yaw, ratio):
+        score = UnidentifiedFaceManager._compute_frontalness(_landmarks(yaw, ratio))
+        assert score < 0.5
+
+    def test_degenerate_landmarks_score_zero(self):
+        collapsed = np.zeros((5, 2))
+        assert UnidentifiedFaceManager._compute_frontalness(collapsed) == 0.0
+
+    def test_profile_task_is_not_saved(self, tmp_path):
+        manager, repo = _make_manager(
+            images_path=str(tmp_path), min_quality_score=0.0,
+            min_sharpness_score=0.0, min_face_size=10, min_frontalness=0.5,
+        )
+        task = UnidentifiedFaceTask(
+            camera_id="cam_a",
+            track_id="global_1",
+            face_crop=_textured_crop(160),
+            embedding=np.random.default_rng(3).random(512).astype(np.float32),
+            best_match_person_id=None,
+            best_match_score=None,
+            face_bbox=(0, 0, 160, 160),
+            landmarks=_landmarks(1.758, 6.468),  # full profile
+        )
+        manager._process_task(task)
+        repo.add_unidentified_face.assert_not_called()
+
+    def test_task_without_landmarks_is_not_gated(self, tmp_path):
+        manager, repo = _make_manager(
+            images_path=str(tmp_path), min_quality_score=0.0,
+            min_sharpness_score=0.0, min_face_size=10, min_frontalness=0.5,
+        )
+        face = MagicMock()
+        face.id = 1
+        repo.add_unidentified_face.return_value = face
+        task = UnidentifiedFaceTask(
+            camera_id="cam_a",
+            track_id="global_1",
+            face_crop=_textured_crop(160),
+            embedding=np.random.default_rng(3).random(512).astype(np.float32),
+            best_match_person_id=None,
+            best_match_score=None,
+            face_bbox=(0, 0, 160, 160),
+        )
+        manager._process_task(task)
+        repo.add_unidentified_face.assert_called_once()

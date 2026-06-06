@@ -507,6 +507,7 @@ class IdentityLinker:
                         best_match_score=best_score if best_score > 0 else None,
                         best_match_face_id=best_face_id if best_match_id else None,
                         det_confidence=best_face.confidence,
+                        landmarks=best_face.landmarks,
                     )
 
             return IdentificationResult(

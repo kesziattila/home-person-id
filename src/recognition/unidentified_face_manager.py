@@ -35,6 +35,9 @@ class UnidentifiedFaceTask:
     best_match_face_id: Optional[int] = None
     # InsightFace detection confidence — best free proxy for face usability
     det_confidence: Optional[float] = None
+    # 5-point landmarks (left_eye, right_eye, nose, mouth_l, mouth_r) in any
+    # coordinate frame — frontalness uses only relative geometry
+    landmarks: Optional[np.ndarray] = None
 
 
 class UnidentifiedFaceManager:
@@ -116,6 +119,7 @@ class UnidentifiedFaceManager:
         best_match_score: Optional[float] = None,
         best_match_face_id: Optional[int] = None,
         det_confidence: Optional[float] = None,
+        landmarks: Optional[np.ndarray] = None,
     ) -> bool:
         """Submit an unidentified face for background processing.
 
@@ -131,6 +135,7 @@ class UnidentifiedFaceManager:
             best_match_score: Similarity score to best match
             best_match_face_id: ID of the best matching face embedding
             det_confidence: Face detection confidence (factored into quality)
+            landmarks: 5-point facial landmarks (used for the frontalness gate)
 
         Returns:
             True if submitted, False if queue is full
@@ -159,6 +164,7 @@ class UnidentifiedFaceManager:
             face_bbox=face_bbox,
             best_match_face_id=best_match_face_id,
             det_confidence=det_confidence,
+            landmarks=landmarks.copy() if landmarks is not None else None,
         )
 
         try:
@@ -219,6 +225,17 @@ class UnidentifiedFaceManager:
                     f"Unidentified face too small: {face_width}px < {self.config.min_face_size}px"
                 )
                 return
+
+            # Check frontalness (rejects profile and looking-down poses —
+            # they produce weak embeddings unsuitable for enrollment)
+            if task.landmarks is not None and self.config.min_frontalness > 0:
+                frontalness = self._compute_frontalness(task.landmarks)
+                if frontalness < self.config.min_frontalness:
+                    logger.debug(
+                        f"Unidentified face not frontal enough: "
+                        f"{frontalness:.2f} < {self.config.min_frontalness}"
+                    )
+                    return
 
             # 2. Burst suppression: one sitting episode can produce a dozen
             # near-duplicate crops within seconds, churning the review queue
@@ -302,11 +319,11 @@ class UnidentifiedFaceManager:
 
         Quality is based on:
         - Face size (larger is better)
-        - Sharpness (FFT-based at a fixed 112x112 input, catches focus and motion blur)
+        - Sharpness (min(focus, motion, detail) at a fixed 112x112 input)
         - Brightness (not too dark, not too bright)
         - Detection confidence (when provided — best free proxy for usability)
 
-        Performance: ~2-3ms per call (FFT on the fixed 112x112 input).
+        Performance: ~2-3ms per call (small convolutions on the fixed 112x112 input).
         Runs in background thread so doesn't block main processing.
 
         Args:
@@ -367,14 +384,19 @@ class UnidentifiedFaceManager:
     # measure sharpness at the scale where the embedding is actually computed.
     _SHARPNESS_INPUT_SIZE = 112
 
+    # Immerkaer noise-estimation kernel, reused as a fine-grain detail probe
+    _DETAIL_KERNEL = np.array(
+        [[1, -2, 1], [-2, 4, -2], [1, -2, 1]], dtype=np.float32
+    )
+
     def _compute_sharpness(self, gray: np.ndarray) -> float:
-        """Compute sharpness as min(focus score, motion score) at a fixed 112x112.
+        """Compute sharpness as min(focus, motion, detail) at a fixed 112x112.
 
         The previous FFT high-frequency-ratio metric measured sensor/JPEG noise
         as much as detail: on labeled live data it ranked a heavily
-        motion-blurred face ABOVE every visually usable crop. Replaced by two
-        complementary measures, both computed on a lightly denoised (3x3
-        gaussian) 112x112 grayscale so noise doesn't masquerade as detail:
+        motion-blurred face ABOVE every visually usable crop. Replaced by three
+        complementary measures on a fixed 112x112 grayscale (focus and motion
+        on a lightly denoised copy so noise doesn't masquerade as detail):
 
         - Focus: Laplacian variance — catches gaussian/defocus blur.
           Calibration (live 1080p home-camera crops, 2026-06-06): usable
@@ -384,12 +406,18 @@ class UnidentifiedFaceManager:
           strong edges keep the Laplacian high. Calibration: usable crops
           0.72-0.93, motion-blurred sample 0.62, heavy gaussian 0.56
           -> map 0.55->0, 0.75->1.
+        - Detail: fine-grain energy (Immerkaer noise-sigma estimator on the
+          raw, non-denoised input). Low-light camera temporal NR smears away
+          texture while leaving strong edges, so such crops pass the Laplacian
+          (which saturates at 60) yet look smeared/blurry. Calibration
+          (evening captures 2026-06-06 19:13 local): smeared crops 0.64-1.00
+          vs usable daylight crops 1.55-3.52 -> map 0.8->0, 1.7->1.
 
         With the default min_sharpness_score gate of 0.4: usable live crops
-        score 0.87-1.0, the real motion-blurred sample 0.36 (rejected),
-        gaussian-blurred copies <=0.03 (rejected).
+        score 0.83-1.0, the motion-blurred sample 0.36, NR-smeared evening
+        crops <=0.22, gaussian-blurred copies <=0.03 (all rejected).
 
-        Performance: ~1ms per call (fixed-size resize + Sobel/Laplacian).
+        Performance: ~1ms per call (fixed-size resize + small convolutions).
 
         Args:
             gray: Grayscale image
@@ -413,7 +441,63 @@ class UnidentifiedFaceManager:
         anisotropy = min(ex, ey) / max(ex, ey) if max(ex, ey) > 0 else 0.0
         motion_score = max(0.0, min(1.0, (anisotropy - 0.55) / 0.20))
 
-        return min(focus_score, motion_score)
+        # NR over-smoothing: fine-grain energy on the RAW input (0.8 -> 0, 1.7 -> 1)
+        conv = cv2.filter2D(gray.astype(np.float32), -1, self._DETAIL_KERNEL)
+        hf_energy = float(
+            np.sqrt(np.pi / 2.0) * np.sum(np.abs(conv)) / (6.0 * (size - 2) * (size - 2))
+        )
+        detail_score = max(0.0, min(1.0, (hf_energy - 0.8) / 0.9))
+
+        return min(focus_score, motion_score, detail_score)
+
+    @staticmethod
+    def _compute_frontalness(landmarks: np.ndarray) -> float:
+        """Score head pose from 5-point landmarks (1 = frontal, 0 = profile/down).
+
+        Profile and looking-down poses produce weak ArcFace embeddings that are
+        unsuitable for enrollment. Two scale/translation-invariant proxies
+        (calibrated on labeled live crops, 2026-06-06):
+
+        - Yaw: |nose offset along the eye axis from the face center| / eye_dist.
+          Frontal faces 0.01-0.44, profiles 0.79-3.01 -> 1.0 below 0.35, 0 at 0.8.
+        - Pose ratio: eye-to-mouth distance / inter-eye distance. Frontal
+          1.03-1.40; yaw collapses eye_dist (profiles 2.09-6.88), pitch-down
+          collapses face height (look-down sample 0.66)
+          -> 0 at 0.6, 1 at 0.85; 1 until 1.5, 0 at 2.2.
+
+        Args:
+            landmarks: 5x2 array (left_eye, right_eye, nose, mouth_l, mouth_r)
+
+        Returns:
+            Frontalness score 0-1 (frontal live crops >=0.79, profile and
+            look-down crops <=0.23)
+        """
+        if landmarks is None or landmarks.shape[0] < 5:
+            return 1.0  # No landmarks — don't gate
+
+        le, re, nose, ml, mr = np.asarray(landmarks, dtype=np.float64)[:5]
+        mid_eye = (le + re) / 2.0
+        mid_mouth = (ml + mr) / 2.0
+        eye_vec = re - le
+        eye_dist = float(np.linalg.norm(eye_vec))
+        face_height = float(np.linalg.norm(mid_mouth - mid_eye))
+        if eye_dist < 1e-6 or face_height < 1e-6:
+            return 0.0
+
+        # Yaw: nose offset along the eye axis from the face center
+        axis = eye_vec / eye_dist
+        center = (mid_eye + mid_mouth) / 2.0
+        yaw_offset = abs(float(np.dot(nose - center, axis))) / eye_dist
+        yaw_score = max(0.0, min(1.0, 1.0 - (yaw_offset - 0.35) / 0.45))
+
+        # Pose ratio: face height vs eye distance
+        ratio = face_height / eye_dist
+        if ratio < 1.0:
+            ratio_score = max(0.0, min(1.0, (ratio - 0.6) / 0.25))
+        else:
+            ratio_score = max(0.0, min(1.0, 1.0 - (ratio - 1.5) / 0.7))
+
+        return min(yaw_score, ratio_score)
 
     def _is_diverse(self, camera_id: str, embedding: np.ndarray) -> bool:
         """Check if the embedding is diverse enough from existing ones.
