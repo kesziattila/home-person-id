@@ -21,6 +21,34 @@ export default {
                 </div>
             </div>
 
+            <!-- Filter bar -->
+            <div class="mb-4 flex flex-wrap gap-3 items-end">
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400 uppercase font-semibold">Type</label>
+                    <select v-model="filters.event_type" @change="loadEvents"
+                            class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm min-w-[160px]">
+                        <option :value="null">All types</option>
+                        <option v-for="t in eventTypeOptions" :key="t" :value="t">{{ t }}</option>
+                    </select>
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400 uppercase font-semibold">Camera</label>
+                    <select v-model="filters.camera_id" @change="loadEvents"
+                            class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm min-w-[140px]">
+                        <option :value="null">All cameras</option>
+                        <option v-for="c in cameraOptions" :key="c" :value="c">{{ c }}</option>
+                    </select>
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class="text-xs text-gray-400 uppercase font-semibold">Person</label>
+                    <select v-model="filters.person_name" @change="loadEvents"
+                            class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm min-w-[160px]">
+                        <option :value="null">All persons</option>
+                        <option v-for="p in personOptions" :key="p" :value="p">{{ p }}</option>
+                    </select>
+                </div>
+            </div>
+
             <!-- Active filters bar -->
             <div v-if="hasActiveFilters" class="mb-4 flex flex-wrap items-center gap-2 bg-gray-800 rounded-lg px-4 py-3">
                 <span class="text-xs text-gray-400 uppercase font-semibold mr-1">Filters:</span>
@@ -36,10 +64,7 @@ export default {
                     Person: {{ filters.person_name }}
                     <button @click="clearFilter('person_name')" class="hover:text-white ml-1">&times;</button>
                 </span>
-                <span v-if="filters.track_id" class="inline-flex items-center gap-1 bg-blue-600/20 text-blue-400 text-xs px-2 py-1 rounded-full">
-                    Track: {{ filters.track_id }}
-                    <button @click="clearFilter('track_id')" class="hover:text-white ml-1">&times;</button>
-                </span>
+
                 <button @click="clearAllFilters" class="text-xs text-gray-500 hover:text-gray-300 ml-2 underline">Clear all</button>
             </div>
 
@@ -126,8 +151,15 @@ export default {
                 event_type: null,
                 camera_id: null,
                 person_name: null,
-                track_id: null,
             },
+            eventTypeOptions: [
+                'track_created', 'track_recovered', 'track_lost', 'track_archived',
+                'face_match', 'reid_match', 'id_upgraded', 'person_zone_change',
+                'cross_camera_propagation', 'unidentified_face_saved',
+                'reid_gallery_updated', 'vlm_activity', 'camera_scene', 'house_overview',
+            ],
+            cameraOptions: [],
+            personOptions: [],
         };
     },
     computed: {
@@ -135,15 +167,11 @@ export default {
             return Object.values(this.filters).some(v => v !== null);
         },
         filteredEvents() {
-            let result = this.events;
-            if (this.filters.person_name) {
-                result = result.filter(e => e.person_name === this.filters.person_name);
-            }
-            return result;
+            return this.events;
         }
     },
     async created() {
-        await this.loadEvents();
+        await Promise.all([this.loadEvents(), this.loadFilterOptions()]);
         if (this.autoRefresh) {
             this.refreshInterval = setInterval(this.loadEvents, 10000);
         }
@@ -229,7 +257,8 @@ export default {
             params.set('limit', String(this.pageSize));
             if (this.filters.event_type) params.set('event_type', this.filters.event_type);
             if (this.filters.camera_id) params.set('camera_id', this.filters.camera_id);
-            if (this.filters.track_id) params.set('track_id', this.filters.track_id);
+
+            if (this.filters.person_name) params.set('person_name', this.filters.person_name);
             return params;
         },
         setFilter(field, value) {
@@ -240,6 +269,20 @@ export default {
             }
             this.loadEvents();
         },
+        async loadFilterOptions() {
+            const [camRes, personRes] = await Promise.all([
+                fetch('/api/v1/cameras'),
+                fetch('/api/v1/persons?active_only=false'),
+            ]);
+            if (camRes.ok) {
+                const data = await camRes.json();
+                this.cameraOptions = data.cameras || [];
+            }
+            if (personRes.ok) {
+                const data = await personRes.json();
+                this.personOptions = data.map(p => p.name);
+            }
+        },
         clearFilter(field) {
             this.filters[field] = null;
             this.loadEvents();
@@ -248,7 +291,6 @@ export default {
             this.filters.event_type = null;
             this.filters.camera_id = null;
             this.filters.person_name = null;
-            this.filters.track_id = null;
             this.loadEvents();
         },
         showEventDetail(event) {

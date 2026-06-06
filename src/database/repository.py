@@ -392,6 +392,7 @@ class Repository:
         self,
         camera_id: Optional[str] = None,
         person_id: Optional[int] = None,
+        person_name: Optional[str] = None,
         event_type: Optional[str] = None,
         track_id: Optional[str] = None,
         since: Optional[datetime] = None,
@@ -404,6 +405,10 @@ class Repository:
 
             if camera_id:
                 query = query.filter(Event.camera_id == camera_id)
+            if person_name and not person_id:
+                from src.database.models import Person
+                person = session.query(Person).filter(Person.name == person_name).first()
+                person_id = person.id if person else -1
             if person_id:
                 query = query.filter(Event.person_id == person_id)
             if event_type:

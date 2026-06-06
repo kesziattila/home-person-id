@@ -93,6 +93,7 @@ def create_events_router(repository: Repository) -> APIRouter:
     async def get_events(
         camera_id: Optional[str] = Query(None, description="Filter by camera ID"),
         person_id: Optional[int] = Query(None, description="Filter by person ID"),
+        person_name: Optional[str] = Query(None, description="Filter by person name"),
         event_type: Optional[str] = Query(None, description="Filter by event type"),
         track_id: Optional[str] = Query(None, description="Filter by track ID"),
         since_hours: int = Query(24, description="Hours to look back", ge=1, le=720),
@@ -105,6 +106,7 @@ def create_events_router(repository: Repository) -> APIRouter:
         events = repository.get_events(
             camera_id=camera_id,
             person_id=person_id,
+            person_name=person_name,
             event_type=event_type,
             track_id=track_id,
             since=since,
