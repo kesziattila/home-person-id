@@ -32,6 +32,8 @@ _PERSON_PROMPT_MULTI = (
 )
 
 _VALID_ACTIVITIES = {"sitting", "standing", "walking", "at_door", "lying_down", "other"}
+
+_OVERVIEW_RESPONSE_FORMAT = {"type": "json_object"}
 _VALID_GENDERS = {"male", "female", "unknown"}
 _VALID_AGE_GROUPS = {"child", "teen", "adult", "elderly", "unknown"}
 
@@ -153,26 +155,20 @@ class VLMAnalyzer:
                 parts,
                 max_tokens=self._config.overview_max_tokens,
                 image_max_size=image_max_size,
+                response_format=_OVERVIEW_RESPONSE_FORMAT,
             )
 
         if not raw:
             return None
 
-        # Parse JSON response
-        summary = ""
-        camera_scenes: dict[str, str] = {}
+        # Parse JSON response — schema enforcement guarantees correct structure
         try:
-            start = raw.index("{")
-            end = raw.rindex("}") + 1
-            data = json.loads(raw[start:end])
+            data = json.loads(raw)
             summary = str(data.get("summary", "")).strip()
-            scenes_raw = data.get("scenes", {})
-            if isinstance(scenes_raw, dict):
-                camera_scenes = {k: str(v).strip() for k, v in scenes_raw.items() if v}
+            camera_scenes = {k: str(v).strip() for k, v in data.get("scenes", {}).items() if v}
         except (ValueError, json.JSONDecodeError) as e:
-            logger.debug(f"VLM overview parse error: {e} | raw={raw!r}")
-            # Use raw text as summary if JSON parse fails
-            summary = raw.strip()
+            logger.warning(f"VLM overview parse error: {e} | raw={raw!r}")
+            return None
 
         if not summary:
             return None

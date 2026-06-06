@@ -58,6 +58,7 @@ class VLMClient:
         images: Optional[list[np.ndarray]] = None,
         max_tokens: Optional[int] = None,
         image_max_size: Optional[int] = None,
+        response_format: Optional[dict] = None,
     ) -> Optional[str]:
         """Call the VLM with text prompt and optional images.
 
@@ -66,6 +67,7 @@ class VLMClient:
             images: Optional list of numpy BGR images to include
             max_tokens: Override config max_tokens for this call
             image_max_size: Override config max_image_size for encoding images
+            response_format: Optional response format dict (e.g. {"type": "json_schema", ...})
 
         Returns:
             Model response text, or None on failure
@@ -86,11 +88,15 @@ class VLMClient:
 
         try:
             client = self._get_client()
+            kwargs = {}
+            if response_format is not None:
+                kwargs["response_format"] = response_format
             response = client.chat.completions.create(
                 model=self._config.model,
                 messages=[{"role": "user", "content": content}],
                 max_tokens=max_tokens if max_tokens is not None else self._config.max_tokens,
                 timeout=self._config.timeout_sec,
+                **kwargs,
             )
             return response.choices[0].message.content
         except Exception as e:
@@ -102,6 +108,7 @@ class VLMClient:
         parts: list,
         max_tokens: Optional[int] = None,
         image_max_size: Optional[int] = None,
+        response_format: Optional[dict] = None,
     ) -> Optional[str]:
         """Call the VLM with interleaved text and image parts.
 
@@ -111,6 +118,7 @@ class VLMClient:
                    image with its corresponding camera name.
             max_tokens: Override config max_tokens for this call
             image_max_size: Override config max_image_size for encoding images
+            response_format: Optional response format dict (e.g. {"type": "json_schema", ...})
 
         Returns:
             Model response text, or None on failure
@@ -125,11 +133,15 @@ class VLMClient:
 
         try:
             client = self._get_client()
+            kwargs = {}
+            if response_format is not None:
+                kwargs["response_format"] = response_format
             response = client.chat.completions.create(
                 model=self._config.model,
                 messages=[{"role": "user", "content": content}],
                 max_tokens=max_tokens if max_tokens is not None else self._config.max_tokens,
                 timeout=self._config.timeout_sec,
+                **kwargs,
             )
             return response.choices[0].message.content
         except Exception as e:
