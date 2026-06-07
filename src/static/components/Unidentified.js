@@ -61,7 +61,10 @@ export default {
                         </div>
                     </div>
                     <div class="p-3">
-                        <div class="text-xs text-gray-400 mb-1">{{ face.camera_id }}</div>
+                        <div class="text-xs text-gray-400 mb-1 flex justify-between items-center">
+                            <span>{{ face.camera_id }}</span>
+                            <span class="text-gray-500 font-mono">#{{ face.id }}</span>
+                        </div>
                         <div class="text-xs text-gray-500 mb-2">{{ formatRelativeTime(face.created_at) }}</div>
                         <div class="text-sm mb-3" v-html="getMatchInfo(face)"></div>
                         <div class="flex gap-2">
