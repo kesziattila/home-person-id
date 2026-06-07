@@ -27,7 +27,36 @@ class TestBuildOverviewSchema:
         # The model must not invent cameras or extra top-level keys
         assert scenes["additionalProperties"] is False
         assert schema["additionalProperties"] is False
-        assert schema["required"] == ["summary", "scenes"]
+        assert schema["required"] == ["scenes", "summary"]
+
+    def test_scenes_precede_summary_in_schema_order(self):
+        """Grammar follows property order — scenes MUST come before summary.
+
+        With summary-first, the person-state context dominated generation and
+        the model filled every scene key by repeating its own summary (live
+        incident 2026-06-07: all cameras said 'A person is in the work room.').
+        """
+        schema = _build_overview_schema(["cam1"])
+        assert list(schema["properties"].keys()) == ["scenes", "summary"]
+
+    def test_person_context_precedes_images_in_parts(self):
+        """The sensor-data header must be the FIRST part, before any image —
+        adjacent to the JSON instruction it leaks into the scene fields."""
+        analyzer = VLMAnalyzer(VLMConfig(enabled=True))
+        analyzer._client = MagicMock()
+        analyzer._client.call_parts.return_value = (
+            '{"scenes":{"ground_floor":"a room"},"summary":"ok"}'
+        )
+        frame = np.zeros((32, 32, 3), dtype=np.uint8)
+        analyzer.generate_house_overview(
+            [{"name": "Ati", "zone": "work_room"}], {"ground_floor": frame}
+        )
+        parts = analyzer._client.call_parts.call_args.args[0]
+        assert isinstance(parts[0], str) and "Sensor data" in parts[0]
+        assert "Ati in work_room" in parts[0]
+        # Instruction is last and asks for scenes before summary
+        assert '"scenes":{' in parts[-1]
+        assert parts[-1].index('"scenes"') < parts[-1].index('"summary"')
 
     def test_schema_is_json_serializable(self):
         json.dumps(_build_overview_schema(["cam1"]))

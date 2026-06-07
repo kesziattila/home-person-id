@@ -41,19 +41,25 @@ def _build_overview_schema(camera_ids: list[str]) -> dict:
     invent or drop cameras. The schema is grammar-enforced by the VLM server
     during sampling (see VLMClient._json_schema_kwargs), guaranteeing valid
     raw JSON — no markdown fences, no missing keys.
+
+    Property order matters: "scenes" comes FIRST so the grammar forces the
+    model to describe each camera image before writing the summary. With
+    summary-first, the person-state context dominated generation and the
+    model filled every scene by repeating its own summary (live incident
+    2026-06-07: all four cameras said "A person is in the work room.").
     """
     return {
         "type": "object",
         "properties": {
-            "summary": {"type": "string"},
             "scenes": {
                 "type": "object",
                 "properties": {cam_id: {"type": "string"} for cam_id in camera_ids},
                 "required": list(camera_ids),
                 "additionalProperties": False,
             },
+            "summary": {"type": "string"},
         },
-        "required": ["summary", "scenes"],
+        "required": ["scenes", "summary"],
         "additionalProperties": False,
     }
 
@@ -162,15 +168,19 @@ class VLMAnalyzer:
         ordered_ids = list(frames.keys())
         image_max_size = self._config.overview_image_size if self._config.overview_image_size > 0 else None
 
+        # Person context goes FIRST, far from the generation point: when it sat
+        # directly before the JSON instruction, the model echoed it as the
+        # summary and (grammar forcing all scene keys) repeated that sentence
+        # for every camera, ignoring the images (live incident 2026-06-07).
         # Interleave camera label + image so the model can associate each image
         # with its camera name. Sending all images first then the prompt causes
         # the model to describe all cameras identically.
-        parts: list = []
+        parts: list = [self._build_overview_context(person_states)]
         for i, cam_id in enumerate(ordered_ids):
             display = camera_names.get(cam_id, cam_id)
             parts.append(f"Camera {i + 1} ({display}):\n")
             parts.append(frames[cam_id])
-        parts.append(self._build_overview_prompt(person_states, ordered_ids, camera_names))
+        parts.append(self._build_overview_instruction(ordered_ids))
 
         from src.utils.profiler import profiler
         with profiler.measure("VLM.house_overview"):
@@ -238,36 +248,43 @@ class VLMAnalyzer:
             age_group=age_group,
         )
 
-    def _build_overview_prompt(
-        self,
-        person_states: list[dict],
-        camera_ids: list[str],
-        camera_names: dict[str, str],
-    ) -> str:
-        """Build the trailing instruction block for the house overview.
+    @staticmethod
+    def _build_overview_context(person_states: list[dict]) -> str:
+        """Person-state header placed BEFORE the camera images.
 
-        Camera labels are interleaved with images by the caller, so this method
-        only adds person context and the JSON reply instruction.
+        Explicitly framed as sensor data for the summary only, so the model
+        does not substitute it for the per-camera image descriptions.
         """
-        lines = []
-        if person_states:
-            parts = []
-            for p in person_states:
-                name = p.get("name", "Unknown")
-                zone = p.get("zone") or "unknown location"
-                activity = p.get("activity") or ""
-                gender = p.get("gender") or ""
-                age = p.get("age_group") or ""
-                detail = ", ".join(x for x in [activity, gender, age] if x and x != "unknown")
-                parts.append(f"{name} in {zone}" + (f" ({detail})" if detail else ""))
-            lines.append("People detected: " + ". ".join(parts) + ".")
-        else:
-            lines.append("No people detected.")
-
-        cam_keys = ", ".join(f'"{c}":"<one sentence>"' for c in camera_ids)
-        lines.append(
-            'Reply with JSON only:\n'
-            '{"summary":"<one sentence>",'
-            f'"scenes":{{{cam_keys}}}}}'
+        if not person_states:
+            return "Sensor data: no people detected.\n"
+        parts = []
+        for p in person_states:
+            name = p.get("name", "Unknown")
+            zone = p.get("zone") or "unknown location"
+            activity = p.get("activity") or ""
+            gender = p.get("gender") or ""
+            age = p.get("age_group") or ""
+            detail = ", ".join(x for x in [activity, gender, age] if x and x != "unknown")
+            parts.append(f"{name} in {zone}" + (f" ({detail})" if detail else ""))
+        return (
+            "Sensor data (context for the summary only): "
+            + ". ".join(parts) + ".\n"
         )
-        return "\n".join(lines)
+
+    @staticmethod
+    def _build_overview_instruction(camera_ids: list[str]) -> str:
+        """Trailing JSON instruction — scenes first, summary last.
+
+        Matches the schema property order in _build_overview_schema(): the
+        model must describe each camera image before it may summarize.
+        """
+        cam_keys = ", ".join(f'"{c}":"<one sentence>"' for c in camera_ids)
+        return (
+            "For each camera, describe in one sentence ONLY what is visible in "
+            "that camera's image; mention people only if they are visible in "
+            "that image. Then write a one-sentence overall summary combining "
+            "the scenes with the sensor data.\n"
+            "Reply with JSON only:\n"
+            f'{{"scenes":{{{cam_keys}}},'
+            '"summary":"<one sentence>"}'
+        )
