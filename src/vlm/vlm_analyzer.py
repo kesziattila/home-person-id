@@ -34,6 +34,20 @@ _PERSON_PROMPT_MULTI = (
 _VALID_ACTIVITIES = {"sitting", "standing", "walking", "at_door", "lying_down", "other"}
 
 
+# Field descriptions are the single source of truth for the per-field rules:
+# llama.cpp's grammar converter IGNORES schema descriptions (the model never
+# sees the schema), so _build_overview_instruction() renders them into the
+# prompt text. Edit them here, both schema and prompt follow.
+_SCENE_FIELD_DESC = (
+    "one sentence describing only what is visible in this camera's image; "
+    "mention people only if they are visible in it"
+)
+_SUMMARY_FIELD_DESC = (
+    "one sentence summarizing the whole house, combining the visible scenes "
+    "with the sensor data"
+)
+
+
 def _build_overview_schema(camera_ids: list[str]) -> dict:
     """Build the JSON schema for the house overview response.
 
@@ -53,11 +67,15 @@ def _build_overview_schema(camera_ids: list[str]) -> dict:
         "properties": {
             "scenes": {
                 "type": "object",
-                "properties": {cam_id: {"type": "string"} for cam_id in camera_ids},
+                "description": "per-camera scene descriptions",
+                "properties": {
+                    cam_id: {"type": "string", "description": _SCENE_FIELD_DESC}
+                    for cam_id in camera_ids
+                },
                 "required": list(camera_ids),
                 "additionalProperties": False,
             },
-            "summary": {"type": "string"},
+            "summary": {"type": "string", "description": _SUMMARY_FIELD_DESC},
         },
         "required": ["scenes", "summary"],
         "additionalProperties": False,
@@ -175,12 +193,13 @@ class VLMAnalyzer:
         # Interleave camera label + image so the model can associate each image
         # with its camera name. Sending all images first then the prompt causes
         # the model to describe all cameras identically.
+        schema = _build_overview_schema(ordered_ids)
         parts: list = [self._build_overview_context(person_states)]
         for i, cam_id in enumerate(ordered_ids):
             display = camera_names.get(cam_id, cam_id)
             parts.append(f"Camera {i + 1} ({display}):\n")
             parts.append(frames[cam_id])
-        parts.append(self._build_overview_instruction(ordered_ids))
+        parts.append(self._build_overview_instruction(schema))
 
         from src.utils.profiler import profiler
         with profiler.measure("VLM.house_overview"):
@@ -188,7 +207,7 @@ class VLMAnalyzer:
                 parts,
                 max_tokens=self._config.overview_max_tokens,
                 image_max_size=image_max_size,
-                json_schema=_build_overview_schema(ordered_ids),
+                json_schema=schema,
             )
 
         if not raw:
@@ -272,18 +291,23 @@ class VLMAnalyzer:
         )
 
     @staticmethod
-    def _build_overview_instruction(camera_ids: list[str]) -> str:
-        """Trailing JSON instruction — scenes first, summary last.
+    def _build_overview_instruction(schema: dict) -> str:
+        """Trailing JSON instruction rendered FROM the schema.
 
-        Matches the schema property order in _build_overview_schema(): the
-        model must describe each camera image before it may summarize.
+        Field rules come from the schema's description fields (the grammar
+        converter drops them, so this is how they reach the model) and the
+        key order mirrors the schema property order: the model must describe
+        each camera image before it may summarize.
         """
-        cam_keys = ", ".join(f'"{c}":"<one sentence>"' for c in camera_ids)
+        props = schema["properties"]
+        scene_props = props["scenes"]["properties"]
+        scene_desc = next(iter(scene_props.values()))["description"]
+        summary_desc = props["summary"]["description"]
+        cam_keys = ", ".join(f'"{c}":"<one sentence>"' for c in scene_props)
         return (
-            "For each camera, describe in one sentence ONLY what is visible in "
-            "that camera's image; mention people only if they are visible in "
-            "that image. Then write a one-sentence overall summary combining "
-            "the scenes with the sensor data.\n"
+            "Fields:\n"
+            f'- each key of "scenes": {scene_desc}\n'
+            f'- "summary": {summary_desc}\n'
             "Reply with JSON only:\n"
             f'{{"scenes":{{{cam_keys}}},'
             '"summary":"<one sentence>"}'

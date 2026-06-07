@@ -58,6 +58,19 @@ class TestBuildOverviewSchema:
         assert '"scenes":{' in parts[-1]
         assert parts[-1].index('"scenes"') < parts[-1].index('"summary"')
 
+    def test_schema_descriptions_are_rendered_into_instruction(self):
+        """llama.cpp's grammar converter drops schema descriptions — the
+        instruction text is the only way they reach the model, so it must be
+        rendered from the schema (single source of truth, no drift)."""
+        from src.vlm.vlm_analyzer import _SCENE_FIELD_DESC, _SUMMARY_FIELD_DESC
+
+        schema = _build_overview_schema(["cam1", "cam2"])
+        instruction = VLMAnalyzer._build_overview_instruction(schema)
+        assert _SCENE_FIELD_DESC in instruction
+        assert _SUMMARY_FIELD_DESC in instruction
+        assert schema["properties"]["scenes"]["properties"]["cam1"]["description"] == _SCENE_FIELD_DESC
+        assert schema["properties"]["summary"]["description"] == _SUMMARY_FIELD_DESC
+
     def test_schema_is_json_serializable(self):
         json.dumps(_build_overview_schema(["cam1"]))
 
