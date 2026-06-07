@@ -1,4 +1,4 @@
-import { formatRelativeTime } from '../utils/formatters.js';
+import { formatRelativeTime, parseUtcDate } from '../utils/formatters.js';
 
 export default {
     template: `
@@ -95,11 +95,7 @@ export default {
         },
         formatTime(isoString) {
             if (!isoString) return '';
-            let utcString = isoString;
-            if (!isoString.endsWith('Z') && !isoString.includes('+') && !isoString.includes('-', 10)) {
-                utcString = isoString + 'Z';
-            }
-            return new Date(utcString).toLocaleString(undefined, {
+            return parseUtcDate(isoString).toLocaleString(undefined, {
                 month: 'short', day: 'numeric',
                 hour: '2-digit', minute: '2-digit'
             });

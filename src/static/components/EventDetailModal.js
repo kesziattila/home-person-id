@@ -1,4 +1,4 @@
-import { formatRelativeTime } from '../utils/formatters.js';
+import { formatRelativeTime, formatDateTime } from '../utils/formatters.js';
 
 export default {
     template: `
@@ -11,7 +11,7 @@ export default {
                             -
                             <span @click="filterBy('camera_id', event.camera_id)" class="hover:text-blue-400 hover:underline cursor-pointer">{{ event.camera_id }}</span>
                         </h3>
-                        <p class="text-gray-400 text-sm">{{ new Date(event.timestamp).toLocaleString() }}</p>
+                        <p class="text-gray-400 text-sm">{{ formatDateTime(event.timestamp) }}</p>
                     </div>
                     <button @click="close" class="text-gray-400 hover:text-white text-2xl">&times;</button>
                 </div>
@@ -223,6 +223,7 @@ export default {
         }
     },
     methods: {
+        formatDateTime,
         close() {
             this.$emit('close');
         },

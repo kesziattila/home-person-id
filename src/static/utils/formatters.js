@@ -1,12 +1,25 @@
-export function formatRelativeTime(isoString) {
-    if (!isoString) return '';
-    
-    // Server returns UTC times without 'Z' suffix - add it if missing
+// Server returns UTC times without 'Z' suffix — parse them as UTC so the
+// browser converts to the viewer's local time. ALWAYS use this (or the
+// formatters below) instead of `new Date(ts)`: naive parsing treats DB
+// timestamps as local time, displaying raw UTC values.
+export function parseUtcDate(isoString) {
     let utcString = isoString;
     if (!isoString.endsWith('Z') && !isoString.includes('+') && !isoString.includes('-', 10)) {
         utcString = isoString + 'Z';
     }
-    const date = new Date(utcString);
+    return new Date(utcString);
+}
+
+// Absolute timestamp rendered in the viewer's local timezone.
+export function formatDateTime(isoString) {
+    if (!isoString) return '';
+    return parseUtcDate(isoString).toLocaleString();
+}
+
+export function formatRelativeTime(isoString) {
+    if (!isoString) return '';
+
+    const date = parseUtcDate(isoString);
     const now = new Date();
     const diffSec = Math.floor((now - date) / 1000);
 

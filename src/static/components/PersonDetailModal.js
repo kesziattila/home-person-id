@@ -1,3 +1,5 @@
+import { formatDateTime } from '../utils/formatters.js';
+
 export default {
     template: `
         <div v-if="visible" @click.self="close" class="modal active fixed inset-0 bg-black bg-opacity-75 items-center justify-center z-50 p-4">
@@ -110,7 +112,7 @@ export default {
                 if (!response.ok) throw new Error('Failed to load person details');
                 const detail = await response.json();
                 this.name = detail.name;
-                this.createdDate = new Date(detail.created_at).toLocaleString();
+                this.createdDate = formatDateTime(detail.created_at);
                 this.images = detail.images || [];
             } catch (e) {
                 this.error = e.message;

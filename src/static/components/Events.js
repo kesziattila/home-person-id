@@ -1,4 +1,4 @@
-import { formatRelativeTime } from '../utils/formatters.js';
+import { formatRelativeTime, formatDateTime } from '../utils/formatters.js';
 
 export default {
     template: `
@@ -95,7 +95,7 @@ export default {
                             <td colspan="6" class="px-4 py-8 text-center text-gray-500">No events found in this time range.</td>
                         </tr>
                         <tr v-for="event in filteredEvents" :key="event.id" @click="showEventDetail(event)" class="hover:bg-gray-700 cursor-pointer">
-                            <td class="px-4 py-3 text-sm">{{ new Date(event.timestamp).toLocaleString() }}</td>
+                            <td class="px-4 py-3 text-sm">{{ formatDateTime(event.timestamp) }}</td>
                             <td class="px-4 py-3 text-sm">
                                 <span @click.stop="setFilter('event_type', event.event_type)" class="hover:text-blue-400 hover:underline cursor-pointer">{{ event.event_type }}</span>
                             </td>
@@ -213,6 +213,7 @@ export default {
         }
     },
     methods: {
+        formatDateTime,
         async loadEvents() {
             this.loading = true;
             this.error = null;
