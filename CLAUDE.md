@@ -78,7 +78,7 @@ System runs live on a Jetson; all remote interaction goes through `scripts/remot
 - `rlog.sh tail|grep|around|errors|perf|stdout` — always bounded; never dump whole logs into context
 
 ### Conventions
-- DB timestamps are UTC; log timestamps are Jetson local time
+- Timestamp convention: DB/API/MQTT are UTC; anything rendered for humans (UI via `formatters.js` `parseUtcDate`, logs) is local time — never parse server timestamps with bare `new Date()`
 - `events.snapshot_path` is project-relative (prefix `REMOTE_PROJECT_DIR`)
 - Open the remote DB read-only; never copy db/-wal/-shm files individually (use `sync_db.sh`)
 - Prefer canned `.sql` files over inline SQL through ssh
