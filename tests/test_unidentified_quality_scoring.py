@@ -97,6 +97,7 @@ class TestBurstSuppression:
             best_match_score=None,
             face_bbox=(0, 0, 160, 160),
             det_confidence=0.9,
+            landmarks=_landmarks(0.0, 1.2),  # frontal — pass the pose gate
         )
 
     def test_second_save_within_window_is_suppressed(self, tmp_path):
@@ -248,10 +249,44 @@ class TestFrontalness:
         manager._process_task(task)
         repo.add_unidentified_face.assert_not_called()
 
-    def test_task_without_landmarks_is_not_gated(self, tmp_path):
+    def test_task_without_landmarks_is_rejected(self, tmp_path):
+        """A crop without landmarks cannot be pose-checked — reject it.
+
+        Changed 2026-06-07: live face #554 (top-of-head, no re-detectable
+        face) was stored and flagged learnable; landmark-less submissions now
+        score frontalness 0.0 and fail the gate. Live detections always carry
+        landmarks, so this only rejects untrustworthy crops.
+        """
         manager, repo = _make_manager(
             images_path=str(tmp_path), min_quality_score=0.0,
             min_sharpness_score=0.0, min_face_size=10, min_frontalness=0.5,
+        )
+        task = UnidentifiedFaceTask(
+            camera_id="cam_a",
+            track_id="global_1",
+            face_crop=_textured_crop(160),
+            embedding=np.random.default_rng(3).random(512).astype(np.float32),
+            best_match_person_id=None,
+            best_match_score=None,
+            face_bbox=(0, 0, 160, 160),
+        )
+        manager._process_task(task)
+        repo.add_unidentified_face.assert_not_called()
+
+    def test_frontalness_weighted_into_quality(self):
+        """Same crop, frontal vs profile pose: quality must differ."""
+        manager, _ = _make_manager()
+        crop = _textured_crop(200)
+        bbox = (0, 0, 200, 200)
+        q_frontal, _ = manager._compute_quality(crop, bbox, det_confidence=0.9, frontalness=1.0)
+        q_profile, _ = manager._compute_quality(crop, bbox, det_confidence=0.9, frontalness=0.0)
+        assert q_frontal - q_profile >= 0.15
+
+    def test_saved_face_stores_frontalness_and_det_confidence(self, tmp_path):
+        manager, repo = _make_manager(
+            images_path=str(tmp_path), min_quality_score=0.0,
+            min_sharpness_score=0.0, min_face_size=10, min_frontalness=0.5,
+            burst_min_interval_sec=0.0,
         )
         face = MagicMock()
         face.id = 1
@@ -264,6 +299,10 @@ class TestFrontalness:
             best_match_person_id=None,
             best_match_score=None,
             face_bbox=(0, 0, 160, 160),
+            det_confidence=0.77,
+            landmarks=_landmarks(0.0, 1.2),  # frontal
         )
         manager._process_task(task)
-        repo.add_unidentified_face.assert_called_once()
+        kwargs = repo.add_unidentified_face.call_args.kwargs
+        assert kwargs["det_confidence"] == pytest.approx(0.77)
+        assert kwargs["frontalness"] == pytest.approx(1.0)

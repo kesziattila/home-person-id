@@ -199,9 +199,27 @@ class UnidentifiedFaceManager:
         5. Enforce per-camera limit
         """
         try:
-            # 1. Compute quality score
+            # 1. Head pose. A crop without landmarks cannot be pose-checked and
+            # is untrustworthy for enrollment (live detections always carry
+            # landmarks) — score it 0.0 so the gate below rejects it.
+            frontalness = (
+                self._compute_frontalness(task.landmarks)
+                if task.landmarks is not None else 0.0
+            )
+
+            # Check frontalness (rejects profile/looking-down poses and
+            # landmark-less crops — they produce weak embeddings unsuitable
+            # for enrollment)
+            if self.config.min_frontalness > 0 and frontalness < self.config.min_frontalness:
+                logger.debug(
+                    f"Unidentified face not frontal enough: "
+                    f"{frontalness:.2f} < {self.config.min_frontalness}"
+                )
+                return
+
+            # 2. Compute quality score
             quality_score, sharpness_score = self._compute_quality(
-                task.face_crop, task.face_bbox, task.det_confidence
+                task.face_crop, task.face_bbox, task.det_confidence, frontalness
             )
 
             # Check minimum quality
@@ -226,18 +244,7 @@ class UnidentifiedFaceManager:
                 )
                 return
 
-            # Check frontalness (rejects profile and looking-down poses —
-            # they produce weak embeddings unsuitable for enrollment)
-            if task.landmarks is not None and self.config.min_frontalness > 0:
-                frontalness = self._compute_frontalness(task.landmarks)
-                if frontalness < self.config.min_frontalness:
-                    logger.debug(
-                        f"Unidentified face not frontal enough: "
-                        f"{frontalness:.2f} < {self.config.min_frontalness}"
-                    )
-                    return
-
-            # 2. Burst suppression: one sitting episode can produce a dozen
+            # 3. Burst suppression: one sitting episode can produce a dozen
             # near-duplicate crops within seconds, churning the review queue
             # and evicting diverse older candidates (per-camera cap).
             if task.track_id and self.config.burst_min_interval_sec > 0:
@@ -250,14 +257,14 @@ class UnidentifiedFaceManager:
                     )
                     return
 
-            # 3. Diversity check
+            # 4. Diversity check
             if not self._is_diverse(task.camera_id, task.embedding):
                 logger.debug(
                     f"Unidentified face too similar to existing, skipping"
                 )
                 return
 
-            # 4. Save image to disk
+            # 5. Save image to disk
             image_path = self._save_image(task.camera_id, task.face_crop)
             if not image_path:
                 logger.error("Failed to save unidentified face image")
@@ -265,7 +272,7 @@ class UnidentifiedFaceManager:
             if task.track_id:
                 self._last_saved_per_track[task.track_id] = time.time()
 
-            # 5. Store in database
+            # 6. Store in database
             # Note: blur_score column stores sharpness score (0-1, higher = sharper)
             face = self.repository.add_unidentified_face(
                 camera_id=task.camera_id,
@@ -277,6 +284,8 @@ class UnidentifiedFaceManager:
                 best_match_score=float(task.best_match_score) if task.best_match_score is not None else None,
                 blur_score=float(sharpness_score),
                 face_size=int(face_width),
+                frontalness=float(frontalness),
+                det_confidence=float(task.det_confidence) if task.det_confidence is not None else None,
             )
 
             # Emit event
@@ -289,6 +298,7 @@ class UnidentifiedFaceManager:
                 snapshot_path=image_path,
                 extra_data={
                     "quality_score": float(quality_score),
+                    "frontalness": float(frontalness),
                     "unidentified_face_id": int(face.id),
                     "best_match_face_id": task.best_match_face_id,
                     "best_match_person_id": task.best_match_person_id,
@@ -301,7 +311,7 @@ class UnidentifiedFaceManager:
                 f"(quality={quality_score:.2f}, match_score={task.best_match_score})"
             )
 
-            # 5. Enforce per-camera limit
+            # 7. Enforce per-camera limit
             self.repository.cleanup_unidentified_faces_for_camera(
                 task.camera_id, self.config.max_per_camera
             )
@@ -314,6 +324,7 @@ class UnidentifiedFaceManager:
         face_crop: np.ndarray,
         face_bbox: tuple[int, int, int, int],
         det_confidence: Optional[float] = None,
+        frontalness: float = 1.0,
     ) -> tuple[float, float]:
         """Compute quality score for a face crop.
 
@@ -322,6 +333,7 @@ class UnidentifiedFaceManager:
         - Sharpness (min(focus, motion, detail) at a fixed 112x112 input)
         - Brightness (not too dark, not too bright)
         - Detection confidence (when provided — best free proxy for usability)
+        - Frontalness (head pose; profile/look-down crops embed poorly)
 
         Performance: ~2-3ms per call (small convolutions on the fixed 112x112 input).
         Runs in background thread so doesn't block main processing.
@@ -330,6 +342,7 @@ class UnidentifiedFaceManager:
             face_crop: Face crop image
             face_bbox: Face bounding box
             det_confidence: Face detection confidence (0-1), optional
+            frontalness: Head pose score (0-1, 1 = frontal)
 
         Returns:
             Tuple of (quality_score, sharpness_score)
@@ -360,20 +373,23 @@ class UnidentifiedFaceManager:
 
         # Combined quality score (weighted average). Detection confidence is
         # the best free proxy for face usability (it tracked embedding utility
-        # better than size/sharpness in live-data analysis) — weight it highest
-        # when available; fall back to the legacy weighting otherwise.
+        # better than size/sharpness in live-data analysis); frontalness added
+        # 2026-06-07 — pose junk (profiles, top-of-head) scored high on pure
+        # photographic metrics because hair/background texture reads as detail.
         if det_confidence is not None:
             quality_score = (
-                0.3 * size_score +
-                0.2 * sharpness_score +
-                0.2 * brightness_score +
-                0.3 * min(1.0, det_confidence)
+                0.25 * size_score +
+                0.15 * sharpness_score +
+                0.15 * brightness_score +
+                0.25 * min(1.0, det_confidence) +
+                0.2 * frontalness
             )
         else:
             quality_score = (
-                0.4 * size_score +
-                0.4 * sharpness_score +
-                0.2 * brightness_score
+                0.3 * size_score +
+                0.3 * sharpness_score +
+                0.15 * brightness_score +
+                0.25 * frontalness
             )
 
         return quality_score, sharpness_score

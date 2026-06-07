@@ -27,7 +27,10 @@ def test_reproduce_json_serializable_error():
         face_bbox=(10, 10, 120, 60),
         track_id="global_15",
         best_match_person_id=6,
-        best_match_score=np.float32(0.5271) # Numpy float32
+        best_match_score=np.float32(0.5271), # Numpy float32
+        # Frontal 5-point landmarks — the pose gate rejects landmark-less
+        # tasks (2026-06-07); this test targets JSON safety, not gating
+        landmarks=np.array([[30, 40], [70, 40], [50, 65], [35, 85], [65, 85]], dtype=np.float32),
     )
     
     # We want to test _process_task directly to see if it fails when calling create_event

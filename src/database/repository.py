@@ -551,6 +551,8 @@ class Repository:
         best_match_score: Optional[float] = None,
         blur_score: Optional[float] = None,
         face_size: Optional[int] = None,
+        frontalness: Optional[float] = None,
+        det_confidence: Optional[float] = None,
     ) -> UnidentifiedFace:
         """Add an unidentified face for manual review.
 
@@ -564,6 +566,8 @@ class Repository:
             best_match_score: Similarity score to best match
             blur_score: Laplacian variance (higher = sharper)
             face_size: Face bounding box width in pixels
+            frontalness: Head pose score (0-1, 1 = frontal)
+            det_confidence: Face detector confidence at capture
 
         Returns:
             Created UnidentifiedFace object
@@ -581,6 +585,8 @@ class Repository:
                 quality_score=quality_score,
                 blur_score=blur_score,
                 face_size=face_size,
+                frontalness=frontalness,
+                det_confidence=det_confidence,
             )
             session.add(face)
             session.commit()

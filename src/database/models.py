@@ -216,6 +216,10 @@ class UnidentifiedFace(Base):
     quality_score = Column(Float, nullable=False)
     blur_score = Column(Float, nullable=True)
     face_size = Column(Integer, nullable=True)  # Face bbox width in pixels
+    # Head pose score (0-1, 1 = frontal); NULL on rows captured before 2026-06
+    frontalness = Column(Float, nullable=True)
+    # Face detector confidence at capture; NULL on rows captured before 2026-06
+    det_confidence = Column(Float, nullable=True)
 
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -240,6 +244,8 @@ def migrate_database(engine):
         "ALTER TABLE persons ADD COLUMN current_zone VARCHAR(64)",
         "ALTER TABLE persons ADD COLUMN zone_updated_at DATETIME",
         "ALTER TABLE persons ADD COLUMN zone_is_estimated BOOLEAN DEFAULT 1",
+        "ALTER TABLE unidentified_faces ADD COLUMN frontalness FLOAT",
+        "ALTER TABLE unidentified_faces ADD COLUMN det_confidence FLOAT",
     ]
     with engine.connect() as conn:
         for sql in migrations:

@@ -49,7 +49,7 @@ export default {
                              @click="previewFace(face.id)"
                              onerror="this.src='https://via.placeholder.com/200?text=No+Image'">
                         
-                        <div v-if="isGoodForLearning(face.quality_score, face.blur_score)" class="absolute top-2 left-2 bg-green-600 text-xs px-2 py-1 rounded flex items-center gap-1">
+                        <div v-if="isGoodForLearning(face)" class="absolute top-2 left-2 bg-green-600 text-xs px-2 py-1 rounded flex items-center gap-1">
                             <span>✓</span> Learning
                         </div>
                         <div v-else class="absolute top-2 left-2 bg-gray-600 text-xs px-2 py-1 rounded opacity-75">
@@ -109,7 +109,7 @@ export default {
                 faces = faces.filter(f => (f.quality_score || 0) >= this.qualityFilter);
             }
             if (this.learningOnly) {
-                faces = faces.filter(f => this.isGoodForLearning(f.quality_score || 0, f.blur_score || 0));
+                faces = faces.filter(f => this.isGoodForLearning(f));
             }
             return faces;
         },
@@ -167,10 +167,22 @@ export default {
                 this.loading = false;
             }
         },
-        isGoodForLearning(quality, sharpness) {
+        isGoodForLearning(face) {
+            // Thresholds calibrated on labeled live crops (2026-06-07):
+            // pose junk (profiles, top-of-head) passes photographic quality but
+            // fails frontalness/det_confidence; pixelated small crops fail size.
+            // frontalness/det_confidence are NULL on rows captured before the
+            // scores were stored — those require manual review, never "Learning".
             const LEARNING_QUALITY_THRESHOLD = 0.6;
             const LEARNING_SHARPNESS_THRESHOLD = 0.5;
-            return sharpness >= LEARNING_SHARPNESS_THRESHOLD && quality >= LEARNING_QUALITY_THRESHOLD;
+            const LEARNING_FRONTALNESS_THRESHOLD = 0.6;
+            const LEARNING_DET_CONFIDENCE_THRESHOLD = 0.65;
+            const LEARNING_MIN_FACE_SIZE = 110;
+            return (face.quality_score || 0) >= LEARNING_QUALITY_THRESHOLD
+                && (face.blur_score || 0) >= LEARNING_SHARPNESS_THRESHOLD
+                && face.frontalness != null && face.frontalness >= LEARNING_FRONTALNESS_THRESHOLD
+                && face.det_confidence != null && face.det_confidence >= LEARNING_DET_CONFIDENCE_THRESHOLD
+                && (face.face_size || 0) >= LEARNING_MIN_FACE_SIZE;
         },
         getQualityColor(score) {
             if (score > 0.6) return 'bg-green-600';

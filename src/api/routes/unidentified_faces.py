@@ -28,6 +28,8 @@ class UnidentifiedFaceResponse(BaseModel):
     quality_score: float
     blur_score: Optional[float] = None
     face_size: Optional[int] = None
+    frontalness: Optional[float] = None
+    det_confidence: Optional[float] = None
     created_at: datetime
     reviewed: bool
     dismissed: bool
@@ -102,6 +104,8 @@ def create_unidentified_faces_router(
                 quality_score=face.quality_score,
                 blur_score=face.blur_score,
                 face_size=face.face_size,
+                frontalness=face.frontalness,
+                det_confidence=face.det_confidence,
                 created_at=face.created_at,
                 reviewed=face.reviewed,
                 dismissed=face.dismissed,
@@ -144,6 +148,8 @@ def create_unidentified_faces_router(
             quality_score=face.quality_score,
             blur_score=face.blur_score,
             face_size=face.face_size,
+            frontalness=face.frontalness,
+            det_confidence=face.det_confidence,
             created_at=face.created_at,
             reviewed=face.reviewed,
             dismissed=face.dismissed,
