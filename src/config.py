@@ -190,6 +190,9 @@ class FaceRecognitionConfig:
     enabled: bool = True
     model: str = "buffalo_l"
     similarity_threshold: float = 0.6
+    # Minimum lead of the best person over the best OTHER person (top1 - top2)
+    # required to accept a match. 0 = threshold only.
+    min_margin: float = 0.0
     min_face_size: int = 80
     # Minimum face size for multi-face detection (used to filter Re-ID crops).
     # Lower than min_face_size because we only need to detect presence, not quality.
@@ -341,6 +344,19 @@ class APIConfig:
 
 
 @dataclass
+class MetricsConfig:
+    """On-disk metrics for offline threshold tuning (tools/analyze_face_scores.py)."""
+
+    # Log per-person face similarity of every face attempt (JSONL, one file per UTC day)
+    face_scores_enabled: bool = True
+    path: str = "data/metrics"
+    # Minimum seconds between logged attempts of the same track (bounds volume)
+    face_scores_min_interval_sec: float = 1.0
+    # Delete daily metric files older than this
+    retention_days: int = 30
+
+
+@dataclass
 class Config:
     """Main configuration class."""
 
@@ -360,6 +376,7 @@ class Config:
     debug: DebugConfig = field(default_factory=DebugConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     vlm: VLMConfig = field(default_factory=VLMConfig)
+    metrics: MetricsConfig = field(default_factory=MetricsConfig)
 
     def get_camera(self, camera_id: str) -> Optional[CameraConfig]:
         """Get camera configuration by ID."""
@@ -432,6 +449,7 @@ def load_config(config_path: str | Path) -> Config:
     debug = DebugConfig(**data.get("debug", {}))
     logging_config = LoggingConfig(**data.get("logging", {}))
     vlm = VLMConfig(**data.get("vlm", {}))
+    metrics = MetricsConfig(**data.get("metrics", {}))
 
     return Config(
         cameras=cameras,
@@ -450,4 +468,5 @@ def load_config(config_path: str | Path) -> Config:
         debug=debug,
         logging=logging_config,
         vlm=vlm,
+        metrics=metrics,
     )

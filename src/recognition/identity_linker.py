@@ -27,6 +27,7 @@ from src.utils.profiler import profiler
 from src.utils.image_utils import crop_face_region, crop_with_margin
 
 if TYPE_CHECKING:
+    from src.recognition.face_score_logger import FaceScoreLogger
     from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,7 @@ class IdentityLinker:
         reid_extractor: Optional[ReIDExtractor] = None,
         unidentified_face_manager: Optional["UnidentifiedFaceManager"] = None,
         snapshot_config: Optional[Config] = None, # Using full config for easier access if needed
+        face_score_logger: Optional["FaceScoreLogger"] = None,
     ):
         """Initialize identity linker.
 
@@ -169,11 +171,13 @@ class IdentityLinker:
             reid_extractor: Optional pre-initialized Re-ID extractor (for testing)
             unidentified_face_manager: Optional manager for capturing unidentified faces
             snapshot_config: Optional snapshot configuration
+            face_score_logger: Optional per-attempt face score log (offline tuning)
         """
         self.face_config = face_config
         self.reid_config = reid_config
         self.repository = repository
         self._unidentified_face_manager = unidentified_face_manager
+        self._face_score_logger = face_score_logger
         self.snapshot_config = snapshot_config.snapshots if snapshot_config else None
 
         # Create a minimal config for IdentificationManager
@@ -261,6 +265,8 @@ class IdentityLinker:
                 )
 
             del self._track_states[global_track_id]
+            if self._face_score_logger:
+                self._face_score_logger.forget_track(global_track_id)
             logger.debug(f"Unregistered track {global_track_id}")
 
     def get_track_state(self, global_track_id: str) -> Optional[TrackIdentityState]:
@@ -436,8 +442,6 @@ class IdentityLinker:
         if not self._id_manager.face_recognizer:
             return IdentificationResult()
 
-        gallery = self._id_manager.face_gallery
-
         # Crop face region from person bbox (upper portion)
         face_region = crop_face_region(frame, bbox, height_ratio=0.5)
         if face_region.size == 0:
@@ -468,29 +472,35 @@ class IdentityLinker:
 
         state.face_embedding = embedding
 
-        # Match against gallery (track best match regardless of threshold)
-        best_match_id = None
-        best_match_name = None
-        best_score = 0.0
-        best_face_id = None
+        # Match against gallery per person (best match is tracked regardless of threshold)
+        with profiler.measure("FaceRecognizer.compare"):
+            scores = self._id_manager.score_face(embedding)
+        best_entry = scores.best_entry
+        best_match_id = best_entry.person_id if best_entry else None
+        best_match_name = best_entry.person_name if best_entry else None
+        best_face_id = best_entry.embedding_id if best_entry else None
+        best_score = scores.top1
+        accepted = scores.accepts(
+            self.face_config.similarity_threshold, self.face_config.min_margin
+        )
 
-        if gallery:
-            with profiler.measure("FaceRecognizer.compare"):
-                # Vectorized comparison for better performance
-                gallery_embeddings = np.array([entry.embedding for entry in gallery])
-                similarities = face_recognizer.compare_embeddings_batch(
-                    embedding, gallery_embeddings
-                )
-                best_idx = int(np.argmax(similarities))
-                best_score = float(similarities[best_idx])
-                
-                best_entry = gallery[best_idx]
-                best_match_id = best_entry.person_id
-                best_match_name = best_entry.person_name
-                best_face_id = best_entry.embedding_id
+        if self._face_score_logger and best_entry:
+            self._face_score_logger.log(
+                camera_id=camera_id,
+                track_id=state.global_track_id,
+                per_person=scores.per_person,
+                top1_person_id=best_match_id,
+                top1=scores.top1,
+                top2=scores.top2,
+                accepted=accepted,
+                face_height=best_face.height,
+                face_width=best_face.width,
+                det_confidence=best_face.confidence,
+                threshold=self.face_config.similarity_threshold,
+                min_margin=self.face_config.min_margin,
+            )
 
-        # Check if match is above threshold
-        if best_score < self.face_config.similarity_threshold:
+        if not accepted:
             # Submit to unidentified face manager
             if self._unidentified_face_manager and camera_id:
                 face_crop, face_bbox = crop_with_margin(
@@ -1017,6 +1027,8 @@ class IdentityLinker:
 
         for track_id in to_remove:
             del self._track_states[track_id]
+            if self._face_score_logger:
+                self._face_score_logger.forget_track(track_id)
 
         if to_remove:
             logger.debug(f"Cleaned up {len(to_remove)} old track states")

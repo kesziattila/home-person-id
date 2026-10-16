@@ -295,6 +295,12 @@ face_recognition:
   # Cosine similarity threshold for face matching (0.0 - 1.0)
   similarity_threshold: 0.6
 
+  # Minimum lead of the best person over the best OTHER person (top1 - top2).
+  # Lets the threshold go lower safely: ambiguous faces (two people scoring
+  # similarly) are rejected. 0 = threshold only. Tune with
+  # tools/analyze_face_scores.py on data from the metrics section below.
+  min_margin: 0.0
+
   # Minimum face size (pixels) for detection
   # Smaller = detect faces further away, but less accurate
   min_face_size: 80
@@ -435,6 +441,23 @@ api:
   # "stay"; stays shorter than this that are flanked by the same zone (a brief
   # flicker) are merged away. Set to 0 to disable flicker merging.
   timeline_min_stay_sec: 5.0
+
+# =============================================================================
+# METRICS (offline tuning data)
+# =============================================================================
+# Per-attempt face similarity log: one JSON line per face-recognition attempt
+# with the best score of every known person. tools/analyze_face_scores.py
+# replays (similarity_threshold, min_margin) policies against it.
+
+metrics:
+  # Enable the face score log
+  face_scores_enabled: true
+  # Base directory; files go to <path>/face_scores/YYYY-MM-DD.jsonl (UTC day)
+  path: "data/metrics"
+  # Minimum seconds between logged attempts of one track (accepted ones always logged)
+  face_scores_min_interval_sec: 1.0
+  # Delete daily files older than this many days
+  retention_days: 30
 
 # =============================================================================
 # DATABASE

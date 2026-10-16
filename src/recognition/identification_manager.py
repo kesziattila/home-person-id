@@ -55,6 +55,24 @@ class FaceGalleryEntry:
 
 
 @dataclass
+class FaceMatchScores:
+    """Similarity of one face embedding against the gallery, aggregated per person."""
+
+    best_entry: Optional[FaceGalleryEntry] = None  # gallery entry with the highest similarity
+    top1: float = 0.0  # best similarity overall (person of best_entry)
+    top2: float = 0.0  # best similarity of any OTHER person (0.0 if none)
+    per_person: dict[int, float] = field(default_factory=dict)  # person_id -> max similarity
+
+    @property
+    def margin(self) -> float:
+        return self.top1 - self.top2
+
+    def accepts(self, threshold: float, min_margin: float = 0.0) -> bool:
+        """Match policy: top1 above threshold AND clear lead over the runner-up person."""
+        return self.best_entry is not None and self.top1 >= threshold and self.margin >= min_margin
+
+
+@dataclass
 class TrackIdentity:
     """Identity information for a track."""
 
@@ -158,6 +176,7 @@ class IdentificationManager:
 
         # Configuration shortcuts
         self.face_threshold = config.face_recognition.similarity_threshold
+        self.face_min_margin = config.face_recognition.min_margin
         self.face_check_interval = config.face_recognition.detection_interval
         self.reid_confirm_interval = config.face_recognition.reid_confirmation_interval
         self.reid_embedding_interval = 30
@@ -217,6 +236,31 @@ class IdentificationManager:
         if self.repository:
             self._load_face_gallery_from_db()
         return self._face_gallery
+
+    def score_face(self, embedding: np.ndarray) -> FaceMatchScores:
+        """Score a face embedding against the gallery, per person (~0.1ms for ~100 entries)."""
+        gallery = self.face_gallery
+        if not gallery or self.face_recognizer is None:
+            return FaceMatchScores()
+
+        similarities = self.face_recognizer.compare_embeddings_batch(
+            embedding, np.array([entry.embedding for entry in gallery])
+        )
+        best_idx = int(np.argmax(similarities))
+        best_entry = gallery[best_idx]
+
+        per_person: dict[int, float] = {}
+        for entry, sim in zip(gallery, similarities):
+            if sim > per_person.get(entry.person_id, -1.0):
+                per_person[entry.person_id] = float(sim)
+        others = [s for pid, s in per_person.items() if pid != best_entry.person_id]
+
+        return FaceMatchScores(
+            best_entry=best_entry,
+            top1=float(similarities[best_idx]),
+            top2=max(others, default=0.0),
+            per_person=per_person,
+        )
 
     @property
     def gallery_size(self) -> int:
@@ -527,33 +571,17 @@ class IdentificationManager:
         if face.embedding is None:
             return False
 
-        # Find best match in gallery (if gallery exists)
-        best_score = 0.0
-        best_name = None
-        best_person_id = None
-        best_face_id = None
-
-        gallery = self.face_gallery
-        if gallery:
-            # Vectorized comparison for better performance
-            gallery_embeddings = np.array([entry.embedding for entry in gallery])
-            similarities = self.face_recognizer.compare_embeddings_batch(
-                face.embedding, gallery_embeddings
-            )
-            best_idx = int(np.argmax(similarities))
-            best_score = float(similarities[best_idx])
-            
-            best_entry = gallery[best_idx]
-            best_person_id = best_entry.person_id
-            best_name = best_entry.person_name
-            best_face_id = best_entry.embedding_id
+        scores = self.score_face(face.embedding)
+        best_score = scores.top1
+        best_name = scores.best_entry.person_name if scores.best_entry else None
+        best_person_id = scores.best_entry.person_id if scores.best_entry else None
+        best_face_id = scores.best_entry.embedding_id if scores.best_entry else None
 
         # Store face info even if below threshold
         if best_name:
             identity.face_info = (best_name, best_score)
 
-        # Check if above threshold
-        if best_score >= self.face_threshold:
+        if scores.accepts(self.face_threshold, self.face_min_margin):
             previous_person_id = identity.person_id
             was_reid_identified = identity.is_reid_identified
 

@@ -17,6 +17,7 @@ from src.config import load_config
 from src.database.repository import Repository
 from src.detection.motion_detector import MotionDetectorManager
 from src.detection.person_detector import PersonDetector, DetectionResult, create_person_detector
+from src.recognition.face_score_logger import FaceScoreLogger
 from src.recognition.identity_linker import IdentityLinker
 from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 from src.stream.manager import StreamManager
@@ -129,12 +130,16 @@ class PersonIDSystem:
             )
 
         # Initialize recognition
+        face_score_logger = (
+            FaceScoreLogger(self.config.metrics) if self.config.metrics.face_scores_enabled else None
+        )
         self.identity_linker = IdentityLinker(
             self.config.face_recognition,
             self.config.reid,
             self.repository,
             unidentified_face_manager=self.unidentified_face_manager,
             snapshot_config=self.config,
+            face_score_logger=face_score_logger,
         )
 
         # Initialize debug overlay (optional)
