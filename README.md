@@ -166,6 +166,7 @@ home-person-id/
 ├── src/
 │   ├── main.py                  # Entry point, main processing loop
 │   ├── cli.py                   # CLI commands
+│   ├── cli_preview.py           # CLI preview pipeline (CameraProcessor, SnapshotSaver)
 │   ├── config.py                # Configuration dataclasses
 │   ├── api/
 │   │   └── server.py            # FastAPI web server
@@ -198,6 +199,7 @@ home-person-id/
 │   │   └── vlm_analyzer.py      # Prompts, JSON parsing, VLMResult / HouseOverview dataclasses
 │   ├── utils/
 │   │   ├── image_utils.py       # Crop utilities and JPEG encoding
+│   │   ├── embedding_utils.py   # L2 normalization and cosine similarity
 │   │   └── profiler.py          # Performance profiling
 ├── data/
 │   ├── database.db              # SQLite database (created on first run)

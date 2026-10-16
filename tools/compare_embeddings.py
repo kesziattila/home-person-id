@@ -18,6 +18,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from src.utils.embedding_utils import cosine_similarity
 from src.recognition.tensorrt_face import (
     TensorRTFaceDetector,
     TensorRTFaceEmbedder,
@@ -25,11 +26,6 @@ from src.recognition.tensorrt_face import (
 )
 
 TEST_IMAGE = "tests/test-images/sample-person-image.jpg"
-
-
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Compute cosine similarity between two vectors."""
-    return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
 
 
 def main():

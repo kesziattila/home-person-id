@@ -8,6 +8,7 @@ from typing import Optional
 import numpy as np
 
 from src.config import FaceRecognitionConfig
+from src.utils.embedding_utils import cosine_similarity, cosine_similarity_batch
 
 logger = logging.getLogger(__name__)
 
@@ -309,14 +310,7 @@ class FaceRecognizer:
         Returns:
             Cosine similarity score (0-1, higher is more similar)
         """
-        # Normalize embeddings
-        e1 = embedding1 / (np.linalg.norm(embedding1) + 1e-8)
-        e2 = embedding2 / (np.linalg.norm(embedding2) + 1e-8)
-
-        # Cosine similarity
-        similarity = np.dot(e1, e2)
-
-        return float(similarity)
+        return cosine_similarity(embedding1, embedding2)
 
     def compare_embeddings_batch(
         self, query_embedding: np.ndarray, gallery_embeddings: np.ndarray
@@ -330,46 +324,7 @@ class FaceRecognizer:
         Returns:
             Array of cosine similarity scores
         """
-        # Normalize query once
-        query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-8)
-        # Normalize gallery
-        gallery_norms = gallery_embeddings / (
-            np.linalg.norm(gallery_embeddings, axis=1, keepdims=True) + 1e-8
-        )
-        # Vectorized dot product
-        return gallery_norms @ query_norm
-
-    def find_best_match(
-        self,
-        query_embedding: np.ndarray,
-        gallery: list[tuple[int, np.ndarray]],
-    ) -> Optional[tuple[int, float]]:
-        """Find best matching person from gallery.
-
-        Args:
-            query_embedding: Face embedding to match
-            gallery: List of (person_id, embedding) tuples
-
-        Returns:
-            Tuple of (person_id, similarity) or None if no match above threshold
-        """
-        if not gallery:
-            return None
-
-        best_match = None
-        best_score = 0.0
-
-        for person_id, embedding in gallery:
-            similarity = self.compare_embeddings(query_embedding, embedding)
-
-            if similarity > self.config.similarity_threshold and similarity > best_score:
-                best_match = person_id
-                best_score = similarity
-
-        if best_match is not None:
-            return (best_match, best_score)
-
-        return None
+        return cosine_similarity_batch(query_embedding, gallery_embeddings)
 
     def warmup(self) -> None:
         """Warm up the model with dummy inferences.

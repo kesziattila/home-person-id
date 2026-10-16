@@ -439,7 +439,7 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
     from src.detection.person_detector import create_person_detector
     from src.stream.rtsp_client import RTSPClient
     from src.tracking.zone_manager import ZoneManager
-    from src.preview import (
+    from src.cli_preview import (
         CameraProcessor, IdentificationManager, TrackRenderer, ZoneRenderer,
         SnapshotSaver, draw_status_bar, draw_motion_indicator
     )
@@ -450,14 +450,7 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
     detector = None
     if config.detection.enabled:
         click.echo("Warming up person detector...")
-        detector = create_person_detector(
-            model_path=config.detection.model,
-            confidence_threshold=config.detection.confidence_threshold,
-            nms_iou_threshold=config.detection.nms_iou_threshold,
-            device=config.detection.device,
-            num_threads=config.detection.num_threads,
-            use_tensorrt_native=config.detection.use_tensorrt_native,
-                    )
+        detector = create_person_detector(config.detection)
         detector.warmup()
 
     # Initialize zone manager
@@ -1002,7 +995,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
     from src.tracking.global_tracker import GlobalTrackManager
     from src.tracking.zone_manager import ZoneManager
     from src.recognition.identity_linker import IdentityLinker
-    from src.preview import (
+    from src.cli_preview import (
         CameraProcessor, IdentificationManager, TrackRenderer, ZoneRenderer,
         SnapshotSaver, draw_motion_indicator
     )
@@ -1070,14 +1063,7 @@ def preview_multi(ctx, cameras, scale, show_zones, save_snapshots):
     person_detector = None
     if config.detection.enabled:
         click.echo("Warming up person detector...")
-        person_detector = create_person_detector(
-            model_path=config.detection.model,
-            confidence_threshold=config.detection.confidence_threshold,
-            nms_iou_threshold=config.detection.nms_iou_threshold,
-            device=config.detection.device,
-            num_threads=config.detection.num_threads,
-            use_tensorrt_native=config.detection.use_tensorrt_native,
-                    )
+        person_detector = create_person_detector(config.detection)
         person_detector.warmup()
 
     click.echo("Warming up identification models...")

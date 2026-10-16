@@ -16,6 +16,7 @@ import cv2
 import numpy as np
 
 from src.config import ReIDConfig
+from src.utils.embedding_utils import cosine_similarity, cosine_similarity_batch
 
 logger = logging.getLogger(__name__)
 
@@ -110,21 +111,12 @@ class EmbeddingGallery:
 
         # Vectorized cosine similarity computation
         gallery = np.array([e.embedding for e in self.embeddings])
-        query_norm = query_embedding / (np.linalg.norm(query_embedding) + 1e-8)
-        gallery_norm = gallery / (np.linalg.norm(gallery, axis=1, keepdims=True) + 1e-8)
-        similarities = gallery_norm @ query_norm
+        similarities = cosine_similarity_batch(query_embedding, gallery)
 
         return float(np.median(similarities))
 
     def __len__(self) -> int:
         return len(self.embeddings)
-
-
-def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
-    """Compute cosine similarity between two vectors."""
-    a_norm = a / (np.linalg.norm(a) + 1e-8)
-    b_norm = b / (np.linalg.norm(b) + 1e-8)
-    return float(np.dot(a_norm, b_norm))
 
 
 class ReIDExtractor:

@@ -16,6 +16,7 @@ import numpy as np
 
 from src.config import UnidentifiedFacesConfig
 from src.database.repository import Repository
+from src.utils.embedding_utils import cosine_similarity_batch
 from src.utils.profiler import profiler
 
 logger = logging.getLogger(__name__)
@@ -525,24 +526,15 @@ class UnidentifiedFaceManager:
         Returns:
             True if diverse enough, False if too similar
         """
-        existing_embeddings = self.repository.get_recent_unidentified_embeddings(
+        existing_embeddings = list(self.repository.get_recent_unidentified_embeddings(
             camera_id, limit=self.config.max_per_camera
-        )
+        ))
 
         if not existing_embeddings:
             return True
 
-        # Normalize embedding
-        embedding_norm = embedding / (np.linalg.norm(embedding) + 1e-8)
-
-        for existing in existing_embeddings:
-            existing_norm = existing / (np.linalg.norm(existing) + 1e-8)
-            similarity = np.dot(embedding_norm, existing_norm)
-
-            if similarity > self.config.embedding_similarity_threshold:
-                return False
-
-        return True
+        similarities = cosine_similarity_batch(embedding, np.stack(existing_embeddings))
+        return not bool(np.any(similarities > self.config.embedding_similarity_threshold))
 
     def _save_image(self, camera_id: str, face_crop: np.ndarray) -> Optional[str]:
         """Save face crop to disk.

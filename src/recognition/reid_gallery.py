@@ -19,7 +19,8 @@ from datetime import datetime
 import cv2
 import numpy as np
 
-from src.recognition.reid_extractor import ReIDExtractor, cosine_similarity, is_grayscale_image
+from src.recognition.reid_extractor import ReIDExtractor, is_grayscale_image
+from src.utils.embedding_utils import cosine_similarity
 
 if TYPE_CHECKING:
     from src.recognition.face_recognizer import FaceRecognizer

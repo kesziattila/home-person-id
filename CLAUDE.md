@@ -13,6 +13,8 @@
 - Composition over inheritance: core logic in base class (`IdentificationManager`), production features in a wrapper (`IdentityLinker`) that delegates, never duplicates
 - Dataclasses (not tuples) for complex method args/returns (e.g. `IdentificationResult`, `CrossCameraMatch`)
 - Required constructor deps (`repository`, `reid_extractor`, …) must NOT default to `None`; use `Optional` only when the class truly works without it
+- Shared helpers, don't re-implement: embedding math → `src/utils/embedding_utils.py` (`l2_normalize`, `cosine_similarity[_batch]`); bbox crops → `image_utils.crop_bbox`; exclusion zones → `DetectionResult.excluding_zones()`; detectors → `create_person_detector(config.detection)`
+- `src/cli_preview.py` = CLI preview pipeline (no DB); `src/visualization/preview.py` = web UI frame buffer/annotations
 - Centralize validation where data enters the system (e.g. grayscale/multi-face checks live in `ReIDGalleryManager.update_track_embedding()`), not in callers
 
 ## Performance & Memory

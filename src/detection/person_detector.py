@@ -17,6 +17,8 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from src.config import DetectionConfig
+
 logger = logging.getLogger(__name__)
 
 # COCO class ID for person
@@ -102,6 +104,20 @@ class DetectionResult:
 
     detections: list[Detection]
     frame_shape: tuple[int, int, int]  # (height, width, channels)
+
+    def excluding_zones(self, zones: Optional[list]) -> "DetectionResult":
+        """Drop detections whose center lies in any exclusion zone (normalized 0-1 coords)."""
+        if not zones:
+            return self
+        h, w = self.frame_shape[:2]
+        kept = [
+            d for d in self.detections
+            if not any(
+                z.x1 <= d.center[0] / w <= z.x2 and z.y1 <= d.center[1] / h <= z.y2
+                for z in zones
+            )
+        ]
+        return DetectionResult(detections=kept, frame_shape=self.frame_shape)
 
     @property
     def count(self) -> int:
@@ -473,42 +489,28 @@ class _TensorRTPersonDetectorImpl:
                 self._base = None
 
 
-def create_person_detector(
-    model_path: Optional[str] = None,
-    confidence_threshold: float = 0.5,
-    nms_iou_threshold: float = 0.4,
-    device: Optional[str] = None,
-    num_threads: int = 0,
-    use_tensorrt_native: bool = False,
-):
+def create_person_detector(config: DetectionConfig):
     """Factory function to create the appropriate person detector.
 
-    Args:
-        model_path: Path to model file (.pt, .engine, .trt)
-        confidence_threshold: Minimum confidence for detections
-        nms_iou_threshold: IoU threshold for NMS (Ultralytics only)
-        device: Device for inference (PersonDetector only)
-        num_threads: CPU threads (PersonDetector only)
-        use_tensorrt_native: Force TensorRT native backend for .engine/.trt files
+    Uses the TensorRT native backend when `config.use_tensorrt_native` is set and
+    the model is an .engine/.trt file, otherwise the Ultralytics/PyTorch backend.
 
     Returns:
         PersonDetector or TensorRTDetector instance
     """
-    model_path = model_path or "yolov8n.pt"
+    model_path = config.model or "yolov8n.pt"
 
-    # Use TensorRT native if explicitly requested and model is an engine file
-    if use_tensorrt_native and model_path.endswith((".engine", ".trt")):
+    if config.use_tensorrt_native and model_path.endswith((".engine", ".trt")):
         logger.info(f"Using TensorRT native backend for {model_path}")
         return TensorRTDetector(
             model_path=model_path,
-            confidence_threshold=confidence_threshold,
+            confidence_threshold=config.confidence_threshold,
         )
 
-    # Default to Ultralytics/PyTorch backend
     return PersonDetector(
         model_path=model_path,
-        confidence_threshold=confidence_threshold,
-        nms_iou_threshold=nms_iou_threshold,
-        device=device,
-        num_threads=num_threads,
+        confidence_threshold=config.confidence_threshold,
+        nms_iou_threshold=config.nms_iou_threshold,
+        device=config.device,
+        num_threads=config.num_threads,
     )

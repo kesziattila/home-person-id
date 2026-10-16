@@ -18,6 +18,8 @@ from typing import Optional
 import cv2
 import numpy as np
 
+from src.utils.embedding_utils import l2_normalize
+
 logger = logging.getLogger(__name__)
 
 
@@ -444,5 +446,4 @@ class TensorRTEmbedderBase(TensorRTEngine):
 
     def _normalize_embedding(self, embedding: np.ndarray) -> np.ndarray:
         """L2 normalize embedding."""
-        norm = np.linalg.norm(embedding) + 1e-8
-        return (embedding / norm).astype(np.float32)
+        return l2_normalize(embedding).astype(np.float32)

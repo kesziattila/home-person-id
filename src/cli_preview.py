@@ -1,7 +1,8 @@
-"""Shared preview functionality for camera visualization.
+"""CLI preview pipeline (`cli.py preview` / `multi-preview`).
 
-This module provides common classes for track rendering, face recognition,
-Re-ID management, and zone visualization used by both single and multi-camera previews.
+Per-camera frame processing (motion → detection → tracking → identification)
+in preview mode without the production DB, plus snapshot saving. The web UI's
+frame buffer and annotation helpers live in `src/visualization/preview.py`.
 """
 
 import time
@@ -14,6 +15,7 @@ import numpy as np
 from src.config import Config, CameraConfig
 from src.detection.motion_detector import MotionDetector, BaseMotionDetector
 from src.detection.person_detector import PersonDetector, DetectionResult
+from src.utils.image_utils import crop_bbox
 from src.recognition.identification_manager import IdentificationManager, TrackIdentity
 from src.tracking.byte_tracker import ByteTracker
 from src.tracking.zone_manager import ZoneManager
@@ -140,23 +142,6 @@ class CameraProcessor:
         self._detection_skip = config.detection.frame_skip  # Skip detection every N frames
         self._last_detections = None  # Cache last detection result for skipped frames
 
-    def _is_in_exclusion_zone(self, bbox: tuple, frame_w: int, frame_h: int) -> bool:
-        """Check if detection center is in any exclusion zone."""
-        if not self.exclusion_zones:
-            return False
-        cx = (bbox[0] + bbox[2]) / 2 / frame_w
-        cy = (bbox[1] + bbox[3]) / 2 / frame_h
-        for zone in self.exclusion_zones:
-            if zone.x1 <= cx <= zone.x2 and zone.y1 <= cy <= zone.y2:
-                return True
-        return False
-
-    def _get_crop(self, frame: np.ndarray, bbox: tuple) -> np.ndarray:
-        """Extract person crop from frame."""
-        frame_h, frame_w = frame.shape[:2]
-        x1, y1, x2, y2 = map(int, bbox)
-        return frame[max(0, y1):min(frame_h, y2), max(0, x1):min(frame_w, x2)]
-
     def _get_track_key(self, local_track_id: int) -> str:
         """Get identity key for a track (global ID if available, else local ID)."""
         if self._get_global_track_id:
@@ -205,12 +190,7 @@ class CameraProcessor:
         )
 
         if should_detect:
-            detections = self.person_detector.detect(frame)
-            # Filter exclusion zones
-            if self.exclusion_zones:
-                filtered = [d for d in detections.detections
-                            if not self._is_in_exclusion_zone(d.bbox, frame_w, frame_h)]
-                detections = DetectionResult(detections=filtered, frame_shape=detections.frame_shape)
+            detections = self.person_detector.detect(frame).excluding_zones(self.exclusion_zones)
             self._last_detections = detections
         else:
             # Use cached detections (or empty if none)
@@ -234,7 +214,7 @@ class CameraProcessor:
         # Process each track
         for local_track in track_result.tracks:
             track_key = self._get_track_key(local_track.track_id)
-            crop = self._get_crop(frame, local_track.bbox)
+            crop = crop_bbox(frame, local_track.bbox)
 
             if crop.size == 0:
                 continue

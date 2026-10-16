@@ -28,6 +28,7 @@ from src.tracking.handover import HandoverManager
 from src.visualization.preview import PreviewBuffer
 from src.visualization.debug_overlay import DebugOverlayRenderer
 from src.api.server import APIServer
+from src.utils.image_utils import crop_bbox
 from src.utils.profiler import profiler, memory_profiler, create_data_structure_tracker
 
 from queue import Queue, Empty
@@ -104,14 +105,8 @@ class PersonIDSystem:
         self.motion_manager = MotionDetectorManager(self.config.motion)
         self.person_detector = None
         if self.config.detection.enabled:
-            self.person_detector = create_person_detector(
-                model_path=self.config.detection.model,
-                confidence_threshold=self.config.detection.confidence_threshold,
-                nms_iou_threshold=self.config.detection.nms_iou_threshold,
-                device=self.config.detection.device,
-                num_threads=self.config.detection.num_threads,
-                use_tensorrt_native=self.config.detection.use_tensorrt_native,
-            )
+            self.person_detector = create_person_detector(self.config.detection)
+        self._exclusion_zones = {cam.id: cam.exclusion_zones for cam in self.config.cameras}
 
         # Initialize tracking
         if self.config.detection.confidence_threshold >= self.config.tracking.track_thresh:
@@ -352,6 +347,9 @@ class PersonIDSystem:
                     if self.person_detector:
                         with profiler.measure("PersonDetector.detect"):
                             detections = self.person_detector.detect(task.frame)
+                        detections = detections.excluding_zones(
+                            self._exclusion_zones.get(task.camera_id)
+                        )
 
                     # Extract Re-ID for high-confidence detections to avoid doing it in main thread.
                     # Low-confidence ones only extend existing tracks (ByteTrack 2nd stage);
@@ -363,15 +361,7 @@ class PersonIDSystem:
                         for i, det in enumerate(detections.detections):
                             if det.confidence < self.config.tracking.track_thresh:
                                 continue
-                            # Use a more robust crop to ensure Re-ID quality matches what's expected
-                            # ReIDExtractor uses the whole crop, but we need to ensure it's not empty
-                            x1, y1, x2, y2 = map(int, det.bbox)
-                            # Pad a bit if possible to avoid edge artifacts
-                            h, w = task.frame.shape[:2]
-                            x1, y1 = max(0, x1), max(0, y1)
-                            x2, y2 = min(w, x2), min(h, y2)
-
-                            crop = task.frame[y1:y2, x1:x2]
+                            crop = crop_bbox(task.frame, det.bbox)
                             if crop.size > 0:
                                 crops.append(crop)
                                 det_indices.append(i)

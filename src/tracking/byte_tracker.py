@@ -14,6 +14,7 @@ from filterpy.kalman import KalmanFilter
 from src.config import TrackingConfig
 from src.detection.person_detector import Detection, DetectionResult
 from src.tracking.track import LocalTrack, TrackState
+from src.utils.image_utils import crop_bbox
 
 logger = logging.getLogger(__name__)
 
@@ -390,25 +391,8 @@ class ByteTracker:
     def _extract_crop(
         self, frame: np.ndarray, bbox: tuple[float, float, float, float]
     ) -> np.ndarray:
-        """Extract person crop from frame.
-
-        Args:
-            frame: Full frame
-            bbox: Bounding box in xyxy format
-
-        Returns:
-            Cropped person image
-        """
-        x1, y1, x2, y2 = map(int, bbox)
-        h, w = frame.shape[:2]
-
-        # Clip to frame bounds
-        x1 = max(0, x1)
-        y1 = max(0, y1)
-        x2 = min(w, x2)
-        y2 = min(h, y2)
-
-        return frame[y1:y2, x1:x2].copy()
+        """Extract a person crop (copied, so it outlives the frame buffer)."""
+        return crop_bbox(frame, bbox).copy()
 
     def get_track(self, track_id: int) -> Optional[LocalTrack]:
         """Get track by ID."""
