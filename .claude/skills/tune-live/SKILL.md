@@ -32,6 +32,10 @@ DB timestamps are UTC; logs are Jetson local time.
 - Not running and the last journal entry says it was → check `rlog.sh errors` /
   `rlog.sh stdout`. If the crash follows the last change → **roll back** (step 4) first.
 - Running → note uptime; restarts since last cycle are a regression signal.
+- **Detection alive?** `rlog.sh perf`: `PersonDetector.infer` calls > 0 whenever
+  `Inference Queue` > 0, and `rlog.sh grep "Inference worker is not running"` is empty.
+  A full queue with 0 infer calls means a dead worker → treat as a crash.
+  After every deploy/restart, verify this with real motion, not just "System started".
 
 ## 2. Measure
 - KPIs: `scripts/remote/rquery_file.sh tuning_kpis hours=24` (per camera: tracks_created,

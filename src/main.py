@@ -289,11 +289,10 @@ class PersonIDSystem:
         # Start API server
         self.api_server.start()
 
-        # Start inference worker thread
-        self._inference_thread = Thread(target=self._inference_worker, name="InferenceWorker", daemon=True)
-        self._inference_thread.start()
-
+        # _running must be True BEFORE the worker starts: the worker loops on it, and a
+        # worker that checks it first exits silently (live 2026-10-16: no detections)
         self._running = True
+        self._start_inference_worker()
         logger.info("System started successfully")
 
         if self._debug:
@@ -344,6 +343,16 @@ class PersonIDSystem:
             pass
 
         logger.info("System stopped")
+
+    def _start_inference_worker(self) -> None:
+        self._inference_thread = Thread(target=self._inference_worker, name="InferenceWorker", daemon=True)
+        self._inference_thread.start()
+
+    def _ensure_inference_worker(self) -> None:
+        """Watchdog: restart the inference worker if it died (no detections otherwise)."""
+        if self._running and not self._inference_thread.is_alive():
+            logger.error("Inference worker is not running — restarting it")
+            self._start_inference_worker()
 
     def _inference_worker(self):
         """Background thread for running person detection."""
@@ -488,6 +497,7 @@ class PersonIDSystem:
                     pass
 
                 # 3. Periodic tasks
+                self._ensure_inference_worker()
                 self._periodic_cleanup()
 
                 # 4. Stats
