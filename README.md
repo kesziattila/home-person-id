@@ -392,8 +392,9 @@ See `config/config.yaml` for all options. Key settings:
 | `motion.use_cuda` | Use CUDA-accelerated motion detection | false |
 | `motion.resize_on_cpu` | Resize frames on CPU before GPU upload (saves GPU memory) | false |
 | `detection.device` | YOLO device: "cuda", "cpu", or null (auto) | null |
-| `tracking.track_thresh` | Detection confidence threshold | 0.5 |
-| `tracking.match_thresh` | IoU threshold for tracking (lower for fast movement) | 0.3 |
+| `detection.confidence_threshold` | Low detection threshold (ByteTrack 2nd stage); keep below `track_thresh` | 0.15 |
+| `tracking.track_thresh` | High threshold: detections that may start tracks | 0.5 |
+| `tracking.match_thresh` | Min IoU for detection↔track matching (lower = more lenient) | 0.3 |
 | `camera_topology.enable_handover` | Enable lost→reappear handover across cameras | true |
 | `camera_topology.enable_cross_camera_propagation` | Enable zone identity propagation between simultaneous tracks | true |
 | `reid.similarity_threshold` | Re-ID match threshold | 0.65 |
@@ -549,11 +550,9 @@ self._model.to('cpu')
 - Increase `reid.gallery_size` for more stable matching
 - Ensure good lighting for quality crops
 
-### Tracking creates too many IDs
-- Lower `tracking.match_thresh` (e.g., 0.2) for fast-moving persons
-- Increase `tracking.track_buffer` to keep lost tracks longer
-
-### Track flickering (rapid lost/recovered cycles)
-- Increase `tracking.match_thresh` (e.g., 0.5-0.6) to tolerate bbox jitter for stationary people
+### Tracking creates too many IDs / track flickering
+- Make sure `detection.confidence_threshold` is well below `tracking.track_thresh`
+  (e.g. 0.15 vs 0.5) so ByteTrack's low-confidence stage can keep occluded or
+  seated people on their existing track (a warning is logged at startup otherwise)
+- Lower `tracking.match_thresh` (e.g., 0.2) for fast-moving persons or bbox jitter
 - Increase `tracking.track_buffer` (e.g., 60-90) so ByteTrack handles gaps internally
-- Lower `detection.confidence_threshold` (e.g., 0.3-0.4) to keep borderline detections

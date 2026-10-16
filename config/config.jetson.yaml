@@ -62,7 +62,7 @@ motion:
 detection:
   enabled: true
   model: "yolov8n.pt"           # Or "yolov8n.engine" for TensorRT (2-3x faster)
-  confidence_threshold: 0.5
+  confidence_threshold: 0.15
   nms_iou_threshold: 0.4
   frame_skip: 1                 # No need to skip on GPU
   num_threads: 0                # Auto (GPU handles it)
@@ -72,7 +72,7 @@ detection:
 
 # Single-camera tracking
 tracking:
-  track_thresh: 0.5
+  track_thresh: 0.5  # High/low split; keep detection.confidence_threshold below this
   track_buffer: 60
   match_thresh: 0.3
   stationary_timeout: 0

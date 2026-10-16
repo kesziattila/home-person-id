@@ -245,127 +245,58 @@ class ByteTracker:
         else:
             predicted_boxes = np.empty((0, 4), dtype=np.float64)
 
-        # Split detections into high and low confidence
-        high_conf_mask = dets[:, 4] >= self.config.track_thresh if len(dets) > 0 else []
-        high_conf_dets = dets[high_conf_mask] if len(dets) > 0 else np.empty((0, 5))
-        low_conf_dets = dets[~high_conf_mask] if len(dets) > 0 else np.empty((0, 5))
+        # Split detections into high and low confidence (indices into dets)
+        high_idx = np.flatnonzero(dets[:, 4] >= self.config.track_thresh)
+        low_idx = np.flatnonzero(dets[:, 4] < self.config.track_thresh)
 
         # First association: high confidence detections with all trackers
-        if len(high_conf_dets) > 0 and len(predicted_boxes) > 0:
-            iou_matrix = iou_batch(high_conf_dets[:, :4], predicted_boxes)
-            cost_matrix = 1 - iou_matrix
-
-            matched, unmatched_dets, unmatched_trks = linear_assignment(cost_matrix)
-
-            # Filter matches by IoU threshold
-            final_matched = []
-            for m in matched:
-                if iou_matrix[m[0], m[1]] >= self.config.match_thresh:
-                    final_matched.append(m)
-                else:
-                    unmatched_dets.append(m[0])
-                    unmatched_trks.append(m[1])
-
-            matched = final_matched
-        else:
-            matched = []
-            unmatched_dets = list(range(len(high_conf_dets)))
-            unmatched_trks = list(range(len(self._trackers)))
-
-        # Update matched trackers
-        for m in matched:
-            det_idx, trk_idx = m
-            # Map det_idx to original index if mask was used
-            orig_det_idx = np.where(high_conf_mask)[0][det_idx]
-
-            self._trackers[trk_idx].update(high_conf_dets[det_idx, :4])
-            track = self._tracks[self._trackers[trk_idx].id]
-            was_confirmed = track.is_confirmed
-            track.bbox = tuple(high_conf_dets[det_idx, :4])
-            track.confidence = high_conf_dets[det_idx, 4]
-            track.hits += 1
-            track.time_since_update = 0
-            track.state = TrackState.TRACKED
-
-            # Store pre-computed Re-ID embedding if available
-            if reid_embeddings and orig_det_idx in reid_embeddings:
-                emb, qual = reid_embeddings[orig_det_idx]
-                track.last_reid_embedding = emb
-                track.last_reid_quality = qual
-
+        matched, unmatched_dets, unmatched_trks = self._associate(
+            dets[high_idx, :4], predicted_boxes
+        )
+        for det_idx, trk_idx in matched:
+            tracker = self._trackers[trk_idx]
+            was_confirmed = self._tracks[tracker.id].is_confirmed
+            track = self._apply_detection(tracker, dets, high_idx[det_idx], frame, reid_embeddings)
             # Report as new when track becomes confirmed (not on first detection)
             if not was_confirmed and track.is_confirmed:
                 new_track_ids.append(track.track_id)
 
-            # Extract crop if frame provided
-            if frame is not None:
-                track.last_crop = self._extract_crop(frame, track.bbox)
+        # Second association: low confidence detections keep existing confirmed
+        # tracks alive (occlusion, sitting, motion blur). Unconfirmed tracks are
+        # excluded so low-confidence noise can never confirm a spurious track.
+        remaining = [
+            i for i in unmatched_trks
+            if (t := self._tracks.get(self._trackers[i].id)) is not None and t.is_confirmed
+        ]
+        matched_low, _, _ = self._associate(
+            dets[low_idx, :4], predicted_boxes[remaining]
+        )
+        recovered = set()
+        for det_idx, trk_idx in matched_low:
+            self._apply_detection(
+                self._trackers[remaining[trk_idx]], dets, low_idx[det_idx], frame, reid_embeddings
+            )
+            recovered.add(remaining[trk_idx])
+        unmatched_trks = [i for i in unmatched_trks if i not in recovered]
 
-        # Second association: low confidence detections with remaining trackers
-        remaining_trks = [self._trackers[i] for i in unmatched_trks]
-        if len(low_conf_dets) > 0 and len(remaining_trks) > 0:
-            remaining_boxes = np.array([t.get_state() for t in remaining_trks])
-            iou_matrix = iou_batch(low_conf_dets[:, :4], remaining_boxes)
-            cost_matrix = 1 - iou_matrix
-
-            matched_low, _, still_unmatched = linear_assignment(cost_matrix)
-
-            for m in matched_low:
-                det_idx, trk_idx = m
-                if iou_matrix[det_idx, trk_idx] >= self.config.match_thresh:
-                    # Map det_idx to original index if mask was used
-                    orig_det_idx = np.where(~high_conf_mask)[0][det_idx]
-
-                    tracker = remaining_trks[trk_idx]
-                    tracker.update(low_conf_dets[det_idx, :4])
-                    track = self._tracks[tracker.id]
-                    track.bbox = tuple(low_conf_dets[det_idx, :4])
-                    track.confidence = low_conf_dets[det_idx, 4]
-                    track.time_since_update = 0
-
-                    # Store pre-computed Re-ID embedding if available
-                    if reid_embeddings and orig_det_idx in reid_embeddings:
-                        emb, qual = reid_embeddings[orig_det_idx]
-                        track.last_reid_embedding = emb
-                        track.last_reid_quality = qual
-
-                    # Remove from unmatched
-                    orig_idx = unmatched_trks[trk_idx]
-                    if orig_idx in unmatched_trks:
-                        unmatched_trks.remove(orig_idx)
-                else:
-                    still_unmatched.append(trk_idx)
-
-        # Create new trackers for unmatched high confidence detections
-        # Note: new_track_ids is NOT populated here - tracks are reported as "new"
-        # only when they become confirmed (hits >= 3) to avoid spurious detections
-        for i in unmatched_dets:
-            det = high_conf_dets[i]
-            # Map i to original index
-            orig_det_idx = np.where(high_conf_mask)[0][i]
-
+        # Create new trackers for unmatched high confidence detections.
+        # new_track_ids is NOT populated here - tracks are reported as "new"
+        # only when they become confirmed to avoid spurious detections.
+        for det_idx in unmatched_dets:
+            det = dets[high_idx[det_idx]]
             tracker = KalmanBoxTracker(det[:4])
             self._trackers.append(tracker)
-
-            track = LocalTrack(
+            self._tracks[tracker.id] = LocalTrack(
                 track_id=self._next_id,
                 camera_id=self.camera_id,
                 bbox=tuple(det[:4]),
                 confidence=det[4],
                 state=TrackState.NEW,
             )
-            
-            # Store pre-computed Re-ID embedding if available
-            if reid_embeddings and orig_det_idx in reid_embeddings:
-                emb, qual = reid_embeddings[orig_det_idx]
-                track.last_reid_embedding = emb
-                track.last_reid_quality = qual
-
-            self._tracks[tracker.id] = track
             self._next_id += 1
-
-            if frame is not None:
-                track.last_crop = self._extract_crop(frame, track.bbox)
+            self._store_observation(
+                self._tracks[tracker.id], high_idx[det_idx], frame, reid_embeddings
+            )
 
         # Mark unmatched trackers as lost
         for i in unmatched_trks:
@@ -402,6 +333,59 @@ class ByteTracker:
             lost_track_ids=lost_track_ids,
             removed_track_ids=removed_track_ids,
         )
+
+    def _associate(
+        self, det_boxes: np.ndarray, track_boxes: np.ndarray
+    ) -> tuple[list, list, list]:
+        """Match detections to track boxes by IoU, rejecting pairs below match_thresh.
+
+        Returns:
+            (matched [(det_idx, trk_idx)], unmatched det indices, unmatched track indices)
+        """
+        iou_matrix = iou_batch(det_boxes, track_boxes)
+        matched, unmatched_dets, unmatched_trks = linear_assignment(1 - iou_matrix)
+
+        accepted = []
+        for det_idx, trk_idx in matched:
+            if iou_matrix[det_idx, trk_idx] >= self.config.match_thresh:
+                accepted.append((det_idx, trk_idx))
+            else:
+                unmatched_dets.append(det_idx)
+                unmatched_trks.append(trk_idx)
+        return accepted, unmatched_dets, unmatched_trks
+
+    def _apply_detection(
+        self,
+        tracker: "KalmanBoxTracker",
+        dets: np.ndarray,
+        det_idx: int,
+        frame: Optional[np.ndarray],
+        reid_embeddings: Optional[dict[int, tuple[np.ndarray, float]]],
+    ) -> LocalTrack:
+        """Update a matched tracker and its track with detection `dets[det_idx]`."""
+        det = dets[det_idx]
+        tracker.update(det[:4])
+        track = self._tracks[tracker.id]
+        track.bbox = tuple(det[:4])
+        track.confidence = det[4]
+        track.hits += 1
+        track.time_since_update = 0
+        track.state = TrackState.TRACKED
+        self._store_observation(track, det_idx, frame, reid_embeddings)
+        return track
+
+    def _store_observation(
+        self,
+        track: LocalTrack,
+        det_idx: int,
+        frame: Optional[np.ndarray],
+        reid_embeddings: Optional[dict[int, tuple[np.ndarray, float]]],
+    ) -> None:
+        """Attach the pre-computed Re-ID embedding and crop for a detection."""
+        if reid_embeddings and det_idx in reid_embeddings:
+            track.last_reid_embedding, track.last_reid_quality = reid_embeddings[det_idx]
+        if frame is not None:
+            track.last_crop = self._extract_crop(frame, track.bbox)
 
     def _extract_crop(
         self, frame: np.ndarray, bbox: tuple[float, float, float, float]

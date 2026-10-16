@@ -35,7 +35,7 @@ motion:
 detection:
   enabled: true
   model: "yolov8n.pt"           # Smallest YOLO model
-  confidence_threshold: 0.5
+  confidence_threshold: 0.15
   nms_iou_threshold: 0.4
   frame_skip: 2                 # Only detect every 2nd frame (saves ~50% CPU)
   num_threads: 4                # Limit threads to prevent CPU saturation
@@ -43,7 +43,7 @@ detection:
 
 # Single-camera tracking
 tracking:
-  track_thresh: 0.5
+  track_thresh: 0.5  # High/low split; keep detection.confidence_threshold below this
   track_buffer: 60
   match_thresh: 0.3
   stationary_timeout: 0

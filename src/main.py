@@ -114,6 +114,12 @@ class PersonIDSystem:
             )
 
         # Initialize tracking
+        if self.config.detection.confidence_threshold >= self.config.tracking.track_thresh:
+            logger.warning(
+                f"detection.confidence_threshold ({self.config.detection.confidence_threshold}) >= "
+                f"tracking.track_thresh ({self.config.tracking.track_thresh}): ByteTrack's "
+                "low-confidence stage is disabled, expect fragmented tracks. Set it to ~0.15."
+            )
         self.tracker_manager = ByteTrackerManager(self.config.tracking)
         self.stationary_tracker = StationaryTracker(self.config.tracking.stationary_timeout)
         self.zone_manager = ZoneManager(self.config.zones)
@@ -347,12 +353,16 @@ class PersonIDSystem:
                         with profiler.measure("PersonDetector.detect"):
                             detections = self.person_detector.detect(task.frame)
 
-                    # Extract Re-ID for all detections to avoid doing it in main thread
+                    # Extract Re-ID for high-confidence detections to avoid doing it in main thread.
+                    # Low-confidence ones only extend existing tracks (ByteTrack 2nd stage);
+                    # their crops are poor Re-ID material and would inflate the batch.
                     reid_embeddings = {}
                     if detections.detections:
                         crops = []
                         det_indices = []
                         for i, det in enumerate(detections.detections):
+                            if det.confidence < self.config.tracking.track_thresh:
+                                continue
                             # Use a more robust crop to ensure Re-ID quality matches what's expected
                             # ReIDExtractor uses the whole crop, but we need to ensure it's not empty
                             x1, y1, x2, y2 = map(int, det.bbox)

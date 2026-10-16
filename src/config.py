@@ -105,8 +105,9 @@ class DetectionConfig:
     # YOLO model to use (e.g., yolov8n.pt, yolov8s.pt, yolo11n.pt, yolo11s.pt)
     # Smaller models are faster: yolov8n (fastest) < yolov8s < yolov8m < yolov8l
     model: str = "yolov8n.pt"
-    # Minimum confidence for detections
-    confidence_threshold: float = 0.5
+    # Minimum confidence for detections. Keep below tracking.track_thresh so
+    # ByteTrack's second (low-confidence) association stage receives detections.
+    confidence_threshold: float = 0.15
     # NMS IoU threshold (lower = fewer overlapping boxes)
     nms_iou_threshold: float = 0.4
     # Only run detection every N frames (1 = every frame, 2 = every other frame)
@@ -128,8 +129,11 @@ class DetectionConfig:
 class TrackingConfig:
     """Single-camera tracking configuration."""
 
-    track_thresh: float = 0.5  # Deprecated: use detection.confidence_threshold
+    # High/low split: detections >= track_thresh can start tracks; lower ones
+    # (down to detection.confidence_threshold) only keep confirmed tracks alive
+    track_thresh: float = 0.5
     track_buffer: int = 30
+    # Minimum IoU between detection and predicted track box (lower = more lenient)
     match_thresh: float = 0.3
     # Seconds before removing stationary track (0 = no timeout, keep forever)
     stationary_timeout: float = 60.0

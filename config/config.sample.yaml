@@ -137,12 +137,13 @@ detection:
   model: "yolov8n.pt"
 
   # Minimum confidence for detections (0.0 - 1.0)
-  # Higher = fewer false positives, lower = catch more people.
-  # ByteTrack has two-stage matching: high-conf detections are matched first,
-  # then low-conf detections are matched against lost tracks. Lowering this
-  # to 0.3-0.4 helps recover flickering tracks (borderline detections that
-  # hover around the threshold).
-  confidence_threshold: 0.5
+  # This is ByteTrack's LOW threshold: it must stay below tracking.track_thresh.
+  # Detections >= tracking.track_thresh can start new tracks; detections between
+  # this value and track_thresh only keep already-confirmed tracks alive
+  # (occlusion, sitting on a sofa, motion blur). If this is >= track_thresh the
+  # second association stage gets no input and tracks fragment into many IDs.
+  # Low-confidence detections never create tracks, so false positives stay rare.
+  confidence_threshold: 0.15
 
   # Non-Maximum Suppression IoU threshold
   # Lower = fewer overlapping boxes, higher = allow more overlap
@@ -176,7 +177,10 @@ detection:
 # Tracks individuals within a single camera view.
 
 tracking:
-  # Detection confidence threshold for new tracks (deprecated, use detection.confidence_threshold)
+  # High/low confidence split for ByteTrack's two-stage association.
+  # Detections >= track_thresh are matched first and may start new tracks;
+  # lower ones (down to detection.confidence_threshold) are matched only
+  # against confirmed tracks that the first stage left unmatched.
   track_thresh: 0.5
 
   # Frames to keep track alive without detection.
@@ -195,10 +199,9 @@ tracking:
   # ByteTrack compares each detection's bounding box against predicted track
   # positions using IoU (Intersection over Union). If IoU is below this
   # threshold, the detection won't match the track.
-  # Lower = stricter (bbox must overlap closely), higher = more lenient.
-  # If a stationary person's detection bbox shifts slightly between frames
-  # (due to model jitter, lighting changes), a strict threshold causes
-  # match failures → track flickering. Increasing to 0.5-0.6 helps.
+  # Lower = more lenient (tolerates fast movement / bbox jitter),
+  # higher = stricter (bbox must overlap closely, fewer ID swaps between
+  # nearby people). At low FPS or with fast movement keep it around 0.2-0.3.
   match_thresh: 0.3
 
   # Seconds before removing stationary track (0 = never remove).
