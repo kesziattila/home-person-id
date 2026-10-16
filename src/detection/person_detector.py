@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from src.config import DetectionConfig
+from src.utils.profiler import profiler
 
 logger = logging.getLogger(__name__)
 
@@ -422,21 +423,24 @@ class _TensorRTPersonDetectorImpl:
             input_host, _ = self._base._get_input_buffer()
             return (chw.astype(input_host.dtype) / 255.0)
 
-        input_tensor, scale, pad_h, pad_w = self._base._letterbox_preprocess(
-            frame, self.input_size, normalize_yolo
-        )
+        with profiler.measure("PersonDetector.preprocess"):
+            input_tensor, scale, pad_h, pad_w = self._base._letterbox_preprocess(
+                frame, self.input_size, normalize_yolo
+            )
         self._scale = scale
         self._pad_h = pad_h
         self._pad_w = pad_w
 
         # Run inference
-        outputs = self._base._run_inference(input_tensor)
+        with profiler.measure("PersonDetector.infer"):
+            outputs = self._base._run_inference(input_tensor)
 
         if not outputs:
             return DetectionResult(detections=[], frame_shape=frame.shape)
 
         # Postprocess
-        detections = self._postprocess(outputs[0], frame.shape[:2])
+        with profiler.measure("PersonDetector.postprocess"):
+            detections = self._postprocess(outputs[0], frame.shape[:2])
 
         return DetectionResult(detections=detections, frame_shape=frame.shape)
 

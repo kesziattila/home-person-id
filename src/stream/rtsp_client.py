@@ -11,6 +11,8 @@ from typing import Callable, Optional
 import cv2
 import numpy as np
 
+from src.utils.profiler import profiler
+
 logger = logging.getLogger(__name__)
 
 
@@ -210,7 +212,9 @@ class RTSPClient:
 
             # Retrieve (decode) the grabbed frame
             try:
-                ret, image = self._cap.retrieve()
+                # Calls per report window = delivered FPS x 10 for this camera
+                with profiler.measure(f"RTSPClient.retrieve[{self.camera_id}]"):
+                    ret, image = self._cap.retrieve()
 
                 if not ret or image is None:
                     logger.warning(f"Camera {self.camera_id}: Failed to retrieve frame")
@@ -230,6 +234,8 @@ class RTSPClient:
                 if self._frame_queue.full():
                     try:
                         self._frame_queue.get_nowait()
+                        # Frames the main loop never consumed (counted as calls)
+                        profiler.end_measure(f"RTSPClient.dropped[{self.camera_id}]", time.perf_counter())
                     except Empty:
                         pass
 

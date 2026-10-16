@@ -428,7 +428,8 @@ class PersonIDSystem:
                 loop_start = time.perf_counter()
                 
                 # 1. Collect frames from cameras and push to inference queue
-                frames = self.stream_manager.get_frames(timeout=0.01)
+                with profiler.measure("MainLoop.get_frames"):
+                    frames = list(self.stream_manager.get_frames(timeout=0.01))
                 for frame in frames:
                     self._frame_count += 1
                     camera_id = frame.camera_id
