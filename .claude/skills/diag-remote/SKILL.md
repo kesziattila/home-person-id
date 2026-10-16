@@ -56,6 +56,7 @@ The user may also start/stop the system manually — always check status first, 
    live behavior with the same query that found the problem.
 
 ## Hard rules
-- Never modify the Jetson's `config/config.yaml`, `data/`, `venv/` — deploy.sh excludes them by design.
+- Never modify the Jetson's `data/`, `venv/` — deploy.sh excludes them by design. Change `config/config.yaml`
+  only via `scripts/remote/push_config.sh` (validates + backs up); the `tune-live` skill owns routine tuning.
 - Never commit `scripts/remote/remote.env` or anything under `local/`.
 - Bound every log/DB read (LIMIT, tail -n) to protect context.

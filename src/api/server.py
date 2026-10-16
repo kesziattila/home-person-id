@@ -4,8 +4,8 @@ import logging
 import os
 import threading
 import uvicorn
-from fastapi import FastAPI, Request
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
@@ -68,6 +68,19 @@ class APIServer:
         async def get_cameras():
             return {"cameras": self.buffer.get_all_camera_ids()}
 
+        @self.app.get("/api/v1/frame/{camera_id}")
+        async def frame(camera_id: str, zones: bool = True):
+            """Latest annotated frame as one JPEG (zones drawn by default) — for zone review."""
+            preview_frame = self.buffer.get_latest_frame(camera_id)
+            if preview_frame is None:
+                raise HTTPException(status_code=404, detail=f"No frame for camera {camera_id}")
+            jpeg = await asyncio.get_running_loop().run_in_executor(
+                self.executor, self._annotate_and_encode, preview_frame, zones
+            )
+            if jpeg is None:
+                raise HTTPException(status_code=500, detail="Frame encoding failed")
+            return Response(content=jpeg, media_type="image/jpeg")
+
         @self.app.get("/api/v1/stream/{camera_id}")
         async def stream(camera_id: str, request: Request):
             return StreamingResponse(
@@ -102,21 +115,27 @@ class APIServer:
                 self.app.include_router(unidentified_faces_router)
                 logger.info("Unidentified faces API routes registered")
 
-    def _process_and_encode_frame(self, preview_frame):
-        """Processes a single frame by annotating and encoding it."""
+    def _annotate_and_encode(self, preview_frame, show_zones: bool = False) -> Optional[bytes]:
+        """Annotate a buffered frame and encode it as JPEG."""
         annotated_image = Visualizer.draw_detections(
-            preview_frame.image, 
+            preview_frame.image,
             preview_frame.metadata,
             zone_manager=self.zone_manager,
-            show_zones=False
+            show_zones=show_zones,
         )
         try:
-            frame_bytes = encode_jpeg(annotated_image, use_nvjpeg=self.use_nvjpeg)
-            return (b'--frame\r\n'
-                    b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+            return encode_jpeg(annotated_image, use_nvjpeg=self.use_nvjpeg)
         except Exception as e:
             logger.error(f"Error encoding frame: {e}")
         return None
+
+    def _process_and_encode_frame(self, preview_frame):
+        """Annotate and encode a frame as one MJPEG multipart chunk."""
+        frame_bytes = self._annotate_and_encode(preview_frame)
+        if frame_bytes is None:
+            return None
+        return (b'--frame\r\n'
+                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
 
     async def generate_frames_threaded(self, camera_id: str, request: Request):
         """Generate MJPEG frames for a camera, skipping duplicates."""

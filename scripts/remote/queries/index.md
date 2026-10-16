@@ -15,6 +15,7 @@ All DB timestamps are **UTC** (`datetime('now')` in SQLite is also UTC — compa
 | `match_rate_per_person` | Is one person's recognition degraded (bad gallery)? | hours=168 |
 | `confidence_histogram` | Where should the similarity thresholds sit? (0.05 buckets) | hours=168 |
 | `reid_gallery_quality` | Is the Re-ID gallery healthy per person? | — |
+| `tuning_kpis` | Self-tuning KPI snapshot per camera (recreate_rate, coverage_10s, flip-flops) | hours=24 |
 | `cross_camera_propagation_audit` | Were identity transfers / upgrades correct? | hours=48, limit=100 |
 
 ## Useful `events.extra_data` JSON keys (use `json_extract(extra_data, '$.key')`)

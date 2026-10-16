@@ -15,6 +15,7 @@
 - Required constructor deps (`repository`, `reid_extractor`, …) must NOT default to `None`; use `Optional` only when the class truly works without it
 - Shared helpers, don't re-implement: embedding math → `src/utils/embedding_utils.py` (`l2_normalize`, `cosine_similarity[_batch]`); bbox crops → `image_utils.crop_bbox`; exclusion zones → `DetectionResult.excluding_zones()`; detectors → `create_person_detector(config.detection)`
 - `src/cli_preview.py` = CLI preview pipeline (no DB); `src/visualization/preview.py` = web UI frame buffer/annotations
+- Face match policy = `FaceMatchScores.accepts(similarity_threshold, min_margin)` via `IdentificationManager.score_face()` (per-person top1/top2); production attempts are logged by `FaceScoreLogger`
 - Centralize validation where data enters the system (e.g. grayscale/multi-face checks live in `ReIDGalleryManager.update_track_embedding()`), not in callers
 
 ## Performance & Memory
@@ -76,7 +77,10 @@ System runs live on a Jetson; all remote interaction goes through `scripts/remot
 - `rquery.sh '<SQL>'` / `rquery_file.sh <name> [k=v]` — read-only SQL (canned queries: `scripts/remote/queries/index.md`)
 - `sync_db.sh` — consistent DB copy → `local/remote/database.db`
 - `fetch_snapshots.sh --event|--query|--path` → `local/remote/snapshots/`
-- `fetch_config.sh` → `local/remote/config.jetson-live.yaml`
+- `fetch_config.sh` → `local/remote/config.jetson-live.yaml`; `push_config.sh [file|--rollback]` — the only way to change the live config (validates, backs up to remote `data/config-backups/`)
+- `fetch_metrics.sh` → `local/remote/metrics/` (face score JSONL → `tools/analyze_face_scores.py`)
+- `grab_frames.sh [cam…]` → latest frames with zones drawn (`/api/v1/frame/{cam}`) for zone review
+- Self-tuning: `tune-live` skill, journal in `docs/TUNING_LOG.md`, KPIs `queries/tuning_kpis.sql`
 - `rlog.sh tail|grep|around|errors|perf|stdout` — always bounded; never dump whole logs into context
 
 ### Conventions
