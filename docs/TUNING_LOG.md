@@ -77,3 +77,15 @@ identity and "last known room" — not continuous identity of every person at ev
 - Change: duplicate guard (`tracking.duplicate_ioa` 0.6) + association event log
   (`data/metrics/track_events/`, `tools/analyze_track_events.py`) to find the real cause
   of births (assoc_fail vs duplicate vs new).
+
+### 2026-10-16 18:43 UTC — OUTAGE: no detections 18:21–18:43 UTC (fixed)
+- Symptom: after the 20:30 and 20:38 (local) restarts no tracks at all; inference queue full,
+  0 detector calls. py-spy: no InferenceWorker thread.
+- Cause: start-up race — the worker was started before `_running = True` and exited
+  silently when it checked the flag first (pre-existing bug; today's changes shifted timing).
+- Fix: commit "Fix inference worker start-up race and add watchdog" (flag set first + main-loop
+  watchdog restarts a dead worker). Health check in tune-live now verifies detector calls.
+- KPI impact: 18:21–18:43 UTC has no data; exclude it from comparisons.
+- Finding while profiling (pre-outage busy report): cameras deliver only 5–6 FPS
+  (ground_floor/hallway 6, living_room 5, entrance 15 → throttled to 5); detector ~41 % busy,
+  NVDEC clocked down. Low camera FPS is the main reason IoU association fails for walking people.
