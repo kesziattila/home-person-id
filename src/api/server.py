@@ -31,7 +31,8 @@ class APIServer:
         host: str = "0.0.0.0",
         port: int = 8000,
         use_nvjpeg: bool = False,
-        zone_manager: Optional[ZoneManager] = None
+        zone_manager: Optional[ZoneManager] = None,
+        timeline_min_stay_sec: float = 5.0,
     ):
         self.buffer = buffer
         self.repository = repository
@@ -41,6 +42,7 @@ class APIServer:
         self.port = port
         self.use_nvjpeg = use_nvjpeg
         self.zone_manager = zone_manager
+        self.timeline_min_stay_sec = timeline_min_stay_sec
         self.app = FastAPI(title="Home Person ID API")
         self.executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
 
@@ -75,7 +77,9 @@ class APIServer:
 
         # Register events router if repository is available
         if self.repository:
-            events_router = create_events_router(self.repository)
+            events_router = create_events_router(
+                self.repository, self.timeline_min_stay_sec
+            )
             self.app.include_router(events_router)
             logger.info("Events API routes registered")
 

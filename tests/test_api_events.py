@@ -179,32 +179,126 @@ class TestPersonLocationEndpoint:
         assert response.status_code == 404
 
 
+def _add_zone_change(repository, person_id, camera_id, ts, new_zone,
+                     prev_zone=None, is_estimated=False, snapshot_path=None):
+    """Insert a person_zone_change event with an explicit timestamp.
+
+    create_event() defaults timestamp to utcnow(), so for deterministic
+    ordering/durations we insert the Event row directly via a session.
+    """
+    from src.database.models import Event
+
+    with repository.get_session() as session:
+        event = Event(
+            timestamp=ts,
+            camera_id=camera_id,
+            event_type="person_zone_change",
+            person_id=person_id,
+            snapshot_path=snapshot_path,
+            extra_data={
+                "prev_zone": prev_zone,
+                "new_zone": new_zone,
+                "is_estimated": is_estimated,
+            },
+        )
+        session.add(event)
+        session.commit()
+        session.refresh(event)
+        return event.id
+
+
 class TestPersonTimelineEndpoint:
     """Tests for /api/v1/persons/{person_id}/timeline endpoint."""
 
-    def test_get_person_timeline(self, client, sample_data):
-        """Test getting person timeline."""
-        person_id = sample_data["person1"].id
-        response = client.get(f"/api/v1/persons/{person_id}/timeline")
-        assert response.status_code == 200
-        timeline = response.json()
-        assert timeline["person_id"] == person_id
-        assert timeline["person_name"] == "John Doe"
-        assert "sightings" in timeline
-        assert len(timeline["sightings"]) >= 1
+    @pytest.fixture
+    def person(self, repository):
+        return repository.create_person("Walker")
 
-    def test_get_person_timeline_sighting_details(self, client, sample_data):
-        """Test timeline sighting details."""
-        person_id = sample_data["person1"].id
-        response = client.get(f"/api/v1/persons/{person_id}/timeline")
-        assert response.status_code == 200
-        timeline = response.json()
+    def test_collapses_consecutive_same_zone(self, client, repository, person):
+        """Consecutive same-zone observations collapse into one stay segment."""
+        base = datetime.utcnow() - timedelta(minutes=30)
+        # living_room observed 4 times, then hallway once
+        _add_zone_change(repository, person.id, "cam1", base, "living_room")
+        _add_zone_change(repository, person.id, "cam1", base + timedelta(seconds=20), "living_room")
+        _add_zone_change(repository, person.id, "cam1", base + timedelta(seconds=40), "living_room")
+        _add_zone_change(repository, person.id, "cam1", base + timedelta(minutes=2), "living_room")
+        _add_zone_change(repository, person.id, "cam2", base + timedelta(minutes=3), "hallway")
 
-        if timeline["sightings"]:
-            sighting = timeline["sightings"][0]
-            assert "camera_id" in sighting
-            assert "entered_at" in sighting
-            assert sighting["camera_id"] == "camera1"
+        response = client.get(f"/api/v1/persons/{person.id}/timeline")
+        assert response.status_code == 200
+        segments = response.json()["segments"]
+
+        # newest first: hallway (current), then living_room
+        assert len(segments) == 2
+        assert segments[0]["zone"] == "hallway"
+        assert segments[0]["is_current"] is True
+        assert segments[0]["exited_at"] is None
+        assert segments[1]["zone"] == "living_room"
+        assert segments[1]["is_current"] is False
+        # living_room duration = entered..hallway entry = 3 minutes
+        assert segments[1]["duration_sec"] == pytest.approx(180.0)
+
+    def test_exposes_snapshot_event_id(self, client, repository, person):
+        """A non-estimated event with a snapshot surfaces its snapshot_event_id."""
+        base = datetime.utcnow() - timedelta(minutes=10)
+        ev_id = _add_zone_change(
+            repository, person.id, "cam1", base, "kitchen",
+            snapshot_path="/data/snapshots/x.jpg",
+        )
+        _add_zone_change(repository, person.id, "cam1", base + timedelta(minutes=1), "bedroom")
+
+        response = client.get(f"/api/v1/persons/{person.id}/timeline")
+        segments = response.json()["segments"]
+        kitchen = next(s for s in segments if s["zone"] == "kitchen")
+        assert kitchen["snapshot_event_id"] == ev_id
+
+    def test_estimated_only_stay_is_marked_estimated(self, client, repository, person):
+        """A stay built solely from estimated observations is flagged estimated."""
+        base = datetime.utcnow() - timedelta(minutes=10)
+        _add_zone_change(repository, person.id, "cam1", base, "outside", is_estimated=True)
+        _add_zone_change(repository, person.id, "cam1", base + timedelta(minutes=1), "hallway")
+
+        response = client.get(f"/api/v1/persons/{person.id}/timeline")
+        segments = response.json()["segments"]
+        outside = next(s for s in segments if s["zone"] == "outside")
+        assert outside["is_estimated"] is True
+
+    def test_merges_subthreshold_flicker(self, client, repository, person):
+        """A short A->b->A flicker merges into a single A segment (threshold=5s)."""
+        base = datetime.utcnow() - timedelta(minutes=10)
+        # living_room, brief 2s hallway flicker, back to living_room, then kitchen
+        _add_zone_change(repository, person.id, "cam1", base, "living_room")
+        _add_zone_change(repository, person.id, "cam1", base + timedelta(minutes=1), "hallway")
+        _add_zone_change(repository, person.id, "cam1", base + timedelta(minutes=1, seconds=2), "living_room")
+        _add_zone_change(repository, person.id, "cam1", base + timedelta(minutes=5), "kitchen")
+
+        response = client.get(f"/api/v1/persons/{person.id}/timeline")
+        segments = response.json()["segments"]
+        zones = [s["zone"] for s in segments]
+        # flicker hallway is gone; one continuous living_room then kitchen
+        assert zones == ["kitchen", "living_room"]
+        lr = next(s for s in segments if s["zone"] == "living_room")
+        assert lr["duration_sec"] == pytest.approx(300.0)  # base..kitchen entry
+
+    def test_preserves_genuine_transition(self, client, repository, person):
+        """A genuine A->B room change is preserved even if B is brief."""
+        base = datetime.utcnow() - timedelta(minutes=10)
+        _add_zone_change(repository, person.id, "cam1", base, "living_room")
+        # 2s hallway then kitchen (different zones each side) -> not a flicker
+        _add_zone_change(repository, person.id, "cam1", base + timedelta(minutes=1), "hallway")
+        _add_zone_change(repository, person.id, "cam1", base + timedelta(minutes=1, seconds=2), "kitchen")
+
+        response = client.get(f"/api/v1/persons/{person.id}/timeline")
+        zones = [s["zone"] for s in response.json()["segments"]]
+        assert zones == ["kitchen", "hallway", "living_room"]
+
+    def test_empty_when_no_zone_changes(self, client, repository, person):
+        """No zone-change events => empty segment list (not an error)."""
+        response = client.get(f"/api/v1/persons/{person.id}/timeline")
+        assert response.status_code == 200
+        body = response.json()
+        assert body["person_name"] == "Walker"
+        assert body["segments"] == []
 
     def test_get_person_timeline_not_found(self, client):
         """Test getting timeline of non-existent person."""

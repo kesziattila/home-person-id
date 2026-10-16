@@ -181,7 +181,8 @@ class PersonIDSystem:
             host=self.config.api.host,
             port=self.config.api.port,
             use_nvjpeg=self.config.detection.use_nvjpeg,
-            zone_manager=self.zone_manager
+            zone_manager=self.zone_manager,
+            timeline_min_stay_sec=self.config.api.timeline_min_stay_sec,
         )
 
     def _setup_logging(self):

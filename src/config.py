@@ -332,6 +332,8 @@ class APIConfig:
 
     host: str = "0.0.0.0"
     port: int = 8000
+    # Merge/hide movement-timeline zone stays shorter than this many seconds
+    timeline_min_stay_sec: float = 5.0
 
 
 @dataclass

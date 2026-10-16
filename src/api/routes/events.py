@@ -52,19 +52,21 @@ class LocationResponse(BaseModel):
     status: str  # 'active', 'lost', 'archived'
 
 
-class TrackSightingResponse(BaseModel):
+class StayResponse(BaseModel):
+    zone: Optional[str] = None
     camera_id: str
     entered_at: datetime
-    exited_at: Optional[datetime] = None
-    entry_zone: Optional[str] = None
-    exit_zone: Optional[str] = None
+    exited_at: Optional[datetime] = None  # null => current stay
     duration_sec: Optional[float] = None
+    is_estimated: bool = False
+    is_current: bool = False
+    snapshot_event_id: Optional[int] = None  # feed to /events/{id}/snapshot
 
 
 class TimelineResponse(BaseModel):
     person_id: int
     person_name: str
-    sightings: List[TrackSightingResponse]
+    segments: List[StayResponse]
 
 
 class ActiveTrackResponse(BaseModel):
@@ -78,11 +80,15 @@ class ActiveTrackResponse(BaseModel):
     duration_sec: float
 
 
-def create_events_router(repository: Repository) -> APIRouter:
+def create_events_router(
+    repository: Repository, timeline_min_stay_sec: float = 5.0
+) -> APIRouter:
     """Create events router with repository dependency.
 
     Args:
         repository: Database repository instance
+        timeline_min_stay_sec: Merge/hide movement-timeline zone stays shorter
+            than this many seconds (0 disables flicker merging)
 
     Returns:
         Configured APIRouter
@@ -320,54 +326,103 @@ def create_events_router(repository: Repository) -> APIRouter:
         person_id: int,
         since_hours: int = Query(24, description="Hours to look back", ge=1, le=720),
     ) -> TimelineResponse:
-        """Get movement timeline for a person."""
+        """Get movement timeline for a person as a list of zone "stays".
+
+        Built from ``person_zone_change`` events (not raw track sightings):
+        consecutive same-zone observations are collapsed into a single stay, and
+        sub-threshold zone flickers (A -> b -> A) are merged into the surrounding
+        zone, so the result is a room-level movement overview rather than a flood
+        of per-track segments.
+        """
         person = repository.get_person(person_id)
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
 
         since = datetime.utcnow() - timedelta(hours=since_hours)
 
-        # Get all tracks for this person in the time range
-        with repository.get_session() as session:
-            from src.database.models import Track, TrackSighting
+        events = repository.get_events(
+            person_id=person_id,
+            event_type="person_zone_change",
+            since=since,
+            limit=2000,
+        )
+        # get_events returns newest-first; we need chronological order to build stays
+        events.sort(key=lambda e: e.timestamp)
 
-            tracks = (
-                session.query(Track)
-                .filter(Track.person_id == person_id, Track.last_seen >= since)
-                .all()
-            )
+        # Phase 1 — collapse consecutive same-zone events into raw stays
+        raw: list[StayResponse] = []
+        for e in events:
+            ex = e.extra_data or {}
+            zone = ex.get("new_zone")
+            est = bool(ex.get("is_estimated", False))
+            if raw and raw[-1].zone == zone:
+                s = raw[-1]
+                if s.snapshot_event_id is None and e.snapshot_path and not est:
+                    s.snapshot_event_id = e.id
+                if not est:
+                    s.is_estimated = False  # a confirmed observation upgrades the stay
+            else:
+                raw.append(StayResponse(
+                    zone=zone,
+                    camera_id=e.camera_id,
+                    entered_at=e.timestamp,
+                    is_estimated=est,
+                    snapshot_event_id=(e.id if e.snapshot_path and not est else None),
+                ))
 
-            sightings = []
-            for track in tracks:
-                track_sightings = (
-                    session.query(TrackSighting)
-                    .filter(TrackSighting.track_id == track.id)
-                    .order_by(TrackSighting.entered_at.desc())
-                    .all()
+        # exited_at = next stay's entered_at; last stay stays open (current)
+        for i in range(len(raw) - 1):
+            raw[i].exited_at = raw[i + 1].entered_at
+
+        # Phase 2 — merge sub-threshold flickers flanked by the same zone (A -> b -> A).
+        # Genuine room-to-room transitions (A -> B) are preserved.
+        if timeline_min_stay_sec > 0:
+            stays: list[StayResponse] = []
+            i = 0
+            while i < len(raw):
+                s = raw[i]
+                dur = (
+                    (s.exited_at - s.entered_at).total_seconds()
+                    if s.exited_at else None
                 )
+                is_flicker = (
+                    dur is not None
+                    and dur < timeline_min_stay_sec
+                    and stays
+                    and i + 1 < len(raw)
+                    and stays[-1].zone == raw[i + 1].zone
+                )
+                if is_flicker:
+                    # Fuse previous stay, this flicker, and the next same-zone stay.
+                    prev = stays[-1]
+                    nxt = raw[i + 1]
+                    prev.exited_at = nxt.exited_at
+                    if prev.snapshot_event_id is None and nxt.snapshot_event_id is not None:
+                        prev.snapshot_event_id = nxt.snapshot_event_id
+                    if not nxt.is_estimated:
+                        prev.is_estimated = False
+                    i += 2  # consumed the flicker and the following stay
+                else:
+                    stays.append(s)
+                    i += 1
+        else:
+            stays = raw
 
-                for sighting in track_sightings:
-                    duration_sec = None
-                    if sighting.exited_at:
-                        duration_sec = (sighting.exited_at - sighting.entered_at).total_seconds()
-
-                    sightings.append(TrackSightingResponse(
-                        camera_id=sighting.camera_id,
-                        entered_at=sighting.entered_at,
-                        exited_at=sighting.exited_at,
-                        entry_zone=sighting.entry_zone,
-                        exit_zone=sighting.exit_zone,
-                        duration_sec=duration_sec,
-                    ))
-
-            # Sort by entry time descending
-            sightings.sort(key=lambda s: s.entered_at, reverse=True)
-
-            return TimelineResponse(
-                person_id=person.id,
-                person_name=person.name,
-                sightings=sightings,
+        # Phase 3 — finalize durations and current flag
+        for s in stays:
+            s.duration_sec = (
+                (s.exited_at - s.entered_at).total_seconds()
+                if s.exited_at else None
             )
+            s.is_current = s.exited_at is None
+
+        stays.sort(key=lambda s: s.entered_at, reverse=True)  # newest first
+
+        return TimelineResponse(
+            person_id=person.id,
+            person_name=person.name,
+            segments=stays,
+        )
 
     @router.get("/tracks/active", response_model=List[ActiveTrackResponse])
     async def get_active_tracks() -> List[ActiveTrackResponse]:

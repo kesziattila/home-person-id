@@ -427,6 +427,12 @@ api:
   # Port for the web interface (default: 8000)
   port: 8000
 
+  # Merge/hide movement-timeline zone stays shorter than this many seconds.
+  # The timeline collapses consecutive same-zone observations into a single
+  # "stay"; stays shorter than this that are flanked by the same zone (a brief
+  # flicker) are merged away. Set to 0 to disable flicker merging.
+  timeline_min_stay_sec: 5.0
+
 # =============================================================================
 # DATABASE
 # =============================================================================
