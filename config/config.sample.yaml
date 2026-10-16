@@ -204,6 +204,12 @@ tracking:
   # nearby people). At low FPS or with fast movement keep it around 0.2-0.3.
   match_thresh: 0.3
 
+  # Duplicate guard for the low-confidence stage: a low-confidence box lying at
+  # least this fraction inside a box already matched this frame (IoA) is a
+  # partial/duplicate detection of that person and may not revive a lost track
+  # (otherwise one person ends up with two tracks).
+  duplicate_ioa: 0.6
+
   # Seconds before removing stationary track (0 = never remove).
   # Useful for removing people who left but weren't detected leaving.
   stationary_timeout: 60.0
@@ -456,6 +462,10 @@ metrics:
   path: "data/metrics"
   # Minimum seconds between logged attempts of one track (accepted ones always logged)
   face_scores_min_interval_sec: 1.0
+  # Log ByteTrack births / revivals / suppressed duplicates with their nearest
+  # tracks to <path>/track_events/ (explains track fragmentation;
+  # tools/analyze_track_events.py)
+  track_events_enabled: true
   # Delete daily files older than this many days
   retention_days: 30
 

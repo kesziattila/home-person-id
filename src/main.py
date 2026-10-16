@@ -7,7 +7,8 @@ import os
 import signal
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Any, Dict, List
 
@@ -30,6 +31,7 @@ from src.visualization.preview import PreviewBuffer
 from src.visualization.debug_overlay import DebugOverlayRenderer
 from src.api.server import APIServer
 from src.utils.image_utils import crop_bbox
+from src.utils.jsonl_writer import DailyJsonlWriter
 from src.utils.profiler import profiler, memory_profiler, create_data_structure_tracker
 
 from queue import Queue, Empty
@@ -117,6 +119,10 @@ class PersonIDSystem:
                 "low-confidence stage is disabled, expect fragmented tracks. Set it to ~0.15."
             )
         self.tracker_manager = ByteTrackerManager(self.config.tracking)
+        self._track_event_writer = (
+            DailyJsonlWriter(Path(self.config.metrics.path) / "track_events", self.config.metrics.retention_days)
+            if self.config.metrics.track_events_enabled else None
+        )
         self.stationary_tracker = StationaryTracker(self.config.tracking.stationary_timeout)
         self.zone_manager = ZoneManager(self.config.zones)
         self.handover_manager = HandoverManager(self.config.camera_topology)
@@ -517,6 +523,15 @@ class PersonIDSystem:
         finally:
             self.stop()
 
+    def _write_track_events(self, camera_id: str, events: list, timestamp: float) -> None:
+        """Persist ByteTrack association diagnostics (births/revivals/duplicates)."""
+        ts = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        for event in events:
+            global_track = self.global_tracker.get_global_track_for_local(camera_id, event.track_id)
+            record = asdict(event)
+            record["global_track_id"] = global_track.track_id if global_track else None
+            self._track_event_writer.write(record, ts)
+
     def _process_inference_result(self, result: InferenceResult):
         """Process results from the inference worker."""
         camera_id = result.camera_id
@@ -541,6 +556,8 @@ class PersonIDSystem:
                 removed_track_ids=track_result.removed_track_ids,
                 has_motion=motion_result.has_motion,
             )
+        if self._track_event_writer and track_result.association_events:
+            self._write_track_events(camera_id, track_result.association_events, result.timestamp)
 
         # 3. Update stationary state
         current_time = result.timestamp

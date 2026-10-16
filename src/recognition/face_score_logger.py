@@ -11,30 +11,25 @@ Files: `<metrics.path>/face_scores/YYYY-MM-DD.jsonl` (UTC day), pruned after
 `metrics.retention_days`. Appending one line is ~10µs, so it runs inline.
 """
 
-import json
-import logging
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from src.config import MetricsConfig
-
-logger = logging.getLogger(__name__)
+from src.utils.jsonl_writer import DailyJsonlWriter
 
 
 class FaceScoreLogger:
     """Appends rate-limited face attempt records to daily JSONL files."""
 
     def __init__(self, config: MetricsConfig):
-        self.dir = Path(config.path) / "face_scores"
-        self.dir.mkdir(parents=True, exist_ok=True)
+        self._writer = DailyJsonlWriter(Path(config.path) / "face_scores", config.retention_days)
+        self.dir = self._writer.dir
         self.min_interval_sec = config.face_scores_min_interval_sec
-        self.retention_days = config.retention_days
         self._last_logged: dict[str, float] = {}
         self._lock = threading.Lock()
-        self._pruned_for_day: Optional[str] = None
 
     def log(
         self,
@@ -62,41 +57,22 @@ class FaceScoreLogger:
                 return False
             self._last_logged[track_id] = now
 
-            ts = datetime.fromtimestamp(now, tz=timezone.utc)
-            record = {
-                "ts": ts.isoformat(timespec="milliseconds"),
-                "camera_id": camera_id,
-                "track_id": track_id,
-                "scores": {str(pid): round(s, 4) for pid, s in per_person.items()},
-                "top1_person_id": top1_person_id,
-                "top1": round(top1, 4),
-                "top2": round(top2, 4),
-                "accepted": accepted,
-                "face_h": round(float(face_height), 1),
-                "face_w": round(float(face_width), 1),
-                "det_conf": round(float(det_confidence), 3),
-                "threshold": threshold,
-                "min_margin": min_margin,
-            }
-            day = ts.strftime("%Y-%m-%d")
-            try:
-                with open(self.dir / f"{day}.jsonl", "a") as f:
-                    f.write(json.dumps(record, separators=(",", ":")) + "\n")
-            except OSError as e:
-                logger.warning(f"Face score log write failed: {e}")
-                return False
-            if self._pruned_for_day != day:
-                self._prune(ts)
-                self._pruned_for_day = day
-            return True
+        return self._writer.write({
+            "camera_id": camera_id,
+            "track_id": track_id,
+            "scores": {str(pid): round(s, 4) for pid, s in per_person.items()},
+            "top1_person_id": top1_person_id,
+            "top1": round(top1, 4),
+            "top2": round(top2, 4),
+            "accepted": accepted,
+            "face_h": round(float(face_height), 1),
+            "face_w": round(float(face_width), 1),
+            "det_conf": round(float(det_confidence), 3),
+            "threshold": threshold,
+            "min_margin": min_margin,
+        }, datetime.fromtimestamp(now, tz=timezone.utc))
 
     def forget_track(self, track_id: str) -> None:
         """Drop rate-limit state of a finished track."""
         with self._lock:
             self._last_logged.pop(track_id, None)
-
-    def _prune(self, now: datetime) -> None:
-        cutoff = (now - timedelta(days=self.retention_days)).strftime("%Y-%m-%d")
-        for path in self.dir.glob("*.jsonl"):
-            if path.stem < cutoff:
-                path.unlink(missing_ok=True)

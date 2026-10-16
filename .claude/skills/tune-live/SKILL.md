@@ -40,6 +40,9 @@ DB timestamps are UTC; logs are Jetson local time.
 - Face policy evidence: `scripts/remote/fetch_metrics.sh`, then
   `PYTHONPATH=. python tools/analyze_face_scores.py local/remote/metrics/face_scores
    --current-threshold <live> --current-margin <live> --json local/tuning/faces-<ts>.json`.
+- Fragmentation evidence: `PYTHONPATH=. python tools/analyze_track_events.py
+  local/remote/metrics/track_events --since <date>` (births classified as assoc_fail /
+  duplicate / new; what-if counts for lower match_thresh; revives per stage; dup_skips).
 - Compare with the previous journal entry (same window length).
 
 ## 3. Decide (priority order, first that applies wins)
@@ -50,9 +53,12 @@ DB timestamps are UTC; logs are Jetson local time.
 2. **Face policy** — apply the analyzer's `recommended` policy only if it is non-null,
    moving at most one step toward it: threshold step 0.04 (range 0.40–0.60), margin step
    0.05 (range 0.00–0.20). Raise margin before lowering threshold.
-3. **Fragmentation** — if recreate_rate > 0.10 on a camera:
-   `tracking.track_buffer` +30 (range 30–150), else `tracking.match_thresh` −0.05
-   (range 0.20–0.40). `detection.confidence_threshold` range 0.10–0.30 (step 0.05) only
+3. **Fragmentation** — if recreate_rate > 0.10 on a camera, use analyze_track_events:
+   mostly assoc_fail with IoU in 0.1–0.3 → `tracking.match_thresh` −0.05 (range 0.10–0.40);
+   mostly assoc_fail with IoU 0 → needs a code fix (motion/appearance fallback), not config;
+   mostly duplicate → `detection.nms_iou_threshold` −0.05 (range 0.30–0.50) or
+   `tracking.duplicate_ioa` −0.1 (range 0.4–0.8); births next to long-LOST tracks →
+   `tracking.track_buffer` +30 (range 30–150). `detection.confidence_threshold` range 0.10–0.30 (step 0.05) only
    if logs show the low-conf stage is not getting detections.
 4. **Zones** (at most weekly, or when zone_changes per identified track-hour looks like
    flicker, or a camera has many tracks without a zone): `scripts/remote/grab_frames.sh`,

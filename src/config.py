@@ -135,6 +135,9 @@ class TrackingConfig:
     track_buffer: int = 30
     # Minimum IoU between detection and predicted track box (lower = more lenient)
     match_thresh: float = 0.3
+    # A low-confidence box covered by a stage-1-matched box at least this much (IoA)
+    # is a partial/duplicate detection of that person and may not revive another track
+    duplicate_ioa: float = 0.6
     # Seconds before removing stationary track (0 = no timeout, keep forever)
     stationary_timeout: float = 60.0
 
@@ -352,6 +355,9 @@ class MetricsConfig:
     path: str = "data/metrics"
     # Minimum seconds between logged attempts of the same track (bounds volume)
     face_scores_min_interval_sec: float = 1.0
+    # Log ByteTrack births / revivals / suppressed duplicates with nearest tracks
+    # (explains track fragmentation; tools/analyze_track_events.py)
+    track_events_enabled: bool = True
     # Delete daily metric files older than this
     retention_days: int = 30
 

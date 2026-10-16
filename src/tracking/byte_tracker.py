@@ -5,7 +5,7 @@ detections using only IoU and motion prediction, without requiring Re-ID feature
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import numpy as np
@@ -31,21 +31,32 @@ def iou_batch(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
     """
     if len(boxes_a) == 0 or len(boxes_b) == 0:
         return np.zeros((len(boxes_a), len(boxes_b)))
+    intersection = _intersection_batch(boxes_a, boxes_b)
+    union = _area(boxes_a)[:, np.newaxis] + _area(boxes_b) - intersection
+    return intersection / (union + 1e-6)
 
-    # Compute intersection
+
+def ioa_batch(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
+    """Fraction of each box in `boxes_a` covered by each box in `boxes_b` (N, M).
+
+    1.0 means box a lies entirely inside box b (e.g. a partial-body duplicate
+    detection inside an already tracked person's box).
+    """
+    if len(boxes_a) == 0 or len(boxes_b) == 0:
+        return np.zeros((len(boxes_a), len(boxes_b)))
+    return _intersection_batch(boxes_a, boxes_b) / (_area(boxes_a)[:, np.newaxis] + 1e-6)
+
+
+def _area(boxes: np.ndarray) -> np.ndarray:
+    return (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
+
+
+def _intersection_batch(boxes_a: np.ndarray, boxes_b: np.ndarray) -> np.ndarray:
     x1 = np.maximum(boxes_a[:, 0:1], boxes_b[:, 0].T)
     y1 = np.maximum(boxes_a[:, 1:2], boxes_b[:, 1].T)
     x2 = np.minimum(boxes_a[:, 2:3], boxes_b[:, 2].T)
     y2 = np.minimum(boxes_a[:, 3:4], boxes_b[:, 3].T)
-
-    intersection = np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
-
-    # Compute union
-    area_a = (boxes_a[:, 2] - boxes_a[:, 0]) * (boxes_a[:, 3] - boxes_a[:, 1])
-    area_b = (boxes_b[:, 2] - boxes_b[:, 0]) * (boxes_b[:, 3] - boxes_b[:, 1])
-    union = area_a[:, np.newaxis] + area_b - intersection
-
-    return intersection / (union + 1e-6)
+    return np.maximum(0, x2 - x1) * np.maximum(0, y2 - y1)
 
 
 def linear_assignment(cost_matrix: np.ndarray) -> tuple[list, list, list]:
@@ -185,6 +196,25 @@ class KalmanBoxTracker:
 
 
 @dataclass
+class AssociationEvent:
+    """Diagnostic record of a track birth, revival or suppressed duplicate (metrics only).
+
+    `neighbors` describes the closest other tracks at that moment so fragmentation
+    can be explained offline: a birth next to a LOST track with IoU just below
+    match_thresh means association failed; a revival inside a live track's box
+    means a duplicate detection.
+    """
+
+    kind: str  # "birth" | "revive" | "dup_skip"
+    camera_id: str
+    track_id: Optional[int]  # local track id (dup_skip: the track that would have revived)
+    stage: Optional[int]  # association stage that produced it (1 = high conf, 2 = low conf)
+    bbox: tuple[float, float, float, float]  # normalized 0-1
+    confidence: float
+    neighbors: list[dict] = field(default_factory=list)
+
+
+@dataclass
 class TrackingResult:
     """Result of tracking update."""
 
@@ -192,6 +222,7 @@ class TrackingResult:
     new_track_ids: list[int]
     lost_track_ids: list[int]
     removed_track_ids: list[int]
+    association_events: list[AssociationEvent] = field(default_factory=list)
 
 
 class ByteTracker:
@@ -254,13 +285,20 @@ class ByteTracker:
         matched, unmatched_dets, unmatched_trks = self._associate(
             dets[high_idx, :4], predicted_boxes
         )
+        frame_shape = detections.frame_shape
+        events: list[AssociationEvent] = []
+
         for det_idx, trk_idx in matched:
             tracker = self._trackers[trk_idx]
-            was_confirmed = self._tracks[tracker.id].is_confirmed
+            prev = self._tracks[tracker.id]
+            was_confirmed, was_lost = prev.is_confirmed, prev.state == TrackState.LOST
             track = self._apply_detection(tracker, dets, high_idx[det_idx], frame, reid_embeddings)
             # Report as new when track becomes confirmed (not on first detection)
             if not was_confirmed and track.is_confirmed:
                 new_track_ids.append(track.track_id)
+            if was_lost:
+                events.append(self._event("revive", track.track_id, 1, dets[high_idx[det_idx]],
+                                          frame_shape, predicted_boxes, exclude=trk_idx))
 
         # Second association: low confidence detections keep existing confirmed
         # tracks alive (occlusion, sitting, motion blur). Unconfirmed tracks are
@@ -269,15 +307,34 @@ class ByteTracker:
             i for i in unmatched_trks
             if (t := self._tracks.get(self._trackers[i].id)) is not None and t.is_confirmed
         ]
+        # A low-confidence box lying mostly inside a box matched in stage 1 is a
+        # partial/duplicate detection of that live person: letting it revive a
+        # stale track would give one person two tracks.
+        live_boxes = dets[[high_idx[d] for d, _ in matched], :4]
+        is_dup = (ioa_batch(dets[low_idx, :4], live_boxes) >= self.config.duplicate_ioa).any(axis=1)
+        if is_dup.any() and remaining:
+            dup_ious = iou_batch(dets[low_idx[is_dup], :4], predicted_boxes[remaining])
+            for row, det_i in zip(dup_ious, low_idx[is_dup]):
+                if row.max() >= self.config.match_thresh:
+                    blocked = self._tracks[self._trackers[remaining[int(row.argmax())]].id]
+                    events.append(self._event("dup_skip", blocked.track_id, 2, dets[det_i],
+                                              frame_shape, predicted_boxes))
+        low_idx = low_idx[~is_dup]
+
         matched_low, _, _ = self._associate(
             dets[low_idx, :4], predicted_boxes[remaining]
         )
         recovered = set()
         for det_idx, trk_idx in matched_low:
-            self._apply_detection(
-                self._trackers[remaining[trk_idx]], dets, low_idx[det_idx], frame, reid_embeddings
+            tracker_idx = remaining[trk_idx]
+            was_lost = self._tracks[self._trackers[tracker_idx].id].state == TrackState.LOST
+            track = self._apply_detection(
+                self._trackers[tracker_idx], dets, low_idx[det_idx], frame, reid_embeddings
             )
-            recovered.add(remaining[trk_idx])
+            if was_lost:
+                events.append(self._event("revive", track.track_id, 2, dets[low_idx[det_idx]],
+                                          frame_shape, predicted_boxes, exclude=tracker_idx))
+            recovered.add(tracker_idx)
         unmatched_trks = [i for i in unmatched_trks if i not in recovered]
 
         # Create new trackers for unmatched high confidence detections.
@@ -285,6 +342,7 @@ class ByteTracker:
         # only when they become confirmed to avoid spurious detections.
         for det_idx in unmatched_dets:
             det = dets[high_idx[det_idx]]
+            events.append(self._event("birth", self._next_id, 1, det, frame_shape, predicted_boxes))
             tracker = KalmanBoxTracker(det[:4])
             self._trackers.append(tracker)
             self._tracks[tracker.id] = LocalTrack(
@@ -333,6 +391,51 @@ class ByteTracker:
             new_track_ids=new_track_ids,
             lost_track_ids=lost_track_ids,
             removed_track_ids=removed_track_ids,
+            association_events=events,
+        )
+
+    def _event(
+        self,
+        kind: str,
+        track_id: Optional[int],
+        stage: int,
+        det: np.ndarray,
+        frame_shape: tuple,
+        predicted_boxes: np.ndarray,
+        exclude: Optional[int] = None,
+        max_neighbors: int = 3,
+    ) -> AssociationEvent:
+        """Build an AssociationEvent with the nearest existing tracks (by predicted box)."""
+        h, w = frame_shape[:2]
+        box = det[np.newaxis, :4]
+        neighbors = []
+        if len(predicted_boxes):
+            ious = iou_batch(box, predicted_boxes)[0]
+            ioas = ioa_batch(box, predicted_boxes)[0]
+            diag = float(np.hypot(det[2] - det[0], det[3] - det[1])) + 1e-6
+            centers = (predicted_boxes[:, :2] + predicted_boxes[:, 2:4]) / 2
+            dists = np.hypot(*(centers - (det[:2] + det[2:4]) / 2).T) / diag
+            for i in np.lexsort((dists, -ious))[:max_neighbors + 1]:
+                track = self._tracks.get(self._trackers[i].id)
+                if i == exclude or track is None or (ious[i] == 0 and dists[i] > 2):
+                    continue
+                neighbors.append({
+                    "track_id": track.track_id,
+                    "state": track.state.name,
+                    "confirmed": track.is_confirmed,
+                    "time_since_update": track.time_since_update,
+                    "iou": round(float(ious[i]), 3),
+                    "ioa": round(float(ioas[i]), 3),
+                    "center_dist": round(float(dists[i]), 3),
+                })
+        return AssociationEvent(
+            kind=kind,
+            camera_id=self.camera_id,
+            track_id=track_id,
+            stage=stage,
+            bbox=(round(det[0] / w, 4), round(det[1] / h, 4), round(det[2] / w, 4), round(det[3] / h, 4)),
+            confidence=round(float(det[4]), 3),
+            neighbors=neighbors[:max_neighbors],
         )
 
     def _associate(

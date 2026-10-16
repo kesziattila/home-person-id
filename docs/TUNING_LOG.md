@@ -65,3 +65,15 @@ identity and "last known room" — not continuous identity of every person at ev
   evidence of where unzoned feet actually land (measurement improvement: log bottom-center
   points of tracks per camera, incl. zone=None), then draw polygons from that heatmap and
   re-check with grab_frames.sh.
+
+### 2026-10-16 18:22 UTC — first 30 min after the ByteTrack change (manual check)
+- KPIs (0.5 h): ground_floor 71 tracks, recreate 0.24, cov10s 0.06 | hallway 14, 0.36, 0.15 |
+  living_room 71, 0.32, 0.00 — fragmentation NOT improved (baseline 0.21 / 0.14 / 0.30).
+- Snapshots: real people; same person re-born every 2–4 s. Log pattern: track lost one frame
+  → new track born → old track "recovered" 1 s later → two live tracks for one person
+  (side effect of the low-conf stage reviving onto a duplicate/partial box).
+- Faces (98 attempts / 47 tracks): live genuine p50 0.55, impostor p99 0.24; t=0.6 accepted 4,
+  t=0.42 & m=0.1 would accept 27. Analyzer: insufficient evidence (2 labelled tracks).
+- Change: duplicate guard (`tracking.duplicate_ioa` 0.6) + association event log
+  (`data/metrics/track_events/`, `tools/analyze_track_events.py`) to find the real cause
+  of births (assoc_fail vs duplicate vs new).
