@@ -50,3 +50,18 @@ identity and "last known room" — not continuous identity of every person at ev
 - Change: per-attempt top1/top2 face score log (`data/metrics/face_scores/`),
   `face_recognition.min_margin` (0.0, no behaviour change), `/api/v1/frame/{camera}` for
   zone review. Face policy changes wait for analyzer evidence (≥ ~400 labelled accepts).
+
+### 2026-10-16 18:10 UTC — first zone review (frames: grab_frames.sh)
+- hallway: OK (both visible persons correctly `[hallway]`; `outside`/`toilet` cover the doors).
+- ground_floor: living_room / work_room / stairway cover the floor; gap: bottom tiled strip
+  between sofa and work_room (x≈0.45–0.82, y≈0.78–1.0) — room unclear from the frame.
+- living_room: `living_room` polygon covers only the floor in front of the sofa; a person
+  standing at the back-right door (feet ≈ (0.86, 0.52)) had NO zone. The desk area on the left
+  (black chair, bookshelf) is the same place as `work_room` on ground_floor, but has no
+  polygon on this camera.
+- entrance: no zones at all.
+- Decision: no polygon change yet. Shared zones drive cross-camera identity propagation, so a
+  wrongly drawn shared polygon can move identities between people. Next zone action: collect
+  evidence of where unzoned feet actually land (measurement improvement: log bottom-center
+  points of tracks per camera, incl. zone=None), then draw polygons from that heatmap and
+  re-check with grab_frames.sh.
