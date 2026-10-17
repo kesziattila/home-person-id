@@ -89,3 +89,38 @@ identity and "last known room" — not continuous identity of every person at ev
 - Finding while profiling (pre-outage busy report): cameras deliver only 5–6 FPS
   (ground_floor/hallway 6, living_room 5, entrance 15 → throttled to 5); detector ~41 % busy,
   NVDEC clocked down. Low camera FPS is the main reason IoU association fails for walking people.
+
+### 2026-10-16 18:55 UTC — main-thread throughput (uncommitted experiments, live)
+- py-spy (2 min, with motion): main thread spent ~15 % in per-frame Re-ID gallery updates
+  (face detector multi-face check + duplicate Re-ID extraction + crop to disk, every frame of
+  every identified track) and the debug overlay copied/blended the full 4K frame twice per frame.
+- Changes: `reid.gallery_update_interval_sec` 1.0 (rate limit before expensive checks, reuse
+  caller embedding); overlay dims only its panels; RTSP frame queue 2 → 4 (RTSP delivers bursts).
+- Result (10 s windows, motion): process_track 55.6 → 4.6 ms; GlobalTracker.process 55.8 → 2.4 ms;
+  detector calls 66 → ~130; dropped frames (3 cams) 35–50 → 6–10 (≈23 % → ≈5 %).
+- Still: cameras deliver only 5–6 FPS (camera-side setting). Next: raise camera FPS to 10–12
+  at full resolution, then re-check drops / detector load and track fragmentation.
+- Status: deployed, not committed yet (commit after it proves stable).
+
+### 2026-10-16 19:04 UTC — births analysed; NMS on TensorRT output (uncommitted, live)
+- track_events (~1.25 h after throughput fixes): births ground_floor 35 / hallway 11 /
+  living_room 42 (afternoon: 71 per 30 min). Only 1 genuine association failure (stale track);
+  54 births sat next to a track already matched in the same frame — 16 of them with IoU
+  0.69–0.93 (duplicate boxes). Conclusion: at 5–6 FPS IoU association works; duplicates were
+  the main fragmentation source.
+- Cause: the baked-NMS TensorRT path ignored `detection.nms_iou_threshold`.
+- Change: class-agnostic NMS (`suppress_overlapping`, IoU > 0.4) on the engine output;
+  containment deliberately not suppressed (child in front of adult).
+- Next check: births per camera and the IoU distribution of same-frame-neighbour births.
+
+### 2026-10-17 05:25 UTC — NMS + throughput verified; committed
+- Post-NMS (19:04–19:51 UTC, 47 min): same-frame duplicate births ≈45 % → ≈19 % of births;
+  tracker dup_skip on ground_floor 1218 → 8 (duplicates now removed before the tracker);
+  confirmed tracks/min ground_floor 1.9 → 1.4, living_room 2.0 → 1.5 (first 17 min).
+- Morning (03:00–05:25 UTC, ~110 tracks, still dark): recreate_rate ground_floor 0 %,
+  living_room 7 %, hallway 6 % (yesterday 12 % / 12 % / 38 %). Throughput + NMS committed.
+- Open: identification at night ≈0 — IR/dark frames give top1 p50 0.25–0.27 on living_room /
+  ground_floor (daylight ~0.55), faces ~60 px; Re-ID skips grayscale crops by design.
+  Face analyzer still lacks evidence (best lo95 0.91 < 0.99) → no threshold change.
+- Next: compare a daylight sample with yesterday afternoon; decide on night strategy
+  (IR face gallery vs presence-only at night).
