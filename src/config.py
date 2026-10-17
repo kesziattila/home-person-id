@@ -371,6 +371,11 @@ class MetricsConfig:
     detection_log_reid: bool = True
     # ~100-300 MB per active day with Re-ID: shorter than other metrics
     detection_log_retention_days: int = 7
+    # Full frames of logged records while detections/capture_until is in the future
+    # (scripts/remote/capture_frames.sh; tools/redetect.py). Hard size cap; 0 disables
+    frame_capture_max_gb: float = 20.0
+    # ~0.5 MB per frame, ~10 frames/s with two busy cameras: keep only a few days
+    frame_capture_retention_days: int = 3
     # Delete daily metric files older than this
     retention_days: int = 30
     # Identity audit samples (annotated frame + full-res track crops) for offline

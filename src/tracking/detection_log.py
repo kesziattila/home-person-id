@@ -13,27 +13,140 @@ One JSONL record per update call, empty frames included (they age tracks):
 `session` = process start; trackers restart empty with every session, so the
 replay resets its trackers at session boundaries. ~0.1 KB per frame without
 Re-ID, ~1.5 KB per high-confidence detection with it.
+
+Frame capture (time-limited, for detector tuning): while the trigger file
+`detections/capture_until` holds a future epoch time (scripts/remote/capture_frames.sh),
+the full frame of every logged record is saved as JPEG and the record gets
+`"frame": "frames/YYYY-MM-DD/<camera>/<HHMMSS_mmm>.jpg"` (relative to `detections/`).
+tools/redetect.py re-runs the detector on those frames and writes a detection log
+of the same format, so tools/replay_tracking.py replays it unchanged.
 """
 
 import base64
 import json
-from datetime import datetime, timezone
+import logging
+import queue
+import shutil
+import threading
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator, Optional
 
+import cv2
 import numpy as np
 
 from src.detection.person_detector import Detection, DetectionResult
 from src.utils.jsonl_writer import DailyJsonlWriter
 
+logger = logging.getLogger(__name__)
+
+TRIGGER_FILE = "capture_until"
+FRAMES_DIR = "frames"
+
+
+def tracker_input(detections: DetectionResult,
+                  reid_embeddings: Optional[dict[int, tuple[np.ndarray, float]]] = None) -> dict:
+    """The record fields describing one tracker input (shape, dets, optional reid)."""
+    fields = {
+        "shape": list(detections.frame_shape[:2]),
+        "dets": [[*(round(float(v), 2) for v in d.bbox), round(float(d.confidence), 4)]
+                 for d in detections.detections],
+    }
+    if reid_embeddings:
+        fields["reid"] = {
+            str(i): [base64.b64encode(np.asarray(emb, dtype=np.float16).tobytes()).decode(), round(float(q), 3)]
+            for i, (emb, q) in reid_embeddings.items()
+        }
+    return fields
+
+
+class FrameCapture:
+    """Saves full frames while `<dir>/capture_until` holds a future epoch time.
+
+    The main thread only checks the trigger (re-read once a second) and copies the
+    frame (~3-5ms for 4MP); JPEG encoding (~50ms) runs in a background thread. If
+    the writer falls behind, frames are dropped and their records carry no `frame`.
+    Capture stops when the frames directory reaches `max_bytes`; day directories
+    older than `retention_days` are deleted when a capture starts.
+    """
+
+    def __init__(self, directory: Path, max_bytes: int, retention_days: int, jpeg_quality: int = 90):
+        self.dir = Path(directory)
+        self.frames_dir = self.dir / FRAMES_DIR
+        self.max_bytes = max_bytes
+        self.retention_days = retention_days
+        self.jpeg_quality = jpeg_quality
+        self._until = 0.0
+        self._checked_at = float("-inf")
+        self._bytes = 0
+        self._queue: queue.Queue = queue.Queue(maxsize=16)
+        self._thread = threading.Thread(target=self._run, name="FrameCapture", daemon=True)
+        self._thread.start()
+
+    def active(self, now: float) -> bool:
+        if now - self._checked_at >= 1.0:
+            self._checked_at = now
+            self._refresh_trigger(now)
+        return now < self._until and self._bytes < self.max_bytes
+
+    def _refresh_trigger(self, now: float) -> None:
+        try:
+            until = float((self.dir / TRIGGER_FILE).read_text().strip())
+        except (OSError, ValueError):
+            until = 0.0
+        if until > now and until != self._until:
+            self._start(now)
+            logger.info(f"Frame capture until {datetime.fromtimestamp(until).isoformat(timespec='seconds')} "
+                        f"({self._bytes / 1e9:.1f} of {self.max_bytes / 1e9:.1f} GB used)")
+        elif until <= now < self._until:
+            logger.info("Frame capture stopped")
+        self._until = until
+
+    def _start(self, now: float) -> None:
+        cutoff = datetime.fromtimestamp(now, tz=timezone.utc) - timedelta(days=self.retention_days)
+        for day in self.frames_dir.glob("*"):
+            if day.is_dir() and day.name < cutoff.strftime("%Y-%m-%d"):
+                shutil.rmtree(day, ignore_errors=True)
+        self._bytes = sum(f.stat().st_size for f in self.frames_dir.rglob("*.jpg"))
+
+    def offer(self, camera_id: str, timestamp: float, frame: np.ndarray) -> Optional[str]:
+        """Queue the frame if capturing; returns its path relative to the log dir."""
+        if not self.active(timestamp):
+            return None
+        ts = datetime.fromtimestamp(timestamp, tz=timezone.utc)
+        rel = f"{FRAMES_DIR}/{ts:%Y-%m-%d}/{camera_id}/{ts:%H%M%S}_{ts.microsecond // 1000:03d}.jpg"
+        try:
+            self._queue.put_nowait((rel, frame.copy()))
+        except queue.Full:
+            return None
+        return rel
+
+    def flush(self) -> None:
+        self._queue.join()
+
+    def _run(self) -> None:
+        while True:
+            rel, image = self._queue.get()
+            try:
+                path = self.dir / rel
+                path.parent.mkdir(parents=True, exist_ok=True)
+                if cv2.imwrite(str(path), image, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]):
+                    self._bytes += path.stat().st_size
+            except Exception as e:
+                logger.warning(f"Frame capture write failed: {e}")
+            finally:
+                self._queue.task_done()
+
 
 class DetectionLog:
     """Writes tracker inputs to `<metrics.path>/detections/YYYY-MM-DD.jsonl`."""
 
-    def __init__(self, directory: Path, retention_days: int, with_reid: bool = True):
+    def __init__(self, directory: Path, retention_days: int, with_reid: bool = True,
+                 capture: Optional[FrameCapture] = None):
         self._writer = DailyJsonlWriter(directory, retention_days)
         self._with_reid = with_reid
         self._session = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        self.capture = capture
 
     def write(
         self,
@@ -41,20 +154,15 @@ class DetectionLog:
         timestamp: float,
         detections: DetectionResult,
         reid_embeddings: Optional[dict[int, tuple[np.ndarray, float]]] = None,
+        frame: Optional[np.ndarray] = None,
     ) -> None:
-        """Log one tracker update's input (~20µs + ~5µs per Re-ID embedding)."""
-        record = {
-            "session": self._session,
-            "camera_id": camera_id,
-            "shape": list(detections.frame_shape[:2]),
-            "dets": [[*(round(float(v), 2) for v in d.bbox), round(float(d.confidence), 4)]
-                     for d in detections.detections],
-        }
-        if self._with_reid and reid_embeddings:
-            record["reid"] = {
-                str(i): [base64.b64encode(np.asarray(emb, dtype=np.float16).tobytes()).decode(), round(float(q), 3)]
-                for i, (emb, q) in reid_embeddings.items()
-            }
+        """Log one tracker update's input (~20µs + ~5µs per Re-ID embedding; + frame copy while capturing)."""
+        record = {"session": self._session, "camera_id": camera_id,
+                  **tracker_input(detections, reid_embeddings if self._with_reid else None)}
+        if self.capture is not None and frame is not None:
+            rel = self.capture.offer(camera_id, timestamp, frame)
+            if rel:
+                record["frame"] = rel
         self._writer.write(record, datetime.fromtimestamp(timestamp, tz=timezone.utc))
 
 

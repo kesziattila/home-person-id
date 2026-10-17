@@ -17,13 +17,13 @@ import numpy as np
 from src.config import load_config
 from src.database.repository import Repository
 from src.detection.motion_detector import MotionDetectorManager
-from src.detection.person_detector import PersonDetector, DetectionResult, create_person_detector
+from src.detection.person_detector import PersonDetector, create_person_detector, detect_for_tracking
 from src.recognition.face_score_logger import FaceScoreLogger
 from src.recognition.identity_linker import IdentityLinker
 from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 from src.stream.manager import StreamManager
 from src.tracking.byte_tracker import ByteTrackerManager
-from src.tracking.detection_log import DetectionLog
+from src.tracking.detection_log import DetectionLog, FrameCapture
 from src.tracking.global_tracker import GlobalTrackManager, GlobalTrackingResult
 from src.tracking.stationary_tracker import StationaryTracker
 from src.tracking.zone_manager import ZoneManager
@@ -32,7 +32,6 @@ from src.tracking.handover import HandoverManager
 from src.visualization.preview import PreviewBuffer
 from src.visualization.debug_overlay import DebugOverlayRenderer
 from src.api.server import APIServer
-from src.utils.image_utils import crop_bbox
 from src.utils.jsonl_writer import DailyJsonlWriter
 from src.utils.profiler import profiler, memory_profiler, create_data_structure_tracker
 
@@ -125,11 +124,15 @@ class PersonIDSystem:
             DailyJsonlWriter(Path(self.config.metrics.path) / "track_events", self.config.metrics.retention_days)
             if self.config.metrics.track_events_enabled else None
         )
+        metrics = self.config.metrics
+        detections_dir = Path(metrics.path) / "detections"
         self._detection_log = (
-            DetectionLog(Path(self.config.metrics.path) / "detections",
-                         self.config.metrics.detection_log_retention_days,
-                         with_reid=self.config.metrics.detection_log_reid)
-            if self.config.metrics.detection_log_enabled else None
+            DetectionLog(detections_dir, metrics.detection_log_retention_days,
+                         with_reid=metrics.detection_log_reid,
+                         capture=FrameCapture(detections_dir, int(metrics.frame_capture_max_gb * 1e9),
+                                              metrics.frame_capture_retention_days)
+                         if metrics.frame_capture_max_gb > 0 else None)
+            if metrics.detection_log_enabled else None
         )
         self.stationary_tracker = StationaryTracker(self.config.tracking.stationary_timeout)
         self.zone_manager = ZoneManager(self.config.zones)
@@ -374,38 +377,14 @@ class PersonIDSystem:
                 task: InferenceTask = self._inference_queue.get(timeout=0.1)
 
                 try:
-                    # Person detection (expensive)
-                    detections = DetectionResult(detections=[], frame_shape=task.frame.shape)
-                    if self.person_detector:
-                        with profiler.measure("PersonDetector.detect"):
-                            detections = self.person_detector.detect(task.frame)
-                        detections = detections.excluding_zones(
-                            self._exclusion_zones.get(task.camera_id)
-                        )
-
-                    # Extract Re-ID for high-confidence detections to avoid doing it in main thread.
-                    # Low-confidence ones only extend existing tracks (ByteTrack 2nd stage);
-                    # their crops are poor Re-ID material and would inflate the batch.
-                    reid_embeddings = {}
-                    if detections.detections:
-                        crops = []
-                        det_indices = []
-                        for i, det in enumerate(detections.detections):
-                            if det.confidence < self.config.tracking.track_thresh:
-                                continue
-                            crop = crop_bbox(task.frame, det.bbox)
-                            if crop.size > 0:
-                                crops.append(crop)
-                                det_indices.append(i)
-
-                        if crops:
-                            with profiler.measure("ReIDExtractor.extract_batch"):
-                                # Lazy load or use existing extractor
-                                reid_extractor = self.identity_linker._id_manager.reid_extractor
-                                if reid_extractor:
-                                    results = reid_extractor.extract_batch(crops)
-                                    for idx, res in zip(det_indices, results):
-                                        reid_embeddings[idx] = res
+                    # Person detection (expensive) + Re-ID off the main thread
+                    detections, reid_embeddings = detect_for_tracking(
+                        task.frame,
+                        self.person_detector,
+                        self._exclusion_zones.get(task.camera_id),
+                        self.identity_linker._id_manager.reid_extractor,
+                        self.config.tracking.track_thresh,
+                    )
 
                     # Push to results
                     result = InferenceResult(
@@ -565,7 +544,8 @@ class PersonIDSystem:
         # 1. Update tracking (its exact input is logged for offline replay)
         if self._detection_log:
             with profiler.measure("DetectionLog.write"):
-                self._detection_log.write(camera_id, result.timestamp, detections, result.reid_embeddings)
+                self._detection_log.write(camera_id, result.timestamp, detections, result.reid_embeddings,
+                                         frame_image)
         with profiler.measure("ByteTracker.update"):
             track_result = self.tracker_manager.update(
                 camera_id, detections, frame_image, result.reid_embeddings

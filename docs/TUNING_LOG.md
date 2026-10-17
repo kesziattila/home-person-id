@@ -245,3 +245,13 @@ identity and "last known room" — not continuous identity of every person at ev
   camera holding that person is unnamed (id_revoked). Anchor (reid.anchor_similarity, renamed
   from gallery_anchor_similarity) now only gates the gallery and is set by confirm_identity
   (incl. handover), the single naming path.
+
+## 2026-10-17 12:47 UTC — frame capture for detector tuning
+- Why: 12:26 living_room, Ati + Judit (bending next to him) got ONE box (named Ati by Re-ID),
+  Virag at the top of the stairs none. Detector-level; tracker/identity tuning can't fix it.
+- Added: time-limited capture (scripts/remote/capture_frames.sh start <min>; trigger file, no
+  restart) saves the frame of every detection-log record (~0.7 MB, cap metrics.frame_capture_max_gb
+  = 20). tools/redetect.py re-runs detect_for_tracking() (same code as the live worker) with
+  detection.*/reid.* overrides into a same-format log → replay_tracking.py.
+- Smoke test: 1 min capture, 48 frames, no dropped camera frames; nobody in view, so live
+  TensorRT vs local PyTorch yolo26s agreed trivially (0 persons). Next: capture with 2-3 people.

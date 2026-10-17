@@ -10,8 +10,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 DEST="$PROJECT_ROOT/$LOCAL_PULL_DIR/metrics"
 mkdir -p "$DEST"
 
-# Audit images are large; scripts/remote/fetch_audit.sh pulls them per day
-rsync -az -e "ssh ${SSH_OPTS[*]}" --exclude 'audit_frames/' \
+# Images are large: fetch_audit.sh / capture_frames.sh fetch pull them per day
+rsync -az -e "ssh ${SSH_OPTS[*]}" --exclude 'audit_frames/' --exclude 'detections/frames/' --exclude 'detections/capture_until' \
     "$JETSON_HOST:$REMOTE_PROJECT_DIR/$REMOTE_METRICS_DIR/" "$DEST/"
 echo "Pulled metrics -> $DEST"
 find "$DEST" -name '*.jsonl' -printf '  %P  %s bytes\n' | sort

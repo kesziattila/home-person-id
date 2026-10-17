@@ -487,6 +487,13 @@ metrics:
   detection_log_reid: true
   # ~100-300 MB per active day with Re-ID
   detection_log_retention_days: 7
+  # Time-limited full-frame capture for detector tuning: while
+  # <path>/detections/capture_until holds a future epoch time
+  # (scripts/remote/capture_frames.sh <minutes>), every logged frame is saved as
+  # JPEG next to the log; tools/redetect.py re-runs the detector on them.
+  # Hard cap of the frames directory (GB, 0 disables) and retention (days)
+  frame_capture_max_gb: 20.0
+  frame_capture_retention_days: 3
   # Delete daily files older than this many days
   retention_days: 30
   # Identity audit samples for offline review (skill review-identities): an annotated

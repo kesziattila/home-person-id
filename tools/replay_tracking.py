@@ -44,6 +44,8 @@ APPEARANCE_WINDOW = 10
 
 
 def _parse_value(text: str):
+    if text.lower() in ("true", "false"):
+        return text.lower() == "true"
     for cast in (int, float):
         try:
             return cast(text)

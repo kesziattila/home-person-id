@@ -13,6 +13,7 @@
 - Composition over inheritance: core logic in base class (`IdentificationManager`), production features in a wrapper (`IdentityLinker`) that delegates, never duplicates
 - Dataclasses (not tuples) for complex method args/returns (e.g. `IdentificationResult`, `CrossCameraMatch`)
 - Required constructor deps (`repository`, `reid_extractor`, …) must NOT default to `None`; use `Optional` only when the class truly works without it
+- Tracker input (detector + exclusion zones + Re-ID of confident dets) = `person_detector.detect_for_tracking()`, shared by the live worker and `tools/redetect.py`
 - Shared helpers, don't re-implement: embedding math → `src/utils/embedding_utils.py` (`l2_normalize`, `cosine_similarity[_batch]`); bbox crops → `image_utils.crop_bbox`; exclusion zones → `DetectionResult.excluding_zones()`; detectors → `create_person_detector(config.detection)`
 - `src/cli_preview.py` = CLI preview pipeline (no DB); `src/visualization/preview.py` = web UI frame buffer/annotations
 - Face: ONE path for preview and production — `IdentificationManager.attempt_face()` (head region, `attribution.owner_face`, `score_face()` → `FaceMatchScores.accepts(similarity_threshold, min_margin)`, `FACE_CONSECUTIVE_MATCHES` streak, `FaceScoreLogger`, unidentified-face submit) returns a `FaceAttempt`; callers only act on `attempt.confirmed`. Ambiguous attempts are logged, never accepted or saved
@@ -83,6 +84,7 @@ System runs live on a Jetson; all remote interaction goes through `scripts/remot
 - `fetch_snapshots.sh --event|--query|--path` → `local/remote/snapshots/`
 - `fetch_config.sh` → `local/remote/config.jetson-live.yaml`; `push_config.sh [file|--rollback]` — the only way to change the live config (validates, backs up to remote `data/config-backups/`)
 - `fetch_metrics.sh` → `local/remote/metrics/` (face scores → `tools/analyze_face_scores.py`; ByteTrack births/revivals/duplicates → `tools/analyze_track_events.py`; every tracker input → `detections/` → `tools/replay_tracking.py` re-runs the real ByteTrack offline with config sweeps — tune tracking there, not live)
+- `capture_frames.sh start <min>|stop|status|fetch [day]` — time-limited full frames of every logged record (trigger file, no restart; cap `metrics.frame_capture_max_gb`) → `tools/redetect.py` re-runs the detector (`detection.*`/`reid.*` overrides) into a same-format detection log → `replay_tracking.py`; tune the detector there, not live
 - `grab_frames.sh [cam…]` → latest frames with zones drawn (`/api/v1/frame/{cam}`) for zone review
 - Self-tuning: `tune-live` skill, journal in `docs/TUNING_LOG.md`, KPIs `queries/tuning_kpis.sql`
 - Identity spot-check: `review-identities` skill — `fetch_audit.sh` (audit samples: annotated frame + track crops, `metrics.audit_*`), `tools/find_contradictions.py` (outcome-based, no per-bug logging), `tools/audit_sheet.py` (contact sheets)

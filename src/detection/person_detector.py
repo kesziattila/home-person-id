@@ -514,6 +514,44 @@ class _TensorRTPersonDetectorImpl:
                 self._base = None
 
 
+def detect_for_tracking(
+    frame: np.ndarray,
+    detector,
+    exclusion_zones: Optional[list],
+    reid_extractor=None,
+    reid_min_confidence: float = 0.0,
+) -> tuple[DetectionResult, dict[int, tuple[np.ndarray, float]]]:
+    """The tracker's input for one frame: person detections + Re-ID of confident ones.
+
+    Shared by the live inference worker and tools/redetect.py. Low-confidence
+    detections only extend existing tracks (ByteTrack 2nd stage); their crops are
+    poor Re-ID material and would inflate the batch, so they get no embedding.
+    """
+    detections = DetectionResult(detections=[], frame_shape=frame.shape)
+    if detector:
+        with profiler.measure("PersonDetector.detect"):
+            detections = detector.detect(frame)
+        detections = detections.excluding_zones(exclusion_zones)
+
+    reid_embeddings: dict[int, tuple[np.ndarray, float]] = {}
+    if reid_extractor is None:
+        return detections, reid_embeddings
+    from src.utils.image_utils import crop_bbox
+
+    crops, indices = [], []
+    for i, det in enumerate(detections.detections):
+        if det.confidence < reid_min_confidence:
+            continue
+        crop = crop_bbox(frame, det.bbox)
+        if crop.size > 0:
+            crops.append(crop)
+            indices.append(i)
+    if crops:
+        with profiler.measure("ReIDExtractor.extract_batch"):
+            reid_embeddings = dict(zip(indices, reid_extractor.extract_batch(crops)))
+    return detections, reid_embeddings
+
+
 def create_person_detector(config: DetectionConfig):
     """Factory function to create the appropriate person detector.
 
