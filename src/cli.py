@@ -389,7 +389,8 @@ def test_camera(ctx, camera_id):
         return
 
     click.echo(f"Testing camera: {cam_config.name}")
-    click.echo(f"URL: {cam_config.rtsp_url}")
+    from src.stream.rtsp_client import redact_credentials
+    click.echo(f"URL: {redact_credentials(cam_config.rtsp_url)}")
     decoder = "NVDEC" if cam_config.use_nvdec else "FFmpeg"
     click.echo(f"Decoder: {decoder}")
 

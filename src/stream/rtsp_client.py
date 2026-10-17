@@ -2,6 +2,7 @@
 
 import logging
 import os
+import re
 import threading
 import time
 from dataclasses import dataclass
@@ -14,6 +15,13 @@ import numpy as np
 from src.utils.profiler import profiler
 
 logger = logging.getLogger(__name__)
+
+_URL_CREDENTIALS = re.compile(r"(\w+://)[^/@\s]+@")
+
+
+def redact_credentials(text: str) -> str:
+    """Mask user:password in URLs (rtsp://user:pw@host -> rtsp://***@host) before logging."""
+    return _URL_CREDENTIALS.sub(r"\1***@", text)
 
 
 @dataclass
@@ -131,13 +139,13 @@ class RTSPClient:
 
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "rtsp_transport;tcp"
 
-        logger.info(f"Camera {self.camera_id}: Connecting to {self.rtsp_url}")
+        logger.info(f"Camera {self.camera_id}: Connecting to {redact_credentials(self.rtsp_url)}")
 
         if self.use_nvdec:
             # Use GStreamer with NVDEC hardware decoder
             pipeline = self._build_gstreamer_pipeline()
             logger.info(f"Camera {self.camera_id}: Using NVDEC hardware decoder")
-            logger.debug(f"Camera {self.camera_id}: GStreamer pipeline: {pipeline}")
+            logger.debug(f"Camera {self.camera_id}: GStreamer pipeline: {redact_credentials(pipeline)}")
             self._cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         else:
             # Use FFmpeg (CPU decoding)
