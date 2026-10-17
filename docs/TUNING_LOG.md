@@ -307,3 +307,15 @@ identity and "last known room" — not continuous identity of every person at ev
   MainLoop 76.6 → 67.4 (original per-engine contexts). tj ~59 °C, VDD_IN ~9-10 W.
 - Identity review 17:26–17:46 UTC (per-person anchor deployed): Ati 12 labels, Judit 6, all correct;
   0 contradictions; children never named; one merged Judit+child box stayed unnamed.
+
+## 2026-10-17 18:07 UTC — yolo26m live (detection.model = models/yolo26m-nms-trtexec.engine)
+- Engine: `yolo export model=yolo26m.pt format=onnx half=True nms=True` + `trtexec --fp16` on the
+  Jetson (build log/bench in ~/yolo26m-bench). Live config backup: config.yaml.20261017T180720Z.
+- Live, GPU at max clock: PersonDetector.infer 12.5 → 19.3 ms, detect 22.0 → 28.1 ms; detector calls
+  per perf report ~108 → ~113 (keeps up), FPS 20.3 → 20.5, camera frame drops not higher. 4.6 GB free,
+  58 °C, ~8.5 W.
+- Identity review 17:51–18:21 UTC (yolo26s until 18:07, then yolo26m): Ati 24 labels (face 13, handover
+  7, reid_gallery 4), all correct; 1 finding face_disagrees global_57588 = a ByteTrack carry-over: the
+  track was on Judit lying on the ground_floor rug (unnamed, face Judit 0.60 once), Ati then sat at the
+  same spot and the track was face-named Ati — correct at naming, no wrong label shown. Few people at
+  home after 18:07, so the yolo26m gain on children/close pairs is not yet visible live.
