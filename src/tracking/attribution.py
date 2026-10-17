@@ -10,9 +10,14 @@ Every identity path needs the same answer, so it lives here and nowhere else:
 - Location evidence (zone / cross-camera identity propagation) is attributable
   only when each camera sees exactly ONE person, counting briefly lost tracks
   (a person the tracker dropped for a few frames is still there).
-- Identity exclusivity (duplicate-person guard): a person is held by at most one
-  LIVE track per camera; a lost track never blocks, since a new track with its
-  identity on the same camera is almost always the same person coming back.
+- Appearance of a NAMED track is attributable to that person only while it still
+  looks like it did when the track got the name (`AppearanceAnchor`): a track
+  ByteTrack moved onto someone else stops feeding the Re-ID gallery.
+- Identity exclusivity: a person is held by at most one LIVE track per camera.
+  A gallery match proposing a held person is rejected; a FACE confirmation wins
+  and the other track loses the name (fresher, stronger evidence: ByteTrack moved
+  that track onto someone else). A lost track never blocks, since a new track
+  with its identity on the same camera is almost always the same person back.
   Both camera rules are answered by GlobalTrackManager._tracks_on_camera.
 
 History: before 2026-10-17 this was spread over seven checks with three rules
@@ -21,7 +26,9 @@ a hard-coded 1 on new tracks, "exactly one in the zone" counting only active
 tracks) and each mismatch produced a mislabel found in the audit review.
 """
 
-from typing import Iterable, Protocol
+from typing import Iterable, Optional, Protocol
+
+import numpy as np
 
 # Location evidence: a track the tracker dropped this long ago still counts as a
 # person on the camera (brief ByteTrack losses of a seated person last 1-3 s)
@@ -75,3 +82,27 @@ def isolated_track_ids(tracks: Iterable[_Boxed], max_overlap: float) -> set[int]
                 isolated.discard(a.track_id)
                 isolated.discard(b.track_id)
     return isolated
+
+
+class AppearanceAnchor:
+    """What a named track looked like when it got its name (Re-ID embedding).
+
+    Live 2026-10-17 11:44 UTC: Ati was face-named with Judit right behind him;
+    the track drifted onto her and fed the gallery as "Ati", so Judit then matched
+    "Ati" at 0.79-0.95. Detection log replay: samples vs the naming-time sample
+    0.92-0.68 while it was Ati, 0.37-0.49 once it was Judit; same-person median 0.66.
+
+    Gates the gallery only. As a reason to DROP a name it failed offline
+    validation: 6 of 7 checkable trips were the same person changing (coat off,
+    sitting down, partial box), and a rolling reference missed a real switch.
+    """
+
+    def __init__(self, embedding: np.ndarray, min_similarity: float):
+        self._anchor = embedding / (np.linalg.norm(embedding) + 1e-9)
+        self._min_similarity = min_similarity
+
+    def similarity(self, embedding: np.ndarray) -> float:
+        return float(self._anchor @ embedding) / (float(np.linalg.norm(embedding)) + 1e-9)
+
+    def consistent(self, embedding: np.ndarray) -> bool:
+        return self.similarity(embedding) >= self._min_similarity

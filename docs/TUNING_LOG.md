@@ -216,3 +216,32 @@ identity and "last known room" — not continuous identity of every person at ev
   with the live track_events (fidelity check). Next: record a walking session, check fidelity,
   sweep match_thresh / track_buffer / duplicate handling; frame capture sessions (stage 2) for
   visual ground truth.
+
+### 2026-10-17 12:00 UTC — Re-ID gallery polluted with Judit under "Ati" (uncommitted, live)
+- 11:44:35-11:46:14 Judit got "Ati" via reid_gallery on 5 tracks (0.79-0.95); Virag once
+  (0.72). find_contradictions: 0 findings — only the visual review caught it.
+- Cause: Ati face-confirmed (living_room global_56842) with Judit right behind him in the door
+  (no separate box, no second face detected → "isolated"); the track then drifted onto Judit
+  across 8 loss/revive cycles and each loss committed its buffer as "Ati". Replay of the
+  detection log: track samples vs face-time sample 0.92→0.68 (Ati), then 0.37-0.49 (Judit);
+  same-person median 0.66.
+- Mitigation: restart 13:57 local (in-memory gallery cleared). Fix: attribution anchor — the
+  crop at face confirmation anchors the track; later samples need cosine ≥
+  reid.gallery_anchor_similarity (0.55) to it, else not stored; new person's anchor resets.
+- Also: replay_tracking --show-breaks; its running-mean break detector missed this gradual
+  switch, so match_thresh changes stay on hold until switch risk is measurable.
+- Open: drop a track's NAME when it stops resembling its anchor (separate decision).
+
+### 2026-10-17 12:35 UTC — 2nd switch onto Judit; name revocation validated offline (uncommitted, live)
+- 12:08 living_room: ByteTrack moved Ati's face-named t7 onto Judit lying next to him; the name
+  stayed, Ati's new track was face-confirmed too → two "Ati"s (find_contradictions caught it).
+  Gallery was not polluted (overlapping boxes → not isolated).
+- Tried: drop a name when its appearance leaves the naming-time anchor. Replay over 171 tracks:
+  anchor (th 0.5-0.55, 3 misses) tripped 29-47 tracks; of 7 with before/after audit crops, 6 were
+  the same person changing (coat off, sitting, partial box) → rejected. Rolling reference (last 10
+  samples, th 0.5): 1 trip (the real 11:44 switch) but misses the 12:08 one (0.68/0.78 at the
+  jump, then adapts). Appearance alone can't drop names reliably with overlapping people.
+- Deployed instead: exclusivity completed — a face confirmation wins, any other live track on the
+  camera holding that person is unnamed (id_revoked). Anchor (reid.anchor_similarity, renamed
+  from gallery_anchor_similarity) now only gates the gallery and is set by confirm_identity
+  (incl. handover), the single naming path.

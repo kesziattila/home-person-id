@@ -93,6 +93,8 @@ class TrackReIDData:
     max_entries: int = 10
 
     def add(self, embedding: np.ndarray, crop: np.ndarray, person_name: Optional[str] = None):
+        if person_name and self.person_name not in (None, person_name):
+            self.cleanup()  # the track was renamed: earlier samples were someone else
         if person_name:
             self.person_name = person_name
         crop_path = _save_crop_file(crop, self.crop_cache_path, "track") if self.crop_cache_path else None
@@ -331,7 +333,8 @@ class ReIDGalleryManager:
         At most one update per `update_interval_sec` per track: the multi-face check
         runs a face detector (~15ms on Jetson), too expensive for every frame.
         Pass `embedding`/`quality` when the caller already extracted them.
-        Call only for isolated tracks (src/tracking/attribution.py).
+        Call only with evidence attributable to the person (src/tracking/attribution.py:
+        isolated track, appearance consistent with its AppearanceAnchor).
 
         Args:
             track_id: Track ID

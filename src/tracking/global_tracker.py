@@ -492,10 +492,12 @@ class GlobalTrackManager:
                         persons_present=self.persons_tracked_on_camera(camera_id, exclude=global_track_id),
                     )
 
-                # If track just became identified (or was corrected), update person zone
+                # Identity changed (named or corrected): exclusivity, then both persons' zones
                 person_id_after = self._person_id(global_track_id)
-                if person_id_after is not None and person_id_after != person_id_before:
+                if person_id_after != person_id_before:
+                    self._enforce_face_exclusivity(camera_id, global_track_id)
                     self._resolve_person_location(person_id_after, camera_id=camera_id)
+                    self._resolve_person_location(person_id_before, camera_id=camera_id)
 
         # Process lost local tracks
         for local_track_id in lost_track_ids:
@@ -626,6 +628,8 @@ class GlobalTrackManager:
                 local_track.last_crop,
                 local_track.bbox,
                 isolated=isolated,
+                precomputed_reid=(local_track.last_reid_embedding, local_track.last_reid_quality)
+                if local_track.last_reid_embedding is not None else None,
                 camera_id=camera_id,
                 persons_present=self.persons_tracked_on_camera(camera_id, exclude=global_track_id),
             )
@@ -1004,6 +1008,23 @@ class GlobalTrackManager:
                         f"Zone identity propagation: zone='{zone_name}' "
                         f"{src_track} -> {rcv_track} (person_id={src_state.person_id})"
                     )
+
+    def _enforce_face_exclusivity(self, camera_id: str, global_track_id: str) -> None:
+        """A face just named this track: other live tracks on the camera lose that name.
+
+        One person, one live track per camera (attribution.py); the fresh face
+        evidence wins over an older name (live 2026-10-17 12:08 UTC: ByteTrack moved
+        Ati's face-named track onto Judit lying next to him, then Ati's own new
+        track was face-confirmed too -> two "Ati"s).
+        """
+        state = self.identity_linker.get_track_state(global_track_id)
+        if state is None or state.identified_by != IdMethod.FACE:
+            return
+        for other in self._tracks_on_camera(camera_id, recently_lost=False):
+            if other != global_track_id and self._person_id(other) == state.person_id:
+                self.identity_linker.revoke_identity(
+                    other, camera_id, f"person face-confirmed on {global_track_id}")
+                self._resolve_person_location(state.person_id, camera_id=camera_id)
 
     def _tracks_on_camera(self, camera_id: str, recently_lost: bool) -> list[str]:
         """Global tracks a camera holds now: live (NEW/TRACKED), plus — if `recently_lost` —

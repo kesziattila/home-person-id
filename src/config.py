@@ -182,6 +182,10 @@ class ReIDConfig:
     # Minimum seconds between shared-gallery embedding updates of one identified track
     # (each update runs grayscale + multi-face checks; gallery keeps only gallery_size)
     gallery_update_interval_sec: float = 1.0
+    # A named track feeds the shared gallery only while its Re-ID samples resemble
+    # the one taken when it got the name: cosine >= this
+    # (src/tracking/attribution.AppearanceAnchor)
+    anchor_similarity: float = 0.55
     # Log track_recovered events to the database.
     # These fire frequently when ByteTrack briefly loses a detection.
     # Disable to reduce event noise.
