@@ -275,3 +275,25 @@ identity and "last known room" — not continuous identity of every person at ev
   at the throughput limit. Decision (user): not pursuing a bigger detector for now.
 - Identity review of the same window: 7 Ati labels, all correct (6 face 0.60–0.66 after 6 natural
   walk-through refs were added, 1 handover); children and Judit unnamed (faces down / away); 0 findings.
+- yolo26s-pose@640 on the same 254 frames: 447 persons (+27/-41 frames vs live), CPU time = yolo26s.
+  Splits some adult+child pairs (incl. the 16:10:22 merged box) but drops children crouching / lying
+  on the floor / sitting low. Face keypoints (nose + both eyes > 0.5) on 22% of persons, any face
+  keypoint 66%, an ankle 72%. Not better than the live detector as a replacement.
+
+## 2026-10-17 16:10 UTC case → gallery anchor per person (deployed ~19:30 local)
+- 16:10 living_room: t165 (face-named Ati) slid onto a child; t168 face-confirmed Ati → t165 unnamed
+  (exclusivity, worked). 16:10:33 child + Ati became ONE box; Ati's face in it re-named t165 and the
+  per-track anchor was rebuilt from the box → the child's crops entered Ati's gallery (1440, 1445).
+  Restarted at 18:37 local to clear the gallery.
+- New: attribution.PersonAppearance — anchors belong to the person; every face confirmation is a
+  candidate, two DIFFERENT tracks agreeing (cos ≥ reid.anchor_similarity) make an anchor; a single
+  confirmation never widens the set. Gates the gallery only.
+- Replay 16:08–16:12 (gallery candidates, old → new): t165 child/merged phase 20 → 9 (the 9 are
+  merged boxes partly showing Ati, 0.56–0.64); t165 after it slid back to Ati 0 → 46; t168 21 → 22;
+  early t165 Ati samples 25 → 7 (anchor needs a second track first). Two discarded variants: widening
+  on one matching confirmation let the merged box in (0.59); "consistent → ignore" left the living
+  room without its own anchors (only ground_floor looks, Ati samples 2/46).
+- Inference overhead (separate process on the Jetson next to the live app): yolo26s preprocess 5.0,
+  copies ~2, execute 10.0, total 18.4 ms; yolo26m execute 17.9, total 26.5 ms; pinned host buffers
+  save ~1-2 ms. Live PersonDetector.infer is ~25 ms vs ~12 ms standalone → ~13 ms in-process
+  contention (4 separate CUDA contexts and/or GIL) — next: py-spy on the live process.

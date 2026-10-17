@@ -287,9 +287,11 @@ reid:
   # frame was wasted main-thread time. 0 = every frame.
   gallery_update_interval_sec: 1.0
 
-  # A named track feeds the Re-ID gallery only while its Re-ID samples resemble
-  # the one taken when it got the name (cosine >= this), so a track ByteTrack
-  # moved onto someone else stops feeding it. Calibrated on live replay:
+  # A named track feeds the Re-ID gallery only if its Re-ID sample resembles the
+  # person's face-confirmed appearance (cosine >= this; an appearance counts once
+  # face confirmations on two different tracks agree on it), so a track ByteTrack
+  # moved onto someone else, or a box covering two people, does not feed it.
+  # Calibrated on live replay:
   # same-person samples median 0.66, a track that jumped to another person
   # 0.37-0.49. Higher = cleaner gallery, fewer samples.
   anchor_similarity: 0.55

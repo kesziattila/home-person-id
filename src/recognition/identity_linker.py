@@ -24,7 +24,7 @@ from src.recognition.face_recognizer import FaceRecognizer
 from src.recognition.id_method import IdMethod
 from src.recognition.identification_manager import IdentificationManager
 from src.recognition.reid_extractor import ReIDExtractor
-from src.tracking.attribution import AppearanceAnchor
+from src.tracking.attribution import PersonAppearance
 from src.utils.profiler import profiler
 
 if TYPE_CHECKING:
@@ -68,11 +68,10 @@ class TrackIdentityState:
     # Face embedding if captured
     face_embedding: Optional[np.ndarray] = None
 
-    # Appearance when the name was given (attribution.AppearanceAnchor) and the
-    # latest Re-ID sample, which becomes the anchor of the next name
-    anchor: Optional[AppearanceAnchor] = None
+    # Latest Re-ID sample; a face confirmation reports it to the person's
+    # face-confirmed appearance (attribution.PersonAppearance, shared by all tracks)
     last_appearance: Optional[np.ndarray] = None
-    anchor_similarity: float = 0.55
+    appearances: Optional[PersonAppearance] = None
 
     # Consecutive match tracking for the Re-ID gallery recheck path
     # (the face streak lives in IdentificationManager.attempt_face)
@@ -109,8 +108,8 @@ class TrackIdentityState:
         self.identification_confidence = confidence
         self.identified_by = method
         self.identified_at = time.time()
-        self.anchor = (AppearanceAnchor(self.last_appearance, self.anchor_similarity)
-                       if self.last_appearance is not None else None)
+        if method == IdMethod.FACE and self.appearances is not None:
+            self.appearances.face_confirmed(person_id, self.global_track_id, self.last_appearance)
         logger.info(
             f"Track {self.global_track_id} identified as person {person_id} "
             f"via {method} (conf={confidence:.2f})"
@@ -178,6 +177,9 @@ class IdentityLinker:
 
         # Track identity states (production-specific, with consecutive match tracking)
         self._track_states: dict[str, TrackIdentityState] = {}
+        # Face-confirmed appearance per person: gates the gallery feed (in memory,
+        # like the gallery itself)
+        self._appearances = PersonAppearance(reid_config.anchor_similarity)
 
     def _create_config(self, face_config: FaceRecognitionConfig, reid_config: ReIDConfig) -> Config:
         """Create a Config object from individual configs."""
@@ -219,7 +221,7 @@ class IdentityLinker:
         if global_track_id not in self._track_states:
             self._track_states[global_track_id] = TrackIdentityState(
                 global_track_id=global_track_id,
-                anchor_similarity=self.reid_config.anchor_similarity,
+                appearances=self._appearances,
             )
             logger.debug(f"Registered track {global_track_id} for identity tracking")
 
@@ -327,7 +329,7 @@ class IdentityLinker:
         state.last_seen_time = current_time
 
         if precomputed_reid is not None:
-            state.last_appearance = precomputed_reid[0]  # anchor of the next name
+            state.last_appearance = precomputed_reid[0]
 
         # Face until face-confirmed; an appearance-based label is re-checked less
         # often, so face can still correct or upgrade it (IdMethod.strength)
@@ -364,7 +366,6 @@ class IdentityLinker:
         state.identification_confidence = 0.0
         state.identified_by = IdMethod.NONE
         state.identified_at = None
-        state.anchor = None
         state.last_face_check = 0.0
         state.gallery_candidate_person_id = None
         state.gallery_consecutive_matches = 0
@@ -445,7 +446,7 @@ class IdentityLinker:
         precomputed_reid: Optional[tuple[np.ndarray, float]] = None,
         camera_id: Optional[str] = None,
     ):
-        """Feed an identified, isolated track's appearance (while it matches its anchor) to the gallery.
+        """Feed an identified, isolated track's appearance (if it looks like the person) to the gallery.
 
         The gallery buffers it per track and keeps it only if the track ends
         face-identified (`ReIDGalleryManager.on_track_lost`).
@@ -465,9 +466,9 @@ class IdentityLinker:
             with profiler.measure("ReIDExtractor.extract"):
                 embedding, quality = reid_extractor.extract(crop, return_quality=True)
 
-        # Only the named person's appearance (attribution.AppearanceAnchor)
+        # Only the named person's face-confirmed appearance (attribution.PersonAppearance)
         state.last_appearance = embedding
-        if state.anchor is None or not state.anchor.consistent(embedding):
+        if not self._appearances.consistent(state.person_id, embedding):
             return
         if quality >= self.reid_config.min_visibility:
             self.reid_gallery_manager.update_track_embedding(

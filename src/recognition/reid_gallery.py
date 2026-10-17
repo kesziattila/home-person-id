@@ -334,7 +334,7 @@ class ReIDGalleryManager:
         runs a face detector (~15ms on Jetson), too expensive for every frame.
         Pass `embedding`/`quality` when the caller already extracted them.
         Call only with evidence attributable to the person (src/tracking/attribution.py:
-        isolated track, appearance consistent with its AppearanceAnchor).
+        isolated track, appearance consistent with the person's PersonAppearance).
 
         Args:
             track_id: Track ID

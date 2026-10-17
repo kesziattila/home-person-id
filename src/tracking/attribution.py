@@ -10,9 +10,10 @@ Every identity path needs the same answer, so it lives here and nowhere else:
 - Location evidence (zone / cross-camera identity propagation) is attributable
   only when each camera sees exactly ONE person, counting briefly lost tracks
   (a person the tracker dropped for a few frames is still there).
-- Appearance of a NAMED track is attributable to that person only while it still
-  looks like it did when the track got the name (`AppearanceAnchor`): a track
-  ByteTrack moved onto someone else stops feeding the Re-ID gallery.
+- Appearance of a NAMED track is attributable to that person only while it looks
+  like the person's face-confirmed appearance (`PersonAppearance`): a track
+  ByteTrack moved onto someone else, or a box covering two people, does not feed
+  the Re-ID gallery.
 - Identity exclusivity: a person is held by at most one LIVE track per camera.
   A gallery match proposing a held person is rejected; a FACE confirmation wins
   and the other track loses the name (fresher, stronger evidence: ByteTrack moved
@@ -84,25 +85,63 @@ def isolated_track_ids(tracks: Iterable[_Boxed], max_overlap: float) -> set[int]
     return isolated
 
 
-class AppearanceAnchor:
-    """What a named track looked like when it got its name (Re-ID embedding).
+class PersonAppearance:
+    """What each person looks like today (Re-ID embeddings), confirmed by face.
 
-    Live 2026-10-17 11:44 UTC: Ati was face-named with Judit right behind him;
-    the track drifted onto her and fed the gallery as "Ati", so Judit then matched
-    "Ati" at 0.79-0.95. Detection log replay: samples vs the naming-time sample
-    0.92-0.68 while it was Ati, 0.37-0.49 once it was Judit; same-person median 0.66.
+    Live 2026-10-17: per-track anchors taken at naming time failed twice. 11:44 UTC
+    the anchor existed but ByteTrack later moved Ati's track onto Judit (samples
+    0.37-0.49 to it, gated correctly); 16:10 UTC Ati's track slid onto a child,
+    lost the name (exclusivity), then got it back by face on a box covering both:
+    Ati's face was in the box, the box looked like the child (0.45 to Ati), and the
+    fresh per-track anchor let the child's crops into Ati's gallery.
 
-    Gates the gallery only. As a reason to DROP a name it failed offline
-    validation: 6 of 7 checkable trips were the same person changing (coat off,
-    sitting down, partial box), and a rolling reference missed a real switch.
+    A face proves whose face it is, not whose appearance the box shows. So an
+    appearance becomes a person's anchor only when face confirmations on two
+    DIFFERENT tracks agree on it (as the face streak needs two matches); a merged
+    box or a slid track is a one-off. The same rule starts the day after a restart,
+    adopts new clothes and learns each camera's view of the person. A single
+    confirmation never widens the set, even one that matches it: replay of 16:10
+    showed the merged box at 0.59 to Ati's looks, and as an anchor it let the
+    child's crops (0.65-0.90 to it) through. Gates the gallery only, never drops a name (appearance as a
+    reason to unname failed validation: 6 of 7 trips were the same person changing).
     """
 
-    def __init__(self, embedding: np.ndarray, min_similarity: float):
-        self._anchor = embedding / (np.linalg.norm(embedding) + 1e-9)
-        self._min_similarity = min_similarity
+    MAX_ANCHORS = 10
+    MAX_PENDING = 10
 
-    def similarity(self, embedding: np.ndarray) -> float:
-        return float(self._anchor @ embedding) / (float(np.linalg.norm(embedding)) + 1e-9)
+    def __init__(self, min_similarity: float):
+        self.min_similarity = min_similarity
+        self._anchors: dict[int, list[np.ndarray]] = {}
+        self._pending: dict[int, list[tuple[str, np.ndarray]]] = {}
 
-    def consistent(self, embedding: np.ndarray) -> bool:
-        return self.similarity(embedding) >= self._min_similarity
+    @staticmethod
+    def _unit(embedding: np.ndarray) -> np.ndarray:
+        e = np.asarray(embedding, dtype=np.float32)
+        return e / (np.linalg.norm(e) + 1e-9)
+
+    def similarity(self, person_id: int, embedding: np.ndarray) -> Optional[float]:
+        anchors = self._anchors.get(person_id)
+        if not anchors:
+            return None
+        return float(max(a @ self._unit(embedding) for a in anchors))
+
+    def consistent(self, person_id: int, embedding: np.ndarray) -> bool:
+        """May this sample feed the person's gallery? No anchors yet -> no."""
+        sim = self.similarity(person_id, embedding)
+        return sim is not None and sim >= self.min_similarity
+
+    def face_confirmed(self, person_id: int, track_id: str, embedding: Optional[np.ndarray]) -> None:
+        """Record the appearance of a track the face path just named `person_id`."""
+        if embedding is None:
+            return
+        e = self._unit(embedding)
+        anchors = self._anchors.setdefault(person_id, [])
+        pending = self._pending.setdefault(person_id, [])
+        agreeing = [(t, p) for t, p in pending if t != track_id and float(p @ e) >= self.min_similarity]
+        if agreeing:
+            anchors.extend([p for _, p in agreeing] + [e])
+            pending[:] = [(t, p) for t, p in pending if all(p is not q for _, q in agreeing)]
+        else:
+            pending[:] = [(t, p) for t, p in pending if t != track_id] + [(track_id, e)]
+            del pending[:-self.MAX_PENDING]
+        del anchors[:-self.MAX_ANCHORS]
