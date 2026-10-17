@@ -21,21 +21,16 @@ from typing import TYPE_CHECKING
 from src.config import Config, FaceRecognitionConfig, ReIDConfig
 from src.database.repository import Repository
 from src.recognition.face_recognizer import FaceRecognizer
-from src.recognition.identification_manager import IdentificationManager, CrossCameraMatch
-from src.recognition.reid_extractor import ReIDExtractor, EmbeddingGallery
-from src.tracking.attribution import owner_face
+from src.recognition.id_method import IdMethod
+from src.recognition.identification_manager import IdentificationManager
+from src.recognition.reid_extractor import ReIDExtractor
 from src.utils.profiler import profiler
-from src.utils.image_utils import crop_face_region, crop_with_margin
 
 if TYPE_CHECKING:
     from src.recognition.face_score_logger import FaceScoreLogger
     from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 
 logger = logging.getLogger(__name__)
-
-# Identification method precedence (weakest → strongest).
-# A track can only be upgraded, never downgraded.
-IDENTIFICATION_PRECEDENCE = {"none": 0, "handover": 1, "reid": 2, "reid_gallery": 2, "face": 3}
 
 
 @dataclass
@@ -45,7 +40,7 @@ class IdentificationResult:
     person_id: Optional[int] = None
     person_name: Optional[str] = None
     confidence: float = 0.0
-    method: str = "none"  # 'face', 'reid', 'none'
+    method: IdMethod = IdMethod.NONE
     is_confirmed: bool = False
 
     # For visualization compatibility with TrackIdentity
@@ -73,20 +68,13 @@ class TrackIdentityState:
     global_track_id: str
     person_id: Optional[int] = None
     identification_confidence: float = 0.0
-    identified_by: str = "none"  # 'face', 'reid', 'reid_gallery', 'handover', 'none'
+    identified_by: IdMethod = IdMethod.NONE
 
     # Face embedding if captured
     face_embedding: Optional[np.ndarray] = None
 
-    # Re-ID gallery for stable matching (per-track)
-    reid_gallery: EmbeddingGallery = field(default_factory=EmbeddingGallery)
-
-    # Consecutive match tracking for stability (face path)
-    candidate_person_id: Optional[int] = None
-    consecutive_matches: int = 0
-
-    # Consecutive match tracking for the Re-ID gallery recheck path.
-    # Separate from the face counters so the two paths don't interfere.
+    # Consecutive match tracking for the Re-ID gallery recheck path
+    # (the face streak lives in IdentificationManager.attempt_face)
     gallery_candidate_person_id: Optional[int] = None
     gallery_consecutive_matches: int = 0
 
@@ -105,33 +93,22 @@ class TrackIdentityState:
         """Check if track has been linked to a known person."""
         return self.person_id is not None
 
-    def update_reid_gallery(
-        self, embedding: np.ndarray, quality: float, max_size: int = 10
-    ):
-        """Update Re-ID embedding gallery."""
-        self.reid_gallery.max_size = max_size
-        self.reid_gallery.add(embedding, quality, time.time())
-
-    def confirm_identity(self, person_id: int, confidence: float, method: str):
+    def confirm_identity(self, person_id: int, confidence: float, method: IdMethod):
         """Confirm identity assignment.
 
-        Respects identification precedence — a weaker method cannot
-        overwrite a stronger one (e.g. reid cannot overwrite face).
+        A weaker method cannot overwrite a stronger one (IdMethod.strength):
+        Re-ID cannot overwrite face, face can correct Re-ID or handover.
         """
-        current_rank = IDENTIFICATION_PRECEDENCE.get(self.identified_by, 0)
-        new_rank = IDENTIFICATION_PRECEDENCE.get(method, 0)
-        if new_rank < current_rank:
+        if method.strength < self.identified_by.strength:
             logger.debug(
-                f"Track {self.global_track_id}: ignoring {method} (rank {new_rank}), "
-                f"already identified by {self.identified_by} (rank {current_rank})"
+                f"Track {self.global_track_id}: ignoring {method}, "
+                f"already identified by {self.identified_by}"
             )
             return
         self.person_id = person_id
         self.identification_confidence = confidence
         self.identified_by = method
         self.identified_at = time.time()
-        self.candidate_person_id = None
-        self.consecutive_matches = 0
         logger.info(
             f"Track {self.global_track_id} identified as person {person_id} "
             f"via {method} (conf={confidence:.2f})"
@@ -194,6 +171,7 @@ class IdentityLinker:
             face_recognizer=face_recognizer,
             reid_extractor=reid_extractor,
             unidentified_face_manager=unidentified_face_manager,
+            face_score_logger=face_score_logger,
         )
 
         # Track identity states (production-specific, with consecutive match tracking)
@@ -259,15 +237,12 @@ class IdentityLinker:
 
             # Store embeddings in shared gallery if face-identified
             if was_face_identified and state.is_identified and self.reid_gallery_manager:
-                track_id_num = hash(global_track_id) % (10**9)
                 self.reid_gallery_manager.on_track_lost(
-                    track_id_num, was_face_identified=True,
+                    self.gallery_track_key(global_track_id), was_face_identified=True,
                     global_track_id=global_track_id,
                 )
 
-            del self._track_states[global_track_id]
-            if self._face_score_logger:
-                self._face_score_logger.forget_track(global_track_id)
+            self._forget(global_track_id)
             logger.debug(f"Unregistered track {global_track_id}")
 
     def get_track_state(self, global_track_id: str) -> Optional[TrackIdentityState]:
@@ -301,7 +276,7 @@ class IdentityLinker:
             confidence=state.identification_confidence,
             method=state.identified_by,
             is_confirmed=state.is_identified,
-            is_reid_identified=state.identified_by in ("reid", "reid_gallery", "handover"),
+            is_reid_identified=state.identified_by.is_appearance,
             face_info=identity.face_info if identity else None,
             reid_info=identity.reid_info if identity else None,
             reid_score=identity.reid_score if identity else -1.0,
@@ -347,84 +322,22 @@ class IdentityLinker:
             state.last_camera_id = camera_id
         state.last_seen_time = current_time
 
-        # If already identified, just update Re-ID gallery
-        if state.is_identified:
-            if isolated:
-                self._update_reid_gallery(state, person_crop, precomputed_reid)
-            name = self._get_person_name(state.person_id)
-            
-            # Also get latest reid_score/info for display
-            identity = self._id_manager.get_identity(global_track_id)
-            
-            return IdentificationResult(
-                person_id=state.person_id,
-                person_name=name,
-                confidence=state.identification_confidence,
-                method=state.identified_by,
-                is_confirmed=True,
-                is_reid_identified=state.identified_by == "reid",
-                face_info=(name, state.identification_confidence) if state.identified_by == "face" else None,
-                reid_info=identity.reid_info if identity else None,
-                reid_score=identity.reid_score if identity else -1.0
-            )
-
-        # Check if we should run face recognition
-        time_since_face_check = current_time - state.last_face_check
-        
-        # Determine check interval (longer if already identified to save CPU)
-        check_interval = self.face_config.detection_interval
-        if state.is_identified:
-            check_interval = self.face_config.reid_confirmation_interval
-        
-        should_check_face = (
-            force_face_check
-            or time_since_face_check > (check_interval / 2.0)
-        )
-        
-        # Initialize result with reid_info=None to avoid AttributeError in renderer
-        result = IdentificationResult(reid_info=None)
-
-        if should_check_face and self.face_config.enabled:
-            state.last_face_check = current_time
-            face_result = self._try_face_identification(state, frame, bbox, person_crop, isolated, camera_id)
-
-            if face_result.is_confirmed:
-                # Update with reid_info for rendering before returning
-                identity = self._id_manager.get_identity(global_track_id)
-                if identity:
-                    face_result.reid_info = identity.reid_info
-                    face_result.reid_score = identity.reid_score
-                return face_result
-            elif face_result.person_id is not None:
-                result = face_result
+        # Face until face-confirmed; an appearance-based label is re-checked less
+        # often, so face can still correct or upgrade it (IdMethod.strength)
+        if self.face_config.enabled and state.identified_by != IdMethod.FACE:
+            interval = (self.face_config.reid_confirmation_interval if state.is_identified
+                        else self.face_config.detection_interval)
+            if force_face_check or current_time - state.last_face_check > interval / 2.0:
+                state.last_face_check = current_time
+                self._try_face_identification(state, frame, bbox, person_crop, isolated, camera_id)
 
         # Appearance evidence only for isolated tracks (attribution.py)
         if isolated:
-            # Always update Re-ID gallery for cross-camera matching
             self._update_reid_gallery(state, person_crop, precomputed_reid)
+            if not state.is_identified:
+                self._try_gallery_identification(state, person_crop, camera_id)
 
-            # For unidentified tracks, try periodic gallery recheck
-            if not state.is_identified and self._try_gallery_identification(state, person_crop, camera_id):
-                name = self._get_person_name(state.person_id)
-                return IdentificationResult(
-                    person_id=state.person_id,
-                    person_name=name,
-                    confidence=state.identification_confidence,
-                    method="reid_gallery",
-                    is_confirmed=True,
-                    is_reid_identified=True,
-                )
-
-        # Get best-match info from underlying IdentificationManager for unidentified tracks
-        if not result.is_confirmed:
-            identity = self._id_manager.get_identity(global_track_id)
-            if identity:
-                result.reid_info = identity.reid_info
-                result.face_info = identity.face_info
-                result.reid_score = identity.reid_score
-                result.has_multiple_faces = identity.has_multiple_faces
-
-        return result
+        return self.get_identity(global_track_id)
 
     def _get_person_name(self, person_id: int) -> Optional[str]:
         """Get person name from ID."""
@@ -438,179 +351,62 @@ class IdentityLinker:
         person_crop: np.ndarray,
         isolated: bool,
         camera_id: Optional[str] = None,
-    ) -> IdentificationResult:
-        """Try to identify track using face recognition.
+    ) -> bool:
+        """Production face step: `IdentificationManager.attempt_face` + DB persistence.
 
-        Uses IdentificationManager for core logic, adds consecutive match tracking.
+        Returns:
+            True if the track just became face-identified
         """
-        if not self._id_manager.face_recognizer:
-            return IdentificationResult()
+        attempt = self._id_manager.attempt_face(frame, bbox, state.global_track_id, camera_id)
+        if attempt is None or attempt.ambiguous:
+            return False
+        state.face_embedding = attempt.embedding
+        if not attempt.confirmed:
+            return False
 
-        # Crop face region from person bbox (upper portion)
-        face_region = crop_face_region(frame, bbox, height_ratio=0.5)
-        if face_region.size == 0:
-            return IdentificationResult()
+        best = attempt.scores.best_entry
+        score = attempt.scores.top1
+        previous_person_id, previous_method = state.person_id, state.identified_by
+        state.confirm_identity(best.person_id, score, IdMethod.FACE)
 
-        # Detect faces
-        face_recognizer = self._id_manager.face_recognizer
-        with profiler.measure("FaceRecognizer.detect"):
-            detection_result = face_recognizer.detect_faces(face_region)
-
-        if not detection_result.faces:
-            return IdentificationResult()
-
-        recognizable = [f for f in detection_result.faces if f.height >= self.face_config.min_face_size]
-        if not recognizable:
-            return IdentificationResult()
-        num_faces = len(recognizable)
-        best_face, ambiguous = owner_face(recognizable, face_region.shape[1])
-
-        # Get embedding
-        if best_face.embedding is None:
-            with profiler.measure("FaceRecognizer.extract"):
-                embedding = face_recognizer.extract_embedding(face_region, best_face)
-            if embedding is None:
-                return IdentificationResult()
-        else:
-            embedding = best_face.embedding
-
-        state.face_embedding = embedding
-
-        # Match against gallery per person (best match is tracked regardless of threshold)
-        with profiler.measure("FaceRecognizer.compare"):
-            scores = self._id_manager.score_face(embedding)
-        best_entry = scores.best_entry
-        best_match_id = best_entry.person_id if best_entry else None
-        best_match_name = best_entry.person_name if best_entry else None
-        best_face_id = best_entry.embedding_id if best_entry else None
-        best_score = scores.top1
-        accepted = not ambiguous and scores.accepts(
-            self.face_config.similarity_threshold, self.face_config.min_margin
+        snapshot_path = self._save_snapshot(attempt.region, attempt.face.bbox, "face_match", best.person_name)
+        self.repository.update_track(
+            state.global_track_id,
+            person_id=best.person_id,
+            face_embedding=attempt.embedding,
         )
-
-        if self._face_score_logger and best_entry:
-            self._face_score_logger.log(
-                camera_id=camera_id,
-                track_id=state.global_track_id,
-                per_person=scores.per_person,
-                top1_person_id=best_match_id,
-                top1=scores.top1,
-                top2=scores.top2,
-                accepted=accepted,
-                face_height=best_face.height,
-                face_width=best_face.width,
-                det_confidence=best_face.confidence,
-                threshold=self.face_config.similarity_threshold,
-                min_margin=self.face_config.min_margin,
-                num_faces=num_faces,
-                ambiguous=ambiguous,
-                embedding_norm=best_face.embedding_norm,
-            )
-
-        if ambiguous:
-            return IdentificationResult()
-
-        if not accepted:
-            # Submit to unidentified face manager
-            if self._unidentified_face_manager and camera_id:
-                face_crop, face_bbox = crop_with_margin(
-                    face_region, best_face.bbox, margin_ratio=0.3
-                )
-                if face_crop.size > 0:
-                    self._unidentified_face_manager.submit(
-                        camera_id=camera_id,
-                        face_crop=face_crop,
-                        embedding=embedding,
-                        face_bbox=face_bbox,
-                        track_id=state.global_track_id,
-                        best_match_person_id=best_match_id,
-                        best_match_score=best_score if best_score > 0 else None,
-                        best_match_face_id=best_face_id if best_match_id else None,
-                        det_confidence=best_face.confidence,
-                        landmarks=best_face.landmarks,
-                        embedding_norm=best_face.embedding_norm,
-                    )
-
-            return IdentificationResult(
-                face_info=(best_match_name, best_score) if best_match_name else None
-            )
-
-        # Consecutive match tracking for stability
-        if state.candidate_person_id == best_match_id:
-            state.consecutive_matches += 1
-        else:
-            state.candidate_person_id = best_match_id
-            state.consecutive_matches = 1
-
-        min_consecutive = 2
-        if state.consecutive_matches >= min_consecutive:
-            previous_person_id = state.person_id
-            was_reid_identified = (state.identified_by == "reid")
-            
-            state.confirm_identity(best_match_id, best_score, "face")
-
-            # Save snapshot
-            snapshot_path = self._save_snapshot(face_region, best_face.bbox, "face_match", best_match_name)
-
-            # Update database
-            self.repository.update_track(
-                state.global_track_id,
-                person_id=best_match_id,
-                face_embedding=embedding,
-            )
-            
-            # Emit events
+        self.repository.create_event(
+            camera_id=camera_id or "unknown",
+            event_type="face_match",
+            track_id=state.global_track_id,
+            person_id=best.person_id,
+            confidence=score,
+            face_embedding_id=best.embedding_id,
+            snapshot_path=snapshot_path,
+            extra_data={
+                "threshold": self.face_config.similarity_threshold,
+                "face_id": best.embedding_id,
+            }
+        )
+        if previous_method.is_appearance and previous_person_id is not None:
             self.repository.create_event(
                 camera_id=camera_id or "unknown",
-                event_type="face_match",
+                event_type="id_upgraded",
                 track_id=state.global_track_id,
-                person_id=best_match_id,
-                confidence=best_score,
-                face_embedding_id=best_face_id,
-                snapshot_path=snapshot_path,
+                person_id=best.person_id,
                 extra_data={
-                    "threshold": self.face_config.similarity_threshold,
-                    "face_id": best_face_id
+                    "from": str(previous_method),
+                    "to": str(IdMethod.FACE),
+                    "previous_person_id": previous_person_id,
+                    "new_person_id": best.person_id,
                 }
             )
 
-            if was_reid_identified and previous_person_id is not None:
-                self.repository.create_event(
-                    camera_id=camera_id or "unknown",
-                    event_type="id_upgraded",
-                    track_id=state.global_track_id,
-                    person_id=best_match_id,
-                    extra_data={
-                        "from": "reid",
-                        "to": "face",
-                        "previous_person_id": previous_person_id,
-                        "new_person_id": best_match_id
-                    }
-                )
-
-            if self.reid_gallery_manager and best_match_name and isolated:
-                track_id_num = hash(state.global_track_id) % (10**9)
-                self.reid_gallery_manager.update_track_embedding(
-                    track_id_num, person_crop, best_match_name
-                )
-
-            return IdentificationResult(
-                person_id=best_match_id,
-                person_name=best_match_name,
-                confidence=best_score,
-                method="face",
-                is_confirmed=True,
-                face_info=(best_match_name, best_score)
+        if self.reid_gallery_manager and isolated:
+            self.reid_gallery_manager.update_track_embedding(
+                self.gallery_track_key(state.global_track_id), person_crop, best.person_name
             )
-
-        return IdentificationResult(
-            person_id=best_match_id,
-            person_name=best_match_name,
-            confidence=best_score,
-            method="face",
-            is_confirmed=False,
-            face_info=(best_match_name, best_score)
-        )
+        return True
 
     def _update_reid_gallery(
         self,
@@ -619,10 +415,16 @@ class IdentityLinker:
         precomputed_reid: Optional[tuple[np.ndarray, float]] = None,
         camera_id: Optional[str] = None,
     ):
-        """Update Re-ID embedding gallery for a track (isolated tracks only).
+        """Feed an identified, isolated track's appearance to the shared Re-ID gallery.
 
-        Updates both the per-track gallery and shared gallery manager.
+        The gallery buffers it per track and keeps it only if the track ends
+        face-identified (`ReIDGalleryManager.on_track_lost`).
         """
+        if not state.is_identified or not self.reid_gallery_manager:
+            return
+        person_name = self._get_person_name(state.person_id)
+        if not person_name:
+            return
         if precomputed_reid:
             embedding, quality = precomputed_reid
         else:
@@ -634,20 +436,10 @@ class IdentityLinker:
                 embedding, quality = reid_extractor.extract(crop, return_quality=True)
 
         if quality >= self.reid_config.min_visibility:
-            # Update per-track gallery
-            state.update_reid_gallery(
-                embedding, quality, max_size=self.reid_config.gallery_size
+            self.reid_gallery_manager.update_track_embedding(
+                self.gallery_track_key(state.global_track_id), crop, person_name,
+                embedding=embedding, quality=quality,
             )
-
-            # Update shared gallery if identified
-            if state.is_identified and self.reid_gallery_manager:
-                person_name = self._get_person_name(state.person_id)
-                if person_name:
-                    track_id_num = hash(state.global_track_id) % (10**9)
-                    self.reid_gallery_manager.update_track_embedding(
-                        track_id_num, crop, person_name,
-                        embedding=embedding, quality=quality,
-                    )
 
     # ==================== Gallery Recheck ====================
 
@@ -759,7 +551,7 @@ class IdentityLinker:
             )
             return False
 
-        state.confirm_identity(person.id, match_result.score, "reid_gallery")
+        state.confirm_identity(person.id, match_result.score, IdMethod.REID_GALLERY)
 
         # Update database
         self.repository.update_track(
@@ -795,176 +587,6 @@ class IdentityLinker:
 
         return True
 
-    # ==================== Cross-Camera Re-ID ====================
-
-    def _find_track_for_person(self, person_name: str, candidate_track_ids: list[str]) -> Optional[str]:
-        """Find a candidate track belonging to the given person.
-
-        Used to resolve a gallery match (person name) to a concrete track ID.
-
-        Args:
-            person_name: Person name to look up
-            candidate_track_ids: Track IDs to search among
-
-        Returns:
-            Matching track ID, or None if no candidate belongs to this person
-        """
-        for track_id in candidate_track_ids:
-            state = self._track_states.get(track_id)
-            if state and state.is_identified:
-                if self._get_person_name(state.person_id) == person_name:
-                    return track_id
-        return None
-
-    def match_reid_cross_camera(
-        self,
-        new_track_id: str,
-        new_crop: np.ndarray,
-        candidate_track_ids: list[str],
-        precomputed_reid: Optional[tuple[np.ndarray, float]] = None,
-    ) -> Optional[CrossCameraMatch]:
-        """Match a new track against existing tracks using Re-ID.
-
-        Checks both per-track galleries and the shared gallery. When the
-        shared gallery wins, we try to resolve the person name back to a
-        candidate track so the caller can relink to an existing global
-        track rather than creating a new one.
-
-        Args:
-            new_track_id: ID of the new track
-            new_crop: Person crop from new track
-            candidate_track_ids: IDs of tracks to match against
-            precomputed_reid: Optional pre-computed Re-ID (embedding, quality)
-
-        Returns:
-            CrossCameraMatch object or None
-        """
-        if precomputed_reid:
-            new_embedding, quality = precomputed_reid
-        else:
-            reid_extractor = self._id_manager.reid_extractor
-            if not reid_extractor or new_crop.size == 0:
-                return None
-
-            with profiler.measure("ReIDExtractor.extract"):
-                new_embedding, quality = reid_extractor.extract(new_crop, return_quality=True)
-
-        if quality < self.reid_config.min_visibility:
-            logger.debug(f"Re-ID skip: {new_track_id} quality {quality:.2f} < {self.reid_config.min_visibility}")
-            return None
-
-        logger.debug(
-            f"Re-ID cross-camera: {new_track_id}, candidates={len(candidate_track_ids)}, "
-            f"quality={quality:.2f}"
-        )
-
-        best_match_id = None
-        best_score = 0.0
-        best_person_name = None
-        match_source = None  # "per_track" or "gallery" or "gallery_resolved"
-
-        # 1. Match against per-track galleries
-        with profiler.measure("ReIDExtractor.compare"):
-            for track_id in candidate_track_ids:
-                state = self._track_states.get(track_id)
-                if state is None or len(state.reid_gallery) == 0:
-                    continue
-
-                similarity = state.reid_gallery.match(new_embedding)
-                person_name = self._get_person_name(state.person_id) if state.is_identified else None
-                logger.debug(
-                    f"  candidate {track_id}: gallery_size={len(state.reid_gallery)}, "
-                    f"sim={similarity:.3f}, person={person_name}"
-                )
-                if similarity > self.reid_config.similarity_threshold and similarity > best_score:
-                    best_match_id = track_id
-                    best_score = similarity
-                    best_person_name = person_name
-                    match_source = "per_track"
-
-        # 2. Also try shared gallery — does NOT early-return so it
-        #    cannot discard a valid per-track match
-        if self.reid_gallery_manager:
-            with profiler.measure("ReIDGallery.match"):
-                match_result = self.reid_gallery_manager.match_new_track(new_crop)
-            if match_result.matched and match_result.score > best_score:
-                # Try to resolve person name to a candidate track
-                resolved_track = self._find_track_for_person(
-                    match_result.person_name, candidate_track_ids
-                )
-                if resolved_track:
-                    best_match_id = resolved_track
-                    match_source = "gallery_resolved"
-                    logger.debug(
-                        f"  gallery match resolved: {match_result.person_name} -> track {resolved_track}"
-                    )
-                else:
-                    # Gallery-only match — no candidate track found, but we know the person
-                    match_source = "gallery"
-                    logger.debug(
-                        f"  gallery match unresolved: {match_result.person_name} "
-                        f"(no candidate track found)"
-                    )
-                best_score = match_result.score
-                best_person_name = match_result.person_name
-
-                # Emit reid_match event for gallery matches
-                if self.repository:
-                    person = self.repository.get_person_by_name(match_result.person_name)
-                    person_id = person.id if person else None
-                    snapshot_path = self._save_snapshot_crop(
-                        new_crop, "reid_match", match_result.person_name
-                    )
-                    self.repository.create_event(
-                        camera_id="unknown",
-                        event_type="reid_match",
-                        track_id=new_track_id,
-                        person_id=person_id,
-                        confidence=match_result.score,
-                        reid_embedding_id=match_result.db_id,
-                        snapshot_path=snapshot_path,
-                        extra_data={
-                            "match_policy": "gallery" if not resolved_track else "gallery_resolved",
-                            "threshold": self.reid_config.similarity_threshold,
-                            "top1_score": match_result.best_score,
-                            "resolved_track": resolved_track,
-                            "original_reid_embedding_id": match_result.db_id,
-                        }
-                    )
-
-        # 3. Single return path
-        if best_score > 0 and (best_match_id is not None or best_person_name is not None):
-            logger.info(
-                f"Re-ID match: {new_track_id} -> track={best_match_id}, "
-                f"person={best_person_name}, sim={best_score:.2f}, source={match_source}"
-            )
-
-            # Emit reid_match event for per-track matches (gallery events emitted above)
-            if match_source == "per_track" and self.repository:
-                state = self._track_states.get(best_match_id)
-                person_id = state.person_id if state else None
-                self.repository.create_event(
-                    camera_id="unknown",
-                    event_type="reid_match",
-                    track_id=new_track_id,
-                    person_id=person_id,
-                    confidence=best_score,
-                    extra_data={
-                        "match_policy": "cross_camera",
-                        "matched_track_id": best_match_id,
-                        "threshold": self.reid_config.similarity_threshold
-                    }
-                )
-
-            return CrossCameraMatch(
-                matched_track_id=best_match_id,
-                similarity=best_score,
-                person_name=best_person_name
-            )
-
-        logger.debug(f"Re-ID no match for {new_track_id}")
-        return None
-
     # ==================== Identity Transfer ====================
 
     def transfer_identity(self, from_track_id: str, to_track_id: str):
@@ -984,14 +606,11 @@ class IdentityLinker:
         if from_state.is_identified:
             to_state.person_id = from_state.person_id
             to_state.identification_confidence = from_state.identification_confidence
-            to_state.identified_by = "handover"
+            to_state.identified_by = IdMethod.HANDOVER
             to_state.identified_at = time.time()
 
         if from_state.face_embedding is not None:
             to_state.face_embedding = from_state.face_embedding
-
-        for emb in from_state.reid_gallery.embeddings:
-            to_state.reid_gallery.embeddings.append(emb)
 
         logger.info(
             f"Transferred identity from {from_track_id} to {to_track_id} "
@@ -1024,12 +643,22 @@ class IdentityLinker:
         ]
 
         for track_id in to_remove:
-            del self._track_states[track_id]
-            if self._face_score_logger:
-                self._face_score_logger.forget_track(track_id)
+            self._forget(track_id)
 
         if to_remove:
             logger.debug(f"Cleaned up {len(to_remove)} old track states")
+
+    def _forget(self, global_track_id: str) -> None:
+        """Drop all per-track identity state (linker, core manager, face score log)."""
+        self._track_states.pop(global_track_id, None)
+        self._id_manager.on_track_removed(global_track_id)
+        if self._face_score_logger:
+            self._face_score_logger.forget_track(global_track_id)
+
+    @staticmethod
+    def gallery_track_key(global_track_id: str) -> int:
+        """Numeric per-track key of the shared Re-ID gallery's track buffer."""
+        return hash(global_track_id) % (10**9)
 
     def warmup(self):
         """Warm up models."""

@@ -165,7 +165,7 @@ class ReIDConfig:
     crop_cache_path: str = "data/cache/reid_crops"
     # Re-ID evidence only for isolated tracks: overlap (intersection / smaller box)
     # with every other box <= this (src/tracking/attribution.py). 0.0 disables.
-    skip_overlapping_iou: float = 0.15
+    max_overlap: float = 0.15
     # Use TensorRT native backend (bypasses PyTorch, lowest memory)
     # Requires TensorRT engine: python tools/convert_reid_to_trt.py
     use_tensorrt_native: bool = False

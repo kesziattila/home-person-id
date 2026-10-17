@@ -52,7 +52,7 @@ def test_zero_threshold_disables_the_check():
 def _manager():
     repository = Repository(":memory:")
     repository.create_person("Ati")
-    reid_config = ReIDConfig(enabled=True, skip_overlapping_iou=0.15)
+    reid_config = ReIDConfig(enabled=True, max_overlap=0.15)
     extractor = MagicMock()
     extractor.extract.return_value = (np.zeros(512), 0.9)
     linker = IdentityLinker(

@@ -97,7 +97,8 @@ class TestUnidentifiedFaceCapture:
         # Call try_face_recognition
         result = manager.try_face_recognition(
             track_id="test_track",
-            person_crop=person_crop,
+            frame=person_crop,
+            bbox=(0, 0, 100, 200),
             local_track_id=1,
             isolated=True,
             camera_id="test_camera",
@@ -138,7 +139,8 @@ class TestUnidentifiedFaceCapture:
         # Call try_face_recognition
         result = manager.try_face_recognition(
             track_id="test_track",
-            person_crop=person_crop,
+            frame=person_crop,
+            bbox=(0, 0, 100, 200),
             local_track_id=1,
             isolated=True,
             camera_id="test_camera",
@@ -170,7 +172,8 @@ class TestUnidentifiedFaceCapture:
         # Call WITHOUT camera_id
         result = manager.try_face_recognition(
             track_id="test_track",
-            person_crop=person_crop,
+            frame=person_crop,
+            bbox=(0, 0, 100, 200),
             local_track_id=1,
             isolated=True,
             camera_id=None,  # No camera_id
@@ -203,16 +206,18 @@ class TestUnidentifiedFaceCapture:
         manager._face_recognizer = mock_face_recognizer
         person_crop = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
 
-        result = manager.try_face_recognition(
+        attempt = lambda: manager.try_face_recognition(
             track_id="test_track",
-            person_crop=person_crop,
+            frame=person_crop,
+            bbox=(0, 0, 100, 200),
             local_track_id=1,
             isolated=True,
             camera_id="test_camera",
         )
 
-        # Should return True (identified)
-        assert result is True
+        # Confirmed on the FACE_CONSECUTIVE_MATCHES-th accepted attempt (same rule as production)
+        assert attempt() is False
+        assert attempt() is True
 
         # Unidentified face manager should NOT have been called
         assert not mock_unidentified_manager.submit.called, \

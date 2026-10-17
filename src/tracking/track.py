@@ -86,19 +86,12 @@ class LocalTrack:
 class GlobalTrack:
     """Global track that spans multiple cameras.
 
-    This is the cross-camera identity that links local tracks together.
+    This is the cross-camera identity that links local tracks together. Who the
+    track is (person, method, confidence) is owned by IdentityLinker's
+    TrackIdentityState only; read it via GlobalTrackManager._person_id().
     """
 
     track_id: str  # Global track ID (e.g., "global_42")
-    person_id: Optional[int] = None  # Linked person ID from database (if identified)
-
-    # Identity info
-    identified_at: Optional[datetime] = None
-    identification_confidence: float = 0.0
-
-    # Embeddings
-    face_embedding: Optional[np.ndarray] = None
-    reid_embeddings: list[np.ndarray] = field(default_factory=list)  # Gallery
 
     # Tracking state
     state: TrackState = TrackState.NEW
@@ -112,39 +105,6 @@ class GlobalTrack:
 
     # Metadata
     metadata: dict = field(default_factory=dict)
-
-    def add_reid_embedding(self, embedding: np.ndarray, max_gallery_size: int = 10):
-        """Add Re-ID embedding to gallery.
-
-        Args:
-            embedding: 512-dim Re-ID embedding
-            max_gallery_size: Maximum embeddings to store
-        """
-        self.reid_embeddings.append(embedding)
-        if len(self.reid_embeddings) > max_gallery_size:
-            self.reid_embeddings.pop(0)  # FIFO
-
-    def get_reid_embedding(self) -> Optional[np.ndarray]:
-        """Get average Re-ID embedding from gallery."""
-        if not self.reid_embeddings:
-            return None
-        return np.mean(self.reid_embeddings, axis=0)
-
-    @property
-    def is_identified(self) -> bool:
-        """Check if track has been linked to a known person."""
-        return self.person_id is not None
-
-    def mark_identified(self, person_id: int, confidence: float):
-        """Mark track as identified with a known person.
-
-        Args:
-            person_id: Database ID of the person
-            confidence: Face recognition confidence
-        """
-        self.person_id = person_id
-        self.identification_confidence = confidence
-        self.identified_at = datetime.now()
 
     def update_location(self, camera_id: str, local_track_id: int):
         """Update current location of the track.

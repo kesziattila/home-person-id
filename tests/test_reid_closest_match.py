@@ -49,7 +49,7 @@ class TestReIDClosestMatch(unittest.TestCase):
         crop[:, :, 0] = 255  # Solid Blue (non-grayscale)
         
         # Try match
-        self.id_manager.try_reid_match(track_id, crop, isolated=True)
+        self.id_manager.process_track(track_id, crop, isolated=True)
         
         identity = self.id_manager.get_identity(track_id)
         
@@ -88,7 +88,7 @@ class TestReIDClosestMatch(unittest.TestCase):
         crop[:, :, 0] = 255  # Solid Blue (non-grayscale)
         
         # Try match
-        self.id_manager.try_reid_match(track_id, crop, isolated=True)
+        self.id_manager.process_track(track_id, crop, isolated=True)
         
         identity = self.id_manager.get_identity(track_id)
         
@@ -107,7 +107,7 @@ class TestReIDClosestMatch(unittest.TestCase):
         )
         
         self.assertIn("John Doe", label)
-        self.assertIn("R:1.00", label)
+        self.assertIn("RG:1.00", label)
         self.assertEqual(color, TrackRenderer.COLOR_REID_IDENTIFIED)
 
 if __name__ == "__main__":

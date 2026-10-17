@@ -16,6 +16,7 @@ from src.config import Config, CameraConfig
 from src.detection.motion_detector import MotionDetector, BaseMotionDetector
 from src.detection.person_detector import PersonDetector, DetectionResult
 from src.utils.image_utils import crop_bbox
+from src.recognition.id_method import IdMethod
 from src.recognition.identification_manager import IdentificationManager, TrackIdentity
 from src.tracking.attribution import isolated_track_ids
 from src.tracking.byte_tracker import ByteTracker
@@ -66,7 +67,7 @@ class ProcessedTrack:
 @dataclass
 class MatchEvent:
     """A face or Re-ID match event."""
-    match_type: str  # "face" or "reid"
+    match_type: IdMethod  # FACE or REID_GALLERY
     track_id: str
     person_name: str
     confidence: float
@@ -200,7 +201,7 @@ class CameraProcessor:
         # Tracking
         track_result = self.tracker.update(detections, frame)
         current_track_ids = {t.track_id for t in track_result.tracks}
-        isolated = isolated_track_ids(track_result.tracks, self.config.reid.skip_overlapping_iou)
+        isolated = isolated_track_ids(track_result.tracks, self.config.reid.max_overlap)
 
         # Handle lost tracks
         lost_ids = self._previous_track_ids - current_track_ids
@@ -227,13 +228,13 @@ class CameraProcessor:
             should_try_reid = is_new_track or (self._frame_counter % self.id_manager.reid_confirm_interval == 0)
 
             if should_try_reid and not self.id_manager.is_identified(track_key):
-                gallery_crop = self.id_manager.try_reid_match(track_key, crop, local_track.track_id in isolated)
+                gallery_crop = self.id_manager.process_track(track_key, crop, local_track.track_id in isolated)
                 if gallery_crop is not None:
                     identity = self.id_manager.get_identity(track_key)
                     if log_callback:
                         log_callback(f"[RE-ID] {identity.person_name} ({track_key}) score={identity.confidence:.2f} on {self.camera_id}")
                     match_events.append(MatchEvent(
-                        match_type="reid",
+                        match_type=IdMethod.REID_GALLERY,
                         track_id=track_key,
                         person_name=identity.person_name,
                         confidence=identity.confidence,
@@ -246,13 +247,14 @@ class CameraProcessor:
             # Face recognition (periodic, per-camera frame counter)
             if self._frame_counter % self.id_manager.face_check_interval == 0:
                 if self.id_manager.try_face_recognition(
-                    track_key, crop, local_track.track_id, local_track.track_id in isolated
+                    track_key, frame, local_track.bbox, local_track.track_id,
+                    local_track.track_id in isolated, camera_id=self.camera_id,
                 ):
                     identity = self.id_manager.get_identity(track_key)
                     if log_callback:
                         log_callback(f"[FACE] {identity.person_name} ({track_key}) score={identity.confidence:.2f} on {self.camera_id}")
                     match_events.append(MatchEvent(
-                        match_type="face",
+                        match_type=IdMethod.FACE,
                         track_id=track_key,
                         person_name=identity.person_name,
                         confidence=identity.confidence,
@@ -403,7 +405,7 @@ class SnapshotSaver:
 
         timestamp = self._get_timestamp()
         match_type = match_event.match_type
-        subdir = "face_matches" if match_type == "face" else "reid_matches"
+        subdir = "face_matches" if match_type == IdMethod.FACE else "reid_matches"
 
         # Create image with person crop and full frame
         crop = match_event.crop
@@ -415,12 +417,12 @@ class SnapshotSaver:
         crop_resized = cv2.resize(crop, (int(crop_w * scale), target_crop_h))
 
         # Add label to crop
-        label = f"{match_event.person_name} ({match_type.upper()}:{match_event.confidence:.2f})"
+        label = f"{match_event.person_name} ({match_type.value.upper()}:{match_event.confidence:.2f})"
         crop_labeled = self._draw_label_on_image(crop_resized, "CURRENT")
 
         # For Re-ID matches, include the gallery crop (original image that created best embedding)
         gallery_labeled = None
-        if match_type == "reid" and match_event.gallery_crop is not None:
+        if match_type == IdMethod.REID_GALLERY and match_event.gallery_crop is not None:
             gallery_crop = match_event.gallery_crop
             gh, gw = gallery_crop.shape[:2]
             gscale = target_crop_h / gh if gh > 0 else 1
@@ -430,7 +432,7 @@ class SnapshotSaver:
         # Draw bbox on frame copy
         frame_copy = frame.copy()
         x1, y1, x2, y2 = map(int, match_event.bbox)
-        color = (255, 150, 0) if match_type == "face" else (255, 100, 100)
+        color = (255, 150, 0) if match_type == IdMethod.FACE else (255, 100, 100)
         cv2.rectangle(frame_copy, (x1, y1), (x2, y2), color, 3)
         cv2.putText(frame_copy, label, (x1, y1 - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
@@ -460,7 +462,7 @@ class SnapshotSaver:
 
         # Save
         safe_name = match_event.person_name.replace(" ", "_").replace("/", "_")
-        filename = f"{timestamp}_{safe_name}_{match_type}_{match_event.confidence:.2f}.jpg"
+        filename = f"{timestamp}_{safe_name}_{match_type.value}_{match_event.confidence:.2f}.jpg"
         filepath = Path(self.base_path) / subdir / filename
 
         cv2.imwrite(str(filepath), combined)

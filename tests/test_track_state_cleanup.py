@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from src.config import FaceRecognitionConfig, ReIDConfig
+from src.recognition.id_method import IdMethod
 from src.recognition.identity_linker import IdentityLinker
 
 
@@ -35,7 +36,7 @@ def linker():
 
 def _identify(linker, track_id, person_id):
     state = linker.register_track(track_id)
-    state.confirm_identity(person_id=person_id, confidence=0.62, method="face")
+    state.confirm_identity(person_id=person_id, confidence=0.62, method=IdMethod.FACE)
     return state
 
 

@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from src.config import FaceRecognitionConfig, ReIDConfig
+from src.recognition.id_method import IdMethod
 from src.recognition.identity_linker import IdentityLinker, TrackIdentityState
 
 
@@ -138,7 +139,7 @@ class TestGalleryRecheck:
 
         state = linker.register_track("global_1")
         state.person_id = 10
-        state.identified_by = "face"
+        state.identified_by = IdMethod.FACE
         state.identification_confidence = 0.9
 
         crop = np.zeros((100, 50, 3), dtype=np.uint8)

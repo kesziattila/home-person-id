@@ -40,7 +40,9 @@ TINY = Face(bbox=(300.0, 10.0, 325.0, 40.0), confidence=0.9, embedding=EMB)    #
 
 def _linker(tmp_path, faces):
     recognizer = MagicMock()
-    recognizer.detect_faces.return_value = FaceDetectionResult(faces=faces, frame_shape=(400, 400, 3))
+    # Like the real detectors: faces smaller than min_face_size are dropped
+    recognizer.detect_faces.return_value = FaceDetectionResult(
+        faces=[f for f in faces if min(f.width, f.height) >= 40], frame_shape=(400, 400, 3))
     recognizer.compare_embeddings_batch.return_value = np.array([0.7, 0.1])
     unidentified = MagicMock()
     linker = IdentityLinker(
@@ -77,7 +79,7 @@ def test_two_recognizable_faces_are_never_accepted_but_logged(tmp_path):
     state = _attempts(linker)
 
     assert state.person_id is None
-    assert state.consecutive_matches == 0
+    assert linker._id_manager.get_identity("global_1").consecutive_matches == 0
     records = _records(tmp_path)
     assert [r["num_faces"] for r in records] == [2, 2, 2]
     assert not any(r["accepted"] for r in records)

@@ -261,7 +261,7 @@ reid:
   # no other box by more than this (intersection / SMALLER box area, so a child's
   # box inside an adult's counts). See src/tracking/attribution.py.
   # 0.0 disables the check (every track counts as isolated). Recommended: 0.15
-  skip_overlapping_iou: 0.15
+  max_overlap: 0.15
 
   # --- TensorRT Native Backend (Lowest Memory) ---
   # Use native TensorRT instead of PyTorch (bypasses torchreid entirely)

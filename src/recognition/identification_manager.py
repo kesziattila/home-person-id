@@ -17,25 +17,20 @@ from typing import TYPE_CHECKING, Optional, Callable
 import numpy as np
 
 from src.config import Config, FaceRecognitionConfig, ReIDConfig
-from src.recognition.face_recognizer import FaceRecognizer
+from src.recognition.face_recognizer import Face, FaceRecognizer
+from src.recognition.id_method import IdMethod
 from src.recognition.reid_extractor import ReIDExtractor, is_grayscale_image
 from src.recognition.reid_gallery import ReIDGalleryManager, DebugImageSaver
 from src.tracking.attribution import owner_face
-from src.utils.image_utils import crop_with_margin
+from src.utils.image_utils import crop_bbox, crop_face_region, crop_with_margin
+from src.utils.profiler import profiler
 
 if TYPE_CHECKING:
     from src.database.repository import Repository
+    from src.recognition.face_score_logger import FaceScoreLogger
     from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class CrossCameraMatch:
-    """Result of a cross-camera Re-ID match."""
-    matched_track_id: Optional[str] = None
-    similarity: float = 0.0
-    person_name: Optional[str] = None
 
 
 @dataclass
@@ -73,6 +68,24 @@ class FaceMatchScores:
         return self.best_entry is not None and self.top1 >= threshold and self.margin >= min_margin
 
 
+# Face confirmation: the same person must be accepted this many attempts in a row
+FACE_CONSECUTIVE_MATCHES = 2
+
+
+@dataclass
+class FaceAttempt:
+    """Outcome of one face recognition attempt on a person box (`attempt_face`)."""
+
+    face: Face  # the face the box owns (attribution.owner_face)
+    embedding: np.ndarray
+    scores: FaceMatchScores
+    region: np.ndarray  # head region the face bbox refers to
+    num_faces: int  # faces of at least min_face_size in the region
+    ambiguous: bool  # no single face owns the box: logged only, never used
+    accepted: bool  # this attempt passes the match policy
+    confirmed: bool  # accepted FACE_CONSECUTIVE_MATCHES times in a row for the same person
+
+
 @dataclass
 class TrackIdentity:
     """Identity information for a track."""
@@ -82,9 +95,7 @@ class TrackIdentity:
     person_name: Optional[str] = None
     confidence: float = 0.0
 
-    # Identification method
-    is_face_identified: bool = False
-    is_reid_identified: bool = False
+    method: IdMethod = IdMethod.NONE
 
     # Scores for display
     reid_score: float = -1.0
@@ -102,15 +113,22 @@ class TrackIdentity:
     last_face_check: float = 0.0
     identified_at: Optional[float] = None
 
-    # Stability tracking (for consecutive match requirement)
+    # Face confirmation streak (FACE_CONSECUTIVE_MATCHES)
     candidate_person_id: Optional[int] = None
-    candidate_person_name: Optional[str] = None
     consecutive_matches: int = 0
 
     @property
     def is_identified(self) -> bool:
         """Check if track has been identified."""
         return self.person_name is not None
+
+    @property
+    def is_face_identified(self) -> bool:
+        return self.method == IdMethod.FACE
+
+    @property
+    def is_reid_identified(self) -> bool:
+        return self.method.is_appearance
 
 
 class IdentificationManager:
@@ -137,6 +155,7 @@ class IdentificationManager:
         face_recognizer: Optional[FaceRecognizer] = None,
         reid_extractor: Optional[ReIDExtractor] = None,
         unidentified_face_manager: Optional["UnidentifiedFaceManager"] = None,
+        face_score_logger: Optional["FaceScoreLogger"] = None,
     ):
         """Initialize identification manager.
 
@@ -148,6 +167,7 @@ class IdentificationManager:
             face_recognizer: Optional pre-initialized face recognizer (for testing/shared use)
             unidentified_face_manager: Optional manager for capturing unidentified faces
             reid_extractor: Optional pre-initialized Re-ID extractor (for testing/shared use)
+            face_score_logger: Optional per-attempt face score log (offline tuning)
         """
         self.config = config
         self.face_config = config.face_recognition
@@ -156,6 +176,7 @@ class IdentificationManager:
 
         # Unidentified face manager
         self._unidentified_face_manager = unidentified_face_manager
+        self._face_score_logger = face_score_logger
 
         # Face gallery - either pre-loaded or from database
         self._face_gallery: list[FaceGalleryEntry] = face_gallery or []
@@ -376,17 +397,6 @@ class IdentificationManager:
 
     # ==================== Re-ID Matching ====================
 
-    def try_reid_match(
-        self,
-        track_id: str,
-        crop: np.ndarray,
-        isolated: bool,
-        camera_id: Optional[str] = None,
-        frame: Optional[np.ndarray] = None,
-    ) -> Optional[np.ndarray]:
-        """Backward compatibility for try_reid_match."""
-        return self.process_track(track_id, crop, isolated, camera_id, frame)
-
     def process_track(
         self,
         track_id: str,
@@ -426,8 +436,7 @@ class IdentificationManager:
         if match_result.matched:
             identity.person_name = match_result.person_name
             identity.confidence = match_result.score
-            identity.is_reid_identified = True
-            identity.is_face_identified = False
+            identity.method = IdMethod.REID_GALLERY
             identity.identified_at = time.time()
 
             # Save snapshot if frame provided
@@ -459,195 +468,189 @@ class IdentificationManager:
 
         return None
 
-    def match_reid_cross_camera(
+    # ==================== Face Recognition ====================
+
+    def attempt_face(
         self,
-        new_track_id: str,
-        new_crop: np.ndarray,
-        candidate_track_ids: list[str],
-    ) -> Optional[CrossCameraMatch]:
-        """Match a new track against existing tracks using Re-ID.
+        frame: np.ndarray,
+        bbox: tuple[float, float, float, float],
+        track_id: str,
+        camera_id: Optional[str] = None,
+    ) -> Optional[FaceAttempt]:
+        """One face recognition attempt for a person box — the only face path (~15-25ms on Jetson TRT).
 
-        Used for cross-camera matching when a person appears on a new camera.
-
-        Args:
-            new_track_id: ID of the new track
-            new_crop: Person crop from new track
-            candidate_track_ids: IDs of tracks to match against
+        Shared by preview (`try_face_recognition`) and production
+        (`IdentityLinker._try_face_identification`), so both see the same
+        evidence: detect in the head region (upper half of the box), take the face
+        the box owns (attribution.owner_face), score it per person, count the
+        confirmation streak, log the attempt (FaceScoreLogger) and keep an
+        unaccepted, unambiguous face as an unidentified-face candidate. Ambiguous
+        attempts are logged only. Closest-match display info goes to the track's
+        TrackIdentity. The caller decides what a confirmed attempt means.
 
         Returns:
-            CrossCameraMatch object or None
+            FaceAttempt, or None when no usable face was found
         """
-        if not self.reid_extractor or new_crop.size == 0:
+        recognizer = self.face_recognizer
+        if recognizer is None:
+            return None
+        region = crop_face_region(frame, bbox, height_ratio=0.5)
+        if region.size == 0:
             return None
 
-        # Skip grayscale/IR images
-        if is_grayscale_image(new_crop):
+        with profiler.measure("FaceRecognizer.detect"):
+            faces = recognizer.detect_faces(region).faces
+        identity = self.get_identity(track_id)
+        identity.has_multiple_faces = len(faces) > 1
+        if not faces:
             return None
 
-        new_embedding, quality = self.reid_extractor.extract(new_crop, return_quality=True)
-        if quality < self.reid_config.min_visibility:
-            return None
+        face, ambiguous = owner_face(faces, region.shape[1])
+        embedding = face.embedding
+        if embedding is None:
+            with profiler.measure("FaceRecognizer.extract"):
+                embedding = recognizer.extract_embedding(region, face)
+            if embedding is None:
+                return None
 
-        best_match = None
-        best_score = self.reid_config.similarity_threshold
+        with profiler.measure("FaceRecognizer.compare"):
+            scores = self.score_face(embedding)
+        best = scores.best_entry
+        accepted = not ambiguous and scores.accepts(self.face_threshold, self.face_min_margin)
 
-        # Match against active track states
-        for track_id in candidate_track_ids:
-            if track_id == new_track_id:
-                continue
+        confirmed = False
+        if accepted:
+            if identity.candidate_person_id == best.person_id:
+                identity.consecutive_matches += 1
+            else:
+                identity.candidate_person_id = best.person_id
+                identity.consecutive_matches = 1
+            confirmed = identity.consecutive_matches >= FACE_CONSECUTIVE_MATCHES
+            if confirmed:
+                identity.candidate_person_id = None
+                identity.consecutive_matches = 0
+        if best:
+            identity.face_info = (best.person_name, scores.top1)
 
-            state = self._identities.get(track_id)
-            if not state:
-                continue
+        attempt = FaceAttempt(
+            face=face, embedding=embedding, scores=scores, region=region,
+            num_faces=len(faces), ambiguous=ambiguous, accepted=accepted, confirmed=confirmed,
+        )
+        if self._face_score_logger and best:
+            self._face_score_logger.log(
+                camera_id=camera_id,
+                track_id=track_id,
+                per_person=scores.per_person,
+                top1_person_id=best.person_id,
+                top1=scores.top1,
+                top2=scores.top2,
+                accepted=accepted,
+                face_height=face.height,
+                face_width=face.width,
+                det_confidence=face.confidence,
+                threshold=self.face_threshold,
+                min_margin=self.face_min_margin,
+                num_faces=len(faces),
+                ambiguous=ambiguous,
+                embedding_norm=face.embedding_norm,
+            )
+        if not accepted and not ambiguous:
+            self._submit_unidentified(attempt, track_id, camera_id)
+        return attempt
 
-            # Try matching against shared gallery if identified
-            if state.is_identified and self.reid_gallery_manager:
-                # Get embeddings from gallery manager
-                pass  # Gallery manager handles this internally
-
-        # Also try shared gallery for lost face-identified persons
-        if self.reid_gallery_manager:
-            match_result = self.reid_gallery_manager.match_new_track(new_crop)
-            if match_result.matched and match_result.score > best_score:
-                return CrossCameraMatch(
-                    matched_track_id=new_track_id,
-                    similarity=match_result.score,
-                    person_name=match_result.person_name
-                )
-
-        return best_match
-
-    # ==================== Face Recognition ====================
+    def _submit_unidentified(self, attempt: FaceAttempt, track_id: str, camera_id: Optional[str]) -> None:
+        """Offer a face no gallery person accepted to the unidentified-face manager."""
+        if not self._unidentified_face_manager or not camera_id:
+            return
+        face_crop, face_bbox = crop_with_margin(attempt.region, attempt.face.bbox, margin_ratio=0.3)
+        if face_crop.size == 0:
+            return
+        best = attempt.scores.best_entry
+        self._unidentified_face_manager.submit(
+            camera_id=camera_id,
+            face_crop=face_crop,
+            embedding=attempt.embedding,
+            face_bbox=face_bbox,
+            track_id=track_id,
+            best_match_person_id=best.person_id if best else None,
+            best_match_score=attempt.scores.top1 if attempt.scores.top1 > 0 else None,
+            best_match_face_id=best.embedding_id if best else None,
+            det_confidence=attempt.face.confidence,
+            landmarks=attempt.face.landmarks,
+            embedding_norm=attempt.face.embedding_norm,
+        )
 
     def try_face_recognition(
         self,
         track_id: str,
-        person_crop: np.ndarray,
+        frame: np.ndarray,
+        bbox: tuple[float, float, float, float],
         local_track_id: int,
         isolated: bool,
         camera_id: Optional[str] = None,
-        frame: Optional[np.ndarray] = None,
     ) -> bool:
-        """Try face recognition on a track.
+        """Preview face recognition on a track (`attempt_face` + identity update).
 
         Args:
             track_id: Track identifier
-            person_crop: Person crop image
+            frame: Full frame
+            bbox: Person box in the frame
             local_track_id: Local tracker ID (for Re-ID gallery)
             isolated: Box overlaps no other track (gallery is only fed then)
             camera_id: Camera ID for unidentified face capture
-            frame: Optional full frame for snapshot saving
 
         Returns:
-            True if face identified
+            True if the track just became face-identified
         """
-        if not self.face_recognizer:
-            return False
-
-        if person_crop.size == 0:
-            return False
-
         identity = self.get_identity(track_id)
-
-        # Skip if already face-identified
         if identity.is_face_identified:
             return False
 
-        face_result = self.face_recognizer.detect_faces(person_crop)
-        if not face_result.faces:
-            identity.has_multiple_faces = False
+        attempt = self.attempt_face(frame, bbox, track_id, camera_id)
+        if attempt is None or not attempt.confirmed:
             return False
 
-        # Face evidence: only the face this box owns (attribution.py)
-        face, ambiguous = owner_face(face_result.faces, person_crop.shape[1])
-        identity.has_multiple_faces = len(face_result.faces) > 1
-        if ambiguous or face.embedding is None:
-            return False
+        best = attempt.scores.best_entry
+        previous_person_id, previous_method = identity.person_id, identity.method
+        identity.person_id = best.person_id
+        identity.person_name = best.person_name
+        identity.confidence = attempt.scores.top1
+        identity.method = IdMethod.FACE
+        identity.face_info = None
+        identity.identified_at = time.time()
 
-        scores = self.score_face(face.embedding)
-        best_score = scores.top1
-        best_name = scores.best_entry.person_name if scores.best_entry else None
-        best_person_id = scores.best_entry.person_id if scores.best_entry else None
-        best_face_id = scores.best_entry.embedding_id if scores.best_entry else None
-
-        # Store face info even if below threshold
-        if best_name:
-            identity.face_info = (best_name, best_score)
-
-        if scores.accepts(self.face_threshold, self.face_min_margin):
-            previous_person_id = identity.person_id
-            was_reid_identified = identity.is_reid_identified
-
-            identity.person_id = best_person_id
-            identity.person_name = best_name
-            identity.confidence = best_score
-            identity.is_face_identified = True
-            identity.is_reid_identified = False
-            identity.face_info = None
-            identity.identified_at = time.time()
-
-            # Save snapshot
-            snapshot_path = None
-            if frame is not None:
-                snapshot_path = self._save_snapshot(frame, "face_match", best_name)
-
-            # Emit events
-            if self.repository:
-                # 1. face_match
-                # Note: we don't automatically persist the new face embedding to the DB 
-                # to avoid redundant data. Events can reference the matched gallery face_id.
+        snapshot_path = self._save_snapshot(frame, "face_match", best.person_name)
+        if self.repository:
+            self.repository.create_event(
+                camera_id=camera_id or "unknown",
+                event_type="face_match",
+                track_id=track_id,
+                person_id=best.person_id,
+                confidence=attempt.scores.top1,
+                face_embedding_id=best.embedding_id,  # link to the matched gallery embedding
+                snapshot_path=snapshot_path,
+                extra_data={"threshold": self.face_threshold, "face_id": best.embedding_id},
+            )
+            if previous_method.is_appearance and previous_person_id is not None:
                 self.repository.create_event(
                     camera_id=camera_id or "unknown",
-                    event_type="face_match",
+                    event_type="id_upgraded",
                     track_id=track_id,
-                    person_id=best_person_id,
-                    confidence=best_score,
-                    face_embedding_id=best_face_id, # Link to the matched gallery embedding
-                    snapshot_path=snapshot_path,
+                    person_id=best.person_id,
                     extra_data={
-                        "threshold": self.face_threshold,
-                        "face_id": best_face_id
-                    }
+                        "from": str(previous_method),
+                        "to": str(IdMethod.FACE),
+                        "previous_person_id": previous_person_id,
+                        "new_person_id": best.person_id,
+                    },
                 )
 
-                # 2. id_upgraded if applicable
-                if was_reid_identified and previous_person_id is not None:
-                    self.repository.create_event(
-                        camera_id=camera_id or "unknown",
-                        event_type="id_upgraded",
-                        track_id=track_id,
-                        person_id=best_person_id,
-                        extra_data={
-                            "from": "reid",
-                            "to": "face",
-                            "previous_person_id": previous_person_id,
-                            "new_person_id": best_person_id
-                        }
-                    )
-
-            # Update Re-ID gallery with face-confirmed identity
-            if self.reid_gallery_manager and isolated:
-                self.reid_gallery_manager.update_track_embedding(
-                    local_track_id, person_crop, best_name
-                )
-            return True
-
-        # Below threshold - submit to unidentified face manager
-        if self._unidentified_face_manager and camera_id and face.embedding is not None:
-            face_crop, face_bbox = crop_with_margin(person_crop, face.bbox, margin_ratio=0.3)
-            if face_crop.size > 0:
-                self._unidentified_face_manager.submit(
-                    camera_id=camera_id,
-                    face_crop=face_crop,
-                    embedding=face.embedding,
-                    face_bbox=face_bbox,
-                    track_id=track_id,
-                    best_match_person_id=best_person_id,
-                    best_match_score=best_score if best_score > 0 else None,
-                )
-
-        return False
-
+        # Update Re-ID gallery with face-confirmed identity
+        if self.reid_gallery_manager and isolated:
+            self.reid_gallery_manager.update_track_embedding(
+                local_track_id, crop_bbox(frame, bbox), best.person_name
+            )
+        return True
     # ==================== Re-ID Embedding Updates ====================
 
     def update_reid_embedding(

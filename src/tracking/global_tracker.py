@@ -20,8 +20,9 @@ from src.config import CameraTopologyConfig, ReIDConfig, SnapshotConfig, VLMConf
 from src.database.repository import Repository
 from src.tracking.attribution import RECENTLY_LOST_SEC, isolated_track_ids
 from src.events.mqtt_publisher import MQTTPublisher
+from src.recognition.id_method import IdMethod
 from src.recognition.identity_linker import IdentityLinker
-from src.recognition.identification_manager import CrossCameraMatch
+from src.recognition.reid_gallery import MatchResult
 from src.tracking.track import GlobalTrack, LocalTrack, TrackState
 from src.tracking.zone_manager import ZoneManager
 from src.utils.profiler import profiler
@@ -160,11 +161,10 @@ class GlobalTrackManager:
             logger.debug(f"Failed to save {event_type} snapshot", exc_info=True)
             return None
 
-    def _sync_person_id(self, global_track_id: str, person_id: int) -> None:
-        """Keep GlobalTrack.person_id in sync after identification."""
-        gt = self._tracks.get(global_track_id)
-        if gt:
-            gt.person_id = person_id
+    def _person_id(self, global_track_id: str) -> Optional[int]:
+        """Who a global track is: read from the identity linker, the only owner of identity."""
+        state = self.identity_linker.get_track_state(global_track_id)
+        return state.person_id if state else None
 
     def _get_active_tracks_for_person(self, person_id: int) -> list[str]:
         """Return global_track_ids of active (TRACKED/NEW/GRACE) tracks for this person.
@@ -175,12 +175,12 @@ class GlobalTrackManager:
         return [
             tid for tid, t in self._tracks.items()
             if t.state in (TrackState.TRACKED, TrackState.NEW, TrackState.GRACE)
-            and t.person_id == person_id
+            and self._person_id(tid) == person_id
         ]
 
     def _resolve_person_location(
         self,
-        person_id: int,
+        person_id: Optional[int],
         lost_track_id: Optional[str] = None,
         camera_id: str = "unknown",
     ) -> None:
@@ -192,10 +192,12 @@ class GlobalTrackManager:
         3. Otherwise, no update
 
         Args:
-            person_id: Person to resolve location for
+            person_id: Person to resolve location for (None = unidentified, no-op)
             lost_track_id: Optional just-lost track to consider for estimated zone
             camera_id: Camera that triggered this resolution
         """
+        if person_id is None:
+            return
         active_ids = self._get_active_tracks_for_person(person_id)
 
         # Find active track with a zone, preferring most recently seen
@@ -375,7 +377,7 @@ class GlobalTrackManager:
         self._cleanup_lost_tracks(current_time)
 
         # Appearance (Re-ID) evidence is only attributable to isolated tracks
-        isolated = isolated_track_ids(local_tracks, self.reid_config.skip_overlapping_iou)
+        isolated = isolated_track_ids(local_tracks, self.reid_config.max_overlap)
 
         # Process new local tracks
         for local_track_id in new_track_ids:
@@ -405,7 +407,7 @@ class GlobalTrackManager:
                     state = self.identity_linker.get_track_state(global_track_id)
                     if state:
                         state.confirm_identity(
-                            person.id, gallery_match.similarity, "reid_gallery"
+                            person.id, gallery_match.score, IdMethod.REID_GALLERY
                         )
                         # Make the new identity immediately visible to the
                         # same-camera duplicate-person guard (process_track
@@ -416,14 +418,13 @@ class GlobalTrackManager:
                         self.repository.update_track(
                             global_track_id, person_id=person.id
                         )
-                        self._sync_person_id(global_track_id, person.id)
 
                     # Resolve person location from all active tracks
                     self._resolve_person_location(person.id, camera_id=camera_id)
 
                 logger.info(
                     f"Re-ID gallery: new track {global_track_id} on {camera_id} "
-                    f"identified as {gallery_match.person_name} (sim={gallery_match.similarity:.2f})"
+                    f"identified as {gallery_match.person_name} (sim={gallery_match.score:.2f})"
                 )
 
             else:
@@ -460,7 +461,7 @@ class GlobalTrackManager:
                         camera_id=camera_id,
                         event_type="track_recovered",
                         track_id=global_track_id,
-                        person_id=global_track.person_id,
+                        person_id=self._person_id(global_track_id),
                         extra_data={
                             "reason": "bytetrack_re_detected",
                         }
@@ -481,8 +482,7 @@ class GlobalTrackManager:
             # Process for identification
             if local_track.last_crop is not None:
                 # Capture person_id before processing to detect new identifications
-                state_before = self.identity_linker.get_track_state(global_track_id)
-                person_id_before = state_before.person_id if state_before else None
+                person_id_before = self._person_id(global_track_id)
 
                 with profiler.measure("IdentityLinker.process_track"):
                     self.identity_linker.process_track(
@@ -496,12 +496,10 @@ class GlobalTrackManager:
                         camera_id=camera_id,
                     )
 
-                # If track just became identified, sync in-memory + person zone
-                state_after = self.identity_linker.get_track_state(global_track_id)
-                if (state_after and state_after.person_id is not None
-                        and state_after.person_id != person_id_before):
-                    self._sync_person_id(global_track_id, state_after.person_id)
-                    self._resolve_person_location(state_after.person_id, camera_id=camera_id)
+                # If track just became identified (or was corrected), update person zone
+                person_id_after = self._person_id(global_track_id)
+                if person_id_after is not None and person_id_after != person_id_before:
+                    self._resolve_person_location(person_id_after, camera_id=camera_id)
 
         # Process lost local tracks
         for local_track_id in lost_track_ids:
@@ -713,12 +711,11 @@ class GlobalTrackManager:
         was_face_identified = (
             identity_state is not None
             and identity_state.is_identified
-            and identity_state.identified_by == "face"
+            and identity_state.identified_by == IdMethod.FACE
         )
         if self.identity_linker.reid_gallery_manager:
-            track_id_num = hash(global_track_id) % (10**9)
             self.identity_linker.reid_gallery_manager.on_track_lost(
-                track_id_num, was_face_identified=was_face_identified,
+                self.identity_linker.gallery_track_key(global_track_id), was_face_identified=was_face_identified,
                 global_track_id=global_track_id,
             )
             if was_face_identified:
@@ -752,7 +749,7 @@ class GlobalTrackManager:
         # Always enter GRACE so ByteTrack can still recover during its track_buffer window.
         # GRACE → LOST fires when ByteTrack emits removed_track_ids (_handle_removed_local_track).
         # The resolver treats GRACE as active, so the zone stays non-estimated during the window.
-        person_id = global_track.person_id
+        person_id = self._person_id(global_track_id)
         global_track.state = TrackState.GRACE
         self._recently_lost_tracks.add(global_track_id)
         if person_id is not None:
@@ -767,23 +764,22 @@ class GlobalTrackManager:
         if global_track is None or global_track.state != TrackState.GRACE:
             return
         global_track.state = TrackState.LOST
-        if global_track.person_id is not None:
-            self._resolve_person_location(
-                global_track.person_id,
-                lost_track_id=global_track_id,
-                camera_id=global_track.current_camera_id or camera_id,
-            )
+        self._resolve_person_location(
+            self._person_id(global_track_id),
+            lost_track_id=global_track_id,
+            camera_id=global_track.current_camera_id or camera_id,
+        )
         logger.debug(f"Track {global_track_id} GRACE→LOST (ByteTrack removed local track)")
 
     def _try_gallery_match(
         self,
         camera_id: str,
         local_track: LocalTrack,
-    ) -> Optional[CrossCameraMatch]:
+    ) -> Optional[MatchResult]:
         """Try to match an isolated new track against the shared Re-ID gallery.
 
         Returns:
-            CrossCameraMatch if matched, else None
+            The gallery match if accepted, else None
         """
         if local_track.last_crop is None:
             return None
@@ -811,11 +807,7 @@ class GlobalTrackManager:
             )
             return None
 
-        return CrossCameraMatch(
-            matched_track_id=None,
-            similarity=match_result.score,
-            person_name=match_result.person_name,
-        )
+        return match_result
 
     def _cleanup_lost_tracks(self, current_time: float):
         """Handle state transitions for GRACE and LOST tracks.
@@ -841,10 +833,9 @@ class GlobalTrackManager:
                     # never emits removed_track_ids. Use global_id_grace_period as ceiling.
                     track.state = TrackState.LOST
                     camera_id = track.current_camera_id or "unknown"
-                    if track.person_id is not None:
-                        self._resolve_person_location(
-                            track.person_id, lost_track_id=track_id, camera_id=camera_id,
-                        )
+                    self._resolve_person_location(
+                        self._person_id(track_id), lost_track_id=track_id, camera_id=camera_id,
+                    )
                     logger.debug(
                         f"Track {track_id} GRACE→LOST fallback ({time_since_seen:.1f}s > "
                         f"{global_grace:.1f}s), zone now estimated"
@@ -862,7 +853,7 @@ class GlobalTrackManager:
                         camera_id=track.current_camera_id or "unknown",
                         event_type="track_lost",
                         track_id=track_id,
-                        person_id=track.person_id,
+                        person_id=self._person_id(track_id),
                         extra_data={
                             "reason": "stale",
                             "age_sec": time_since_seen
@@ -878,7 +869,7 @@ class GlobalTrackManager:
                             camera_id=track.current_camera_id or "unknown",
                             event_type="track_archived",
                             track_id=track_id,
-                            person_id=track.person_id,
+                            person_id=self._person_id(track_id),
                             extra_data={
                                 "age_sec": time_since_seen
                             }
@@ -932,10 +923,7 @@ class GlobalTrackManager:
                     except Exception as e:
                         logger.debug(f"Failed to persist zone for {global_track_id}: {e}")
                     # Resolve person location from all active tracks
-                    if global_track.person_id is not None:
-                        self._resolve_person_location(
-                            global_track.person_id, camera_id=camera_id,
-                        )
+                    self._resolve_person_location(self._person_id(global_track_id), camera_id=camera_id)
 
             if zone_name is None:
                 continue
@@ -999,7 +987,6 @@ class GlobalTrackManager:
                     self.identity_linker.transfer_identity(src_track, rcv_track)
                     if src_state.person_id is not None:
                         self.repository.update_track(rcv_track, person_id=src_state.person_id)
-                        self._sync_person_id(rcv_track, src_state.person_id)
                         self._resolve_person_location(src_state.person_id, camera_id=rcv_cam)
                     src_crop = self._last_crops.get(src_track)
                     rcv_crop = self._last_crops.get(rcv_track)
@@ -1060,7 +1047,7 @@ class GlobalTrackManager:
                 return
             self._vlm_results[global_track_id] = result
             track = self._tracks.get(global_track_id)
-            person_id = track.person_id if track else None
+            person_id = self._person_id(global_track_id)
             snapshot_path = self._save_event_snapshot(crops[0], "vlm_activity", global_track_id)
             self.repository.create_event(
                 camera_id=track.current_camera_id or "unknown" if track else "unknown",

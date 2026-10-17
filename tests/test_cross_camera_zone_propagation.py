@@ -24,6 +24,7 @@ from src.config import (
     ZonePolygon,
     ZonesConfig,
 )
+from src.recognition.id_method import IdMethod
 from src.recognition.identity_linker import IdentityLinker, TrackIdentityState
 from src.tracking.global_tracker import GlobalTrackManager
 from src.tracking.track import GlobalTrack, LocalTrack, TrackState
@@ -88,7 +89,7 @@ def _register_active_track(
     state = manager.identity_linker.register_track(global_track_id)
     if person_id is not None:
         state.person_id = person_id
-        state.identified_by = identified_by
+        state.identified_by = IdMethod(identified_by)
         state.identification_confidence = confidence
 
     return state
@@ -188,7 +189,7 @@ class TestZoneIdentityPropagation:
         state_b = _register_active_track(
             manager, "cam_b", 1, "global_2",
             bbox=(200, 150, 400, 600),
-            person_id=99, identified_by="reid", confidence=0.8,
+            person_id=99, identified_by="reid_gallery", confidence=0.8,
         )
 
         zone_camera_tracks = manager._update_track_zones()
@@ -196,7 +197,7 @@ class TestZoneIdentityPropagation:
 
         # state_b should keep its own identity
         assert state_b.person_id == 99
-        assert state_b.identified_by == "reid"
+        assert state_b.identified_by == IdMethod.REID_GALLERY
 
     def test_no_propagation_both_unidentified(self):
         """Both tracks unidentified -> no change (nothing to propagate)."""

@@ -41,10 +41,7 @@ class TestGlobalTrackGracePeriod(GlobalTrackerScenarioTest):
         res1 = self.process_frame(cam1, [lt1])
         global_id = res1.new_global_tracks[0]
 
-        # Ensure track is registered and has embedding
-        state = self.identity_linker.register_track(global_id)
         dummy_emb = np.random.rand(512).astype(np.float32)
-        state.update_reid_gallery(dummy_emb, 0.9)
 
         # 2. Track is lost on cam1
         self.process_frame(cam1, [], new_ids=[], lost_ids=[1])

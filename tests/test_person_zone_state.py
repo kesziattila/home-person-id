@@ -17,6 +17,7 @@ from src.config import (
 )
 from src.database.models import Person, init_database
 from src.database.repository import Repository
+from src.recognition.id_method import IdMethod
 from src.recognition.identity_linker import IdentityLinker
 from src.tracking.global_tracker import GlobalTrackManager
 from src.tracking.track import LocalTrack, TrackState
@@ -96,12 +97,8 @@ class TestPersonZoneState(unittest.TestCase):
         """Manually identify a track (simulates face recognition)."""
         state = self.identity_linker.get_track_state(global_track_id)
         if state:
-            state.confirm_identity(person_id, 0.95, "face")
+            state.confirm_identity(person_id, 0.95, IdMethod.FACE)
         self.repository.update_track(global_track_id, person_id=person_id)
-        # Also update GlobalTrack in-memory
-        gt = self.gtm._tracks.get(global_track_id)
-        if gt:
-            gt.person_id = person_id
 
     # ---- Test: zone update on active track zone change ----
 

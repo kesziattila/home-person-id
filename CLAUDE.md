@@ -15,7 +15,9 @@
 - Required constructor deps (`repository`, `reid_extractor`, …) must NOT default to `None`; use `Optional` only when the class truly works without it
 - Shared helpers, don't re-implement: embedding math → `src/utils/embedding_utils.py` (`l2_normalize`, `cosine_similarity[_batch]`); bbox crops → `image_utils.crop_bbox`; exclusion zones → `DetectionResult.excluding_zones()`; detectors → `create_person_detector(config.detection)`
 - `src/cli_preview.py` = CLI preview pipeline (no DB); `src/visualization/preview.py` = web UI frame buffer/annotations
-- Face match policy = `FaceMatchScores.accepts(similarity_threshold, min_margin)` via `IdentificationManager.score_face()` (per-person top1/top2); production attempts are logged by `FaceScoreLogger`; face evidence comes only from the face the box owns (`attribution.owner_face`); ambiguous attempts are logged, never accepted or saved
+- Face: ONE path for preview and production — `IdentificationManager.attempt_face()` (head region, `attribution.owner_face`, `score_face()` → `FaceMatchScores.accepts(similarity_threshold, min_margin)`, `FACE_CONSECUTIVE_MATCHES` streak, `FaceScoreLogger`, unidentified-face submit) returns a `FaceAttempt`; callers only act on `attempt.confirmed`. Ambiguous attempts are logged, never accepted or saved
+- Identification methods = `IdMethod` enum (`src/recognition/id_method.py`, `.strength`, `.is_appearance`); never compare method strings. Face keeps checking appearance-labelled tracks and may correct them
+- Who a track is lives ONLY in `IdentityLinker`'s `TrackIdentityState`; `GlobalTrackManager._person_id()` reads it — never cache person ids on `GlobalTrack`
 - On-disk metrics: `src/utils/jsonl_writer.DailyJsonlWriter` under `metrics.path/<stream>/` (daily UTC files, retention) — reuse it for new metric streams
 - Centralize validation where data enters the system (e.g. grayscale/multi-face checks live in `ReIDGalleryManager.update_track_embedding()`), not in callers
 
@@ -32,7 +34,7 @@
 - Skip grayscale/IR crops: HSV `mean_saturation < 15.0`
 - Skip multi-person crops: `len(face_result.faces) > 1`, detected with `config.multi_face_min_size` (default 20px, lower than recognition's 80px), passed as a param to `detect_faces()`
 - Skip low visibility (`min_visibility`)
-- Evidence attribution lives ONLY in `src/tracking/attribution.py`: face → `owner_face`; appearance (Re-ID extract/match/gallery update) → isolated tracks (`isolated_track_ids`, overlap over the smaller box ≤ `reid.skip_overlapping_iou`), passed down as `isolated: bool`; location (zone handover) → each camera sees exactly one person incl. briefly lost tracks. Don't add per-path person-count checks
+- Evidence attribution lives ONLY in `src/tracking/attribution.py`: face → `owner_face`; appearance (Re-ID extract/match/gallery update) → isolated tracks (`isolated_track_ids`, overlap over the smaller box ≤ `reid.max_overlap`), passed down as `isolated: bool`; location (zone handover) → each camera sees exactly one person incl. briefly lost tracks. Don't add per-path person-count checks
 - Gallery: store per-embedding source crops (each embedding may come from a different frame); cap gallery size per person
 - Save match-debug snapshots (current crop, gallery crop, similarity) to `data/snapshots/` with timestamp + person name
 
@@ -55,7 +57,7 @@
 
 ## Architecture
 - `IdentificationManager` — core face recognition + Re-ID matching + identity state; works in preview (no DB) or production (DB) mode
-- `IdentityLinker` — production wrapper: track lifecycle, consecutive-match stability, DB persistence, identity transfer
+- `IdentityLinker` — production wrapper: track lifecycle, owner of track identity, Re-ID gallery recheck stability, DB persistence, identity transfer
 - `ReIDGalleryManager` — per-person Re-ID embeddings, gallery matching, centralized validation, debug images
 - Flow: frame → detection → track → face recognition → Re-ID gallery update (if face-identified) → gallery match for new tracks → zone identity propagation (shared-zone tracks) → `_resolve_person_location()`
 - All person zone updates go through `_resolve_person_location()` in `GlobalTrackManager` — the ONLY caller of `_update_person_zone()` (DB write, event, MQTT)

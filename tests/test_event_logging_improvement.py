@@ -5,6 +5,7 @@ from src.database.repository import Repository
 from src.database.models import Base, ReIDEmbedding
 from src.recognition.reid_gallery import ReIDGalleryManager, GalleryEntry
 from src.recognition.identification_manager import IdentificationManager
+from src.recognition.id_method import IdMethod
 from src.recognition.identity_linker import IdentityLinker
 from src.config import Config, FaceRecognitionConfig
 
@@ -79,7 +80,7 @@ def test_event_logging_flow(repository, config):
     gallery_manager.similarity_threshold = 0.65
     
     # Try Re-ID match
-    id_manager.try_reid_match(track_id, crop, 1)
+    id_manager.process_track(track_id, crop, isolated=True)
     
     # Verify reid_match event
     events = repository.get_events(event_type="reid_match")
@@ -93,7 +94,7 @@ def test_event_logging_flow(repository, config):
     camera_id = "cam1"
     state.candidate_person_id = person.id
     state.consecutive_matches = 1
-    state.confirm_identity(person.id, 0.95, "face")
+    state.confirm_identity(person.id, 0.95, IdMethod.FACE)
     
     # Emit events manually as linker would (following the new logic where we don't add_face_embedding)
     repository.create_event(

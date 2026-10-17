@@ -180,3 +180,18 @@ identity and "last known room" — not continuous identity of every person at ev
   merged side-view boxes) stays unnamed instead of wrong. 0 contradictions in the first samples.
 - Re-ID gallery: in-memory only, rebuilt from scratch at restart (DB reid_embeddings is a log,
   never read for matching) — no cleanup needed after this change.
+
+### 2026-10-17 11:01 UTC — simplification: one face path, one identity owner (uncommitted, live)
+- Face: preview and production now share IdentificationManager.attempt_face (head region,
+  owner_face, scoring, 2-in-a-row confirmation, face score log, unidentified submit). Preview used
+  to search the whole crop and confirm on the first match.
+- Found while unifying: production stopped face checks once a track had ANY identity, so a wrong
+  reid_gallery/handover label could never be corrected by a face; id_upgraded never fired
+  (compared against a "reid" method never assigned). Face now re-checks appearance-labelled
+  tracks every reid_confirmation_interval/2 s and may correct them (IdMethod.strength).
+- IdMethod enum replaces method strings; GlobalTrack.person_id + _sync_person_id removed
+  (GlobalTrackManager reads the linker state); dead match_reid_cross_camera / try_reid_match /
+  per-track Re-ID gallery / CrossCameraMatch removed.
+- Config: reid.skip_overlapping_iou renamed to reid.max_overlap (live config pushed, backup
+  config.yaml.20261017T110126Z).
+- Watch: id_upgraded events (face corrections of Re-ID labels) and label_flip findings.

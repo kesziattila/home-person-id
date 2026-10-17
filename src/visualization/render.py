@@ -62,9 +62,6 @@ class TrackRenderer:
             elif method == "reid_gallery":
                 prefix = "RG"
                 color = self.COLOR_REID_IDENTIFIED
-            elif method == "reid":
-                prefix = "R"
-                color = self.COLOR_REID_IDENTIFIED
             elif identity.is_reid_identified:
                 prefix = "R"
                 color = self.COLOR_REID_IDENTIFIED
