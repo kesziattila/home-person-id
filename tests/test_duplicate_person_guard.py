@@ -78,7 +78,7 @@ class TestSameCameraDuplicatePersonGuard:
 
         _mock_match(mock_gallery, repo, person_id=4)
         new_state = linker.register_track("global_2")
-        assert linker._try_gallery_identification(new_state, CROP, 1, "cam_a") is False
+        assert linker._try_gallery_identification(new_state, CROP, "cam_a") is False
         assert new_state.person_id is None
 
     def test_allowed_when_person_is_on_different_camera(self):
@@ -90,7 +90,7 @@ class TestSameCameraDuplicatePersonGuard:
 
         _mock_match(mock_gallery, repo, person_id=4)
         new_state = linker.register_track("global_2")
-        assert linker._try_gallery_identification(new_state, CROP, 1, "cam_a") is True
+        assert linker._try_gallery_identification(new_state, CROP, "cam_a") is True
         assert new_state.person_id == 4
 
     def test_allowed_when_same_camera_holder_is_stale(self):
@@ -102,7 +102,7 @@ class TestSameCameraDuplicatePersonGuard:
 
         _mock_match(mock_gallery, repo, person_id=4)
         new_state = linker.register_track("global_2")
-        assert linker._try_gallery_identification(new_state, CROP, 1, "cam_a") is True
+        assert linker._try_gallery_identification(new_state, CROP, "cam_a") is True
 
     def test_asking_track_is_excluded_from_scan(self):
         linker, _, _ = _make_linker()
@@ -131,7 +131,7 @@ class TestGalleryRecheckConsecutiveMatches:
         _mock_match(mock_gallery, repo, person_id=4, score=0.66)
         state = linker.register_track("global_1")
 
-        assert linker._try_gallery_identification(state, CROP, 1, "cam_a") is False
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is False
         assert state.person_id is None
         assert state.gallery_consecutive_matches == 1
 
@@ -140,9 +140,9 @@ class TestGalleryRecheckConsecutiveMatches:
         _mock_match(mock_gallery, repo, person_id=4)
         state = linker.register_track("global_1")
 
-        assert linker._try_gallery_identification(state, CROP, 1, "cam_a") is False
-        assert linker._try_gallery_identification(state, CROP, 1, "cam_a") is False
-        assert linker._try_gallery_identification(state, CROP, 1, "cam_a") is True
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is False
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is False
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is True
         assert state.person_id == 4
 
     def test_miss_resets_streak(self):
@@ -150,25 +150,25 @@ class TestGalleryRecheckConsecutiveMatches:
         state = linker.register_track("global_1")
 
         _mock_match(mock_gallery, repo, person_id=4)
-        assert linker._try_gallery_identification(state, CROP, 1, "cam_a") is False
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is False
 
         _mock_no_match(mock_gallery)
-        assert linker._try_gallery_identification(state, CROP, 1, "cam_a") is False
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is False
         assert state.gallery_consecutive_matches == 0
 
         _mock_match(mock_gallery, repo, person_id=4)
-        assert linker._try_gallery_identification(state, CROP, 1, "cam_a") is False  # streak restarted
-        assert linker._try_gallery_identification(state, CROP, 1, "cam_a") is True
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is False  # streak restarted
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is True
 
     def test_candidate_switch_resets_streak(self):
         linker, repo, mock_gallery = _make_linker(min_consecutive_matches=2)
         state = linker.register_track("global_1")
 
         _mock_match(mock_gallery, repo, name="Rozika", person_id=4)
-        assert linker._try_gallery_identification(state, CROP, 1, "cam_a") is False
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is False
 
         _mock_match(mock_gallery, repo, name="Ati", person_id=1)
-        assert linker._try_gallery_identification(state, CROP, 1, "cam_a") is False
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is False
         assert state.gallery_candidate_person_id == 1
         assert state.gallery_consecutive_matches == 1
 
@@ -176,4 +176,4 @@ class TestGalleryRecheckConsecutiveMatches:
         linker, repo, mock_gallery = _make_linker(min_consecutive_matches=1)
         _mock_match(mock_gallery, repo, person_id=4)
         state = linker.register_track("global_1")
-        assert linker._try_gallery_identification(state, CROP, 1, "cam_a") is True
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is True

@@ -49,7 +49,7 @@ class TestReIDClosestMatch(unittest.TestCase):
         crop[:, :, 0] = 255  # Solid Blue (non-grayscale)
         
         # Try match
-        self.id_manager.try_reid_match(track_id, crop, num_persons=1)
+        self.id_manager.try_reid_match(track_id, crop, isolated=True)
         
         identity = self.id_manager.get_identity(track_id)
         
@@ -88,7 +88,7 @@ class TestReIDClosestMatch(unittest.TestCase):
         crop[:, :, 0] = 255  # Solid Blue (non-grayscale)
         
         # Try match
-        self.id_manager.try_reid_match(track_id, crop, num_persons=1)
+        self.id_manager.try_reid_match(track_id, crop, isolated=True)
         
         identity = self.id_manager.get_identity(track_id)
         

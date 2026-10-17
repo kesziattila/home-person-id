@@ -26,6 +26,7 @@ from src.tracking.byte_tracker import ByteTrackerManager
 from src.tracking.global_tracker import GlobalTrackManager, GlobalTrackingResult
 from src.tracking.stationary_tracker import StationaryTracker
 from src.tracking.zone_manager import ZoneManager
+from src.visualization.identity_audit import IdentityAuditSampler
 from src.tracking.handover import HandoverManager
 from src.visualization.preview import PreviewBuffer
 from src.visualization.debug_overlay import DebugOverlayRenderer
@@ -125,6 +126,10 @@ class PersonIDSystem:
         )
         self.stationary_tracker = StationaryTracker(self.config.tracking.stationary_timeout)
         self.zone_manager = ZoneManager(self.config.zones)
+        self._identity_audit = (
+            IdentityAuditSampler(self.config.metrics, self.zone_manager)
+            if self.config.metrics.audit_enabled else None
+        )
         self.handover_manager = HandoverManager(self.config.camera_topology)
 
         # Initialize unidentified face manager (optional)
@@ -580,11 +585,13 @@ class PersonIDSystem:
 
         # 5. Update preview buffer
         identities = {}
+        global_ids = {}
         stationary_times = {}
         with profiler.measure("IdentityLinker.get_identity"):
             for track in track_result.tracks:
                 global_track = self.global_tracker.get_global_track_for_local(camera_id, track.track_id)
                 if global_track:
+                    global_ids[track.track_id] = global_track.track_id
                     identity = self.identity_linker.get_identity(global_track.track_id)
                     if identity:
                         identities[track.track_id] = identity
@@ -593,6 +600,12 @@ class PersonIDSystem:
                 s_time = self.stationary_tracker.get_stationary_time(camera_id, track.track_id, current_time)
                 if s_time is not None:
                     stationary_times[track.track_id] = s_time
+
+        if self._identity_audit:
+            with profiler.measure("IdentityAudit.observe"):
+                self._identity_audit.observe(
+                    camera_id, frame_image, track_result.tracks, identities, global_ids
+                )
 
         # Draw debug overlay if enabled
         if self.debug_overlay:

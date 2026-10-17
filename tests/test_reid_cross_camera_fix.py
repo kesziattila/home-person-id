@@ -318,18 +318,6 @@ class TestMatchReidCrossCamera:
 
         assert result is None
 
-    def test_multi_person_skipped(self):
-        """Multiple persons in frame should skip matching."""
-        linker = self._make_linker()
-
-        result = linker.match_reid_cross_camera(
-            "new_track", np.zeros((100, 50, 3), dtype=np.uint8),
-            [],
-            num_persons_in_frame=2,
-        )
-
-        assert result is None
-
     def test_gallery_does_not_overwrite_per_track_match(self):
         """A gallery match with lower score should not overwrite a per-track match."""
         linker = self._make_linker()

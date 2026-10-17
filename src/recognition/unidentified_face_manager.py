@@ -39,6 +39,8 @@ class UnidentifiedFaceTask:
     # 5-point landmarks (left_eye, right_eye, nose, mouth_l, mouth_r) in any
     # coordinate frame — frontalness uses only relative geometry
     landmarks: Optional[np.ndarray] = None
+    # Raw ArcFace output norm (logged for quality analysis, not gated on yet)
+    embedding_norm: Optional[float] = None
 
 
 class UnidentifiedFaceManager:
@@ -121,6 +123,7 @@ class UnidentifiedFaceManager:
         best_match_face_id: Optional[int] = None,
         det_confidence: Optional[float] = None,
         landmarks: Optional[np.ndarray] = None,
+        embedding_norm: Optional[float] = None,
     ) -> bool:
         """Submit an unidentified face for background processing.
 
@@ -137,6 +140,7 @@ class UnidentifiedFaceManager:
             best_match_face_id: ID of the best matching face embedding
             det_confidence: Face detection confidence (factored into quality)
             landmarks: 5-point facial landmarks (used for the frontalness gate)
+            embedding_norm: Raw ArcFace output norm (stored in the event for analysis)
 
         Returns:
             True if submitted, False if queue is full
@@ -166,6 +170,7 @@ class UnidentifiedFaceManager:
             best_match_face_id=best_match_face_id,
             det_confidence=det_confidence,
             landmarks=landmarks.copy() if landmarks is not None else None,
+            embedding_norm=embedding_norm,
         )
 
         try:
@@ -300,6 +305,8 @@ class UnidentifiedFaceManager:
                 extra_data={
                     "quality_score": float(quality_score),
                     "frontalness": float(frontalness),
+                    "sharpness": float(sharpness_score),
+                    "embedding_norm": task.embedding_norm,
                     "unidentified_face_id": int(face.id),
                     "best_match_face_id": task.best_match_face_id,
                     "best_match_person_id": task.best_match_person_id,
@@ -430,11 +437,24 @@ class UnidentifiedFaceManager:
           (evening captures 2026-06-06 19:13 local): smeared crops 0.64-1.00
           vs usable daylight crops 1.55-3.52 -> map 0.8->0, 1.7->1.
 
+        - Noise: structure-to-noise ratio at NATIVE resolution. The three
+          measures above reward sensor noise (it reads as edges and fine
+          grain), so dark, grainy night crops that are barely recognizable
+          scored 1.0. Noise sigma = Immerkaer estimator restricted to the
+          flatter half of the crop (edges excluded); structure = std of the
+          smoothed central face area. Calibration (live crops 2026-10-17,
+          labelled by eye): night crops that are mostly grain 4.1-4.9; every
+          enrolled gallery crop >= 10.3 (low-contrast but usable faces 10-20);
+          usable unidentified crops 37-100 -> map 6->0, 10->1. Moderately
+          grainy crops (12-24) still pass — they overlap with usable gallery
+          faces, so this term only removes the hopeless ones.
+
         With the default min_sharpness_score gate of 0.4: usable live crops
         score 0.83-1.0, the motion-blurred sample 0.36, NR-smeared evening
-        crops <=0.22, gaussian-blurred copies <=0.03 (all rejected).
+        crops <=0.22, gaussian-blurred copies <=0.03, grain-only night
+        crops 0.0 (all rejected).
 
-        Performance: ~1ms per call (fixed-size resize + small convolutions).
+        Performance: ~1-2ms per call (small convolutions; noise at native size).
 
         Args:
             gray: Grayscale image
@@ -442,6 +462,8 @@ class UnidentifiedFaceManager:
         Returns:
             Sharpness score 0-1 (higher = sharper)
         """
+        noise_score = self._noise_score(gray)
+
         size = self._SHARPNESS_INPUT_SIZE
         gray = cv2.resize(gray, (size, size), interpolation=cv2.INTER_AREA)
         denoised = cv2.GaussianBlur(gray, (3, 3), 0)
@@ -465,7 +487,21 @@ class UnidentifiedFaceManager:
         )
         detail_score = max(0.0, min(1.0, (hf_energy - 0.8) / 0.9))
 
-        return min(focus_score, motion_score, detail_score)
+        return min(focus_score, motion_score, detail_score, noise_score)
+
+    @classmethod
+    def _noise_score(cls, gray: np.ndarray) -> float:
+        """Structure-to-noise ratio of a native-resolution crop (6 -> 0, 10 -> 1)."""
+        f = gray.astype(np.float32)
+        smooth = cv2.GaussianBlur(f, (0, 0), 1.5)
+        grad = np.hypot(cv2.Sobel(smooth, cv2.CV_32F, 1, 0), cv2.Sobel(smooth, cv2.CV_32F, 0, 1))
+        flat = grad < np.percentile(grad, 50)
+        residual = np.abs(cv2.filter2D(f, -1, cls._DETAIL_KERNEL))
+        sigma = float(np.sqrt(np.pi / 2.0) * residual[flat].mean() / 6.0) if flat.any() else 0.0
+        h, w = f.shape
+        structure = float(smooth[h // 4:3 * h // 4, w // 4:3 * w // 4].std())
+        snr = structure / max(sigma, 1e-3)
+        return max(0.0, min(1.0, (snr - 6.0) / 4.0))
 
     @staticmethod
     def _compute_frontalness(landmarks: np.ndarray) -> float:

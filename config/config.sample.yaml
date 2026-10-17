@@ -257,9 +257,10 @@ reid:
   # Path for temporary crop storage (saves memory by storing on disk)
   crop_cache_path: "data/cache/reid_crops"
 
-  # Skip Re-ID for detections with overlapping bounding boxes (IoU > threshold)
-  # Prevents incorrect matches when people are close together (e.g., parent+child)
-  # Set to 0.0 to disable. Recommended: 0.15
+  # Appearance (Re-ID) evidence is used only for ISOLATED tracks: boxes overlapping
+  # no other box by more than this (intersection / SMALLER box area, so a child's
+  # box inside an adult's counts). See src/tracking/attribution.py.
+  # 0.0 disables the check (every track counts as isolated). Recommended: 0.15
   skip_overlapping_iou: 0.15
 
   # --- TensorRT Native Backend (Lowest Memory) ---
@@ -474,6 +475,19 @@ metrics:
   track_events_enabled: true
   # Delete daily files older than this many days
   retention_days: 30
+  # Identity audit samples for offline review (skill review-identities): an annotated
+  # frame (labels as in the UI) + a full-resolution crop per track, written to
+  # <path>/audit/ (JSONL) and <path>/audit_frames/YYYY-MM-DD/ (JPEGs)
+  audit_enabled: true
+  # Periodic sample per camera while tracks are in view (seconds)
+  audit_interval_sec: 60.0
+  # A track's label change samples immediately, at most this often per camera
+  audit_change_min_interval_sec: 5.0
+  # Annotated frame width; crops keep full resolution up to this height
+  audit_max_width: 1280
+  audit_crop_max_height: 640
+  # Image retention (~0.3-1 MB per sample)
+  audit_retention_days: 7
 
 # =============================================================================
 # DATABASE

@@ -15,7 +15,7 @@
 - Required constructor deps (`repository`, `reid_extractor`, …) must NOT default to `None`; use `Optional` only when the class truly works without it
 - Shared helpers, don't re-implement: embedding math → `src/utils/embedding_utils.py` (`l2_normalize`, `cosine_similarity[_batch]`); bbox crops → `image_utils.crop_bbox`; exclusion zones → `DetectionResult.excluding_zones()`; detectors → `create_person_detector(config.detection)`
 - `src/cli_preview.py` = CLI preview pipeline (no DB); `src/visualization/preview.py` = web UI frame buffer/annotations
-- Face match policy = `FaceMatchScores.accepts(similarity_threshold, min_margin)` via `IdentificationManager.score_face()` (per-person top1/top2); production attempts are logged by `FaceScoreLogger`
+- Face match policy = `FaceMatchScores.accepts(similarity_threshold, min_margin)` via `IdentificationManager.score_face()` (per-person top1/top2); production attempts are logged by `FaceScoreLogger`; face evidence comes only from the face the box owns (`attribution.owner_face`); ambiguous attempts are logged, never accepted or saved
 - On-disk metrics: `src/utils/jsonl_writer.DailyJsonlWriter` under `metrics.path/<stream>/` (daily UTC files, retention) — reuse it for new metric streams
 - Centralize validation where data enters the system (e.g. grayscale/multi-face checks live in `ReIDGalleryManager.update_track_embedding()`), not in callers
 
@@ -32,7 +32,7 @@
 - Skip grayscale/IR crops: HSV `mean_saturation < 15.0`
 - Skip multi-person crops: `len(face_result.faces) > 1`, detected with `config.multi_face_min_size` (default 20px, lower than recognition's 80px), passed as a param to `detect_faces()`
 - Skip low visibility (`min_visibility`)
-- Extract Re-ID only when `num_persons_in_frame == 1`
+- Evidence attribution lives ONLY in `src/tracking/attribution.py`: face → `owner_face`; appearance (Re-ID extract/match/gallery update) → isolated tracks (`isolated_track_ids`, overlap over the smaller box ≤ `reid.skip_overlapping_iou`), passed down as `isolated: bool`; location (zone handover) → each camera sees exactly one person incl. briefly lost tracks. Don't add per-path person-count checks
 - Gallery: store per-embedding source crops (each embedding may come from a different frame); cap gallery size per person
 - Save match-debug snapshots (current crop, gallery crop, similarity) to `data/snapshots/` with timestamp + person name
 
@@ -82,6 +82,7 @@ System runs live on a Jetson; all remote interaction goes through `scripts/remot
 - `fetch_metrics.sh` → `local/remote/metrics/` (face scores → `tools/analyze_face_scores.py`; ByteTrack births/revivals/duplicates → `tools/analyze_track_events.py`)
 - `grab_frames.sh [cam…]` → latest frames with zones drawn (`/api/v1/frame/{cam}`) for zone review
 - Self-tuning: `tune-live` skill, journal in `docs/TUNING_LOG.md`, KPIs `queries/tuning_kpis.sql`
+- Identity spot-check: `review-identities` skill — `fetch_audit.sh` (audit samples: annotated frame + track crops, `metrics.audit_*`), `tools/find_contradictions.py` (outcome-based, no per-bug logging), `tools/audit_sheet.py` (contact sheets)
 - `rlog.sh tail|grep|around|errors|perf|stdout` — always bounded; never dump whole logs into context
 
 ### Conventions

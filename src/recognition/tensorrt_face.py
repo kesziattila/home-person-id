@@ -30,6 +30,9 @@ class TensorRTFace:
     confidence: float
     landmarks: np.ndarray  # (5, 2) facial landmarks
     embedding: Optional[np.ndarray] = None  # 512-dim embedding
+    # L2 norm of the raw ArcFace output before normalization — identity-independent
+    # face quality proxy (small for blurred/noisy/occluded faces)
+    embedding_norm: Optional[float] = None
 
 
 # Standard face alignment destination points for 112x112 output
@@ -116,16 +119,21 @@ class TensorRTFaceEmbedder(TensorRTEmbedderBase):
         Returns:
             512-dim normalized embedding
         """
+        return self.extract_with_norm(aligned_face)[0]
+
+    def extract_with_norm(self, aligned_face: np.ndarray) -> tuple[np.ndarray, float]:
+        """Normalized embedding plus the raw output's L2 norm (free quality proxy)."""
         self._load_engine()
 
         input_tensor = self._preprocess(aligned_face)
         outputs = self._run_inference(input_tensor)
 
         if not outputs:
-            return np.zeros(512, dtype=np.float32)
+            return np.zeros(512, dtype=np.float32), 0.0
 
         embedding = outputs[0].flatten()
-        return self._normalize_embedding(embedding)
+        norm = float(np.linalg.norm(embedding.astype(np.float32)))
+        return self._normalize_embedding(embedding), norm
 
     def warmup(self):
         """Warm up the engine."""
@@ -403,7 +411,7 @@ class TensorRTFaceRecognizer:
                 continue
 
             aligned = align_face(frame, face.landmarks)
-            face.embedding = self._embedder.extract(aligned)
+            face.embedding, face.embedding_norm = self._embedder.extract_with_norm(aligned)
             result.append(face)
 
         return result

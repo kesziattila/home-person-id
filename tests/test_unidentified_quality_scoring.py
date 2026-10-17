@@ -15,6 +15,7 @@ Live-data findings that drove the changes:
 """
 
 import time
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import cv2
@@ -38,9 +39,31 @@ def _make_manager(**config_overrides) -> tuple[UnidentifiedFaceManager, MagicMoc
 
 
 def _textured_crop(size: int = 160, seed: int = 1) -> np.ndarray:
-    """A noisy textured crop — sharp by construction."""
+    """A sharp face-like crop: smooth shading + crisp edges + mild sensor noise.
+
+    (Pure per-pixel random noise used to stand in for "sharp texture" here, but
+    since 2026-10-17 grain-only crops are rejected by the noise term.)
+    """
     rng = np.random.default_rng(seed)
-    return rng.integers(0, 255, (size, size, 3), dtype=np.uint8)
+    shading = cv2.resize(rng.uniform(40, 215, (6, 6)), (size, size), interpolation=cv2.INTER_CUBIC)
+    img = np.clip(shading, 0, 255).astype(np.float32)
+    for _ in range(40):  # crisp features at all orientations (eyes, glasses, hair strands)
+        center = tuple(int(v) for v in rng.integers(0, size, 2))
+        axes = tuple(int(v) for v in rng.integers(size // 40 + 1, size // 8, 2))
+        cv2.ellipse(img, center, axes, float(rng.uniform(0, 180)), 0, 360, float(rng.uniform(10, 245)), -1)
+    img += rng.normal(0, 3.0, img.shape)
+    gray = np.clip(img, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+
+def _grain_only_crop(size: int = 160, seed: int = 3) -> np.ndarray:
+    """A dark night crop that is mostly sensor grain over a faint blob."""
+    rng = np.random.default_rng(seed)
+    yy, xx = np.mgrid[0:size, 0:size]
+    blob = 70 + 8 * np.exp(-((xx - size / 2) ** 2 + (yy - size / 2) ** 2) / (2 * (size / 4) ** 2))
+    img = blob + rng.normal(0, 14.0, (size, size))
+    gray = np.clip(img, 0, 255).astype(np.uint8)
+    return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
 
 class TestSharpnessFixedSize:
@@ -64,6 +87,13 @@ class TestSharpnessFixedSize:
         manager, _ = _make_manager()
         sharp = cv2.cvtColor(_textured_crop(160), cv2.COLOR_BGR2GRAY)
         assert manager._compute_sharpness(sharp) >= 0.4
+
+    def test_grain_only_crop_fails_default_gate(self):
+        # Live 2026-10-17: dark ground_floor night crops that were mostly grain
+        # scored sharpness 1.0 (grain reads as edges/detail) and quality 0.79
+        manager, _ = _make_manager()
+        grainy = cv2.cvtColor(_grain_only_crop(160), cv2.COLOR_BGR2GRAY)
+        assert manager._compute_sharpness(grainy) < 0.4
 
 
 class TestQualityWithDetConfidence:
@@ -306,3 +336,24 @@ class TestFrontalness:
         kwargs = repo.add_unidentified_face.call_args.kwargs
         assert kwargs["det_confidence"] == pytest.approx(0.77)
         assert kwargs["frontalness"] == pytest.approx(1.0)
+
+
+def _labelled_crops(label):
+    return sorted(Path("tests/test-images/sensitive/face_quality", label).glob("*.jpg"))
+
+
+@pytest.mark.parametrize("label,passes", [("usable", True), ("grain_only", False)])
+def test_labelled_live_crops_against_default_gate(label, passes):
+    """Live unidentified crops (2026-10-16/17) labelled by eye; gitignored, skipped if absent.
+
+    grain_only: night ground_floor/living_room crops that are barely a face
+    (structure-to-noise 4-5) but used to score sharpness 1.0. usable: sharp,
+    eyes visible, enrolled-quality faces.
+    """
+    paths = _labelled_crops(label)
+    if not paths:
+        pytest.skip("labelled live crops not available")
+    manager, _ = _make_manager()
+    for p in paths:
+        score = manager._compute_sharpness(cv2.cvtColor(cv2.imread(str(p)), cv2.COLOR_BGR2GRAY))
+        assert (score >= 0.4) == passes, f"{p.name}: sharpness {score:.2f}"

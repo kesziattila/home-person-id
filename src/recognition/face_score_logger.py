@@ -46,9 +46,16 @@ class FaceScoreLogger:
         det_confidence: float,
         threshold: float,
         min_margin: float,
+        num_faces: int = 1,
+        ambiguous: bool = False,
+        embedding_norm: Optional[float] = None,
         now: Optional[float] = None,
     ) -> bool:
-        """Record one attempt. Returns False if skipped by the per-track rate limit."""
+        """Record one attempt. Returns False if skipped by the per-track rate limit.
+
+        num_faces = recognizable faces in the head region; ambiguous = none or several
+        of them central, so the scored face may be someone else's (never accepted).
+        """
         now = time.time() if now is None else now
         with self._lock:
             last = self._last_logged.get(track_id)
@@ -70,6 +77,9 @@ class FaceScoreLogger:
             "det_conf": round(float(det_confidence), 3),
             "threshold": threshold,
             "min_margin": min_margin,
+            "num_faces": num_faces,
+            "ambiguous": ambiguous,
+            "emb_norm": round(float(embedding_norm), 2) if embedding_norm is not None else None,
         }, datetime.fromtimestamp(now, tz=timezone.utc))
 
     def forget_track(self, track_id: str) -> None:

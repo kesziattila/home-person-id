@@ -18,7 +18,7 @@ import numpy as np
 
 from src.config import CameraTopologyConfig, ReIDConfig, SnapshotConfig, VLMConfig, ZonesConfig
 from src.database.repository import Repository
-from src.detection.person_detector import compute_iou
+from src.tracking.attribution import RECENTLY_LOST_SEC, isolated_track_ids
 from src.events.mqtt_publisher import MQTTPublisher
 from src.recognition.identity_linker import IdentityLinker
 from src.recognition.identification_manager import CrossCameraMatch
@@ -332,38 +332,6 @@ class GlobalTrackManager:
         self._next_track_id += 1
         return track_id
 
-    def _find_overlapping_track_ids(
-        self,
-        local_tracks: list[LocalTrack],
-        iou_threshold: float,
-    ) -> set[int]:
-        """Find track IDs that have overlapping bounding boxes with other tracks.
-
-        Args:
-            local_tracks: List of local tracks
-            iou_threshold: IoU threshold above which tracks are considered overlapping
-
-        Returns:
-            Set of track IDs that have significant overlap with at least one other track
-        """
-        if iou_threshold <= 0 or len(local_tracks) < 2:
-            return set()
-
-        overlapping_ids = set()
-
-        for i, track1 in enumerate(local_tracks):
-            for track2 in local_tracks[i + 1:]:
-                iou = compute_iou(track1.bbox, track2.bbox)
-                if iou > iou_threshold:
-                    overlapping_ids.add(track1.track_id)
-                    overlapping_ids.add(track2.track_id)
-                    logger.debug(
-                        f"Overlapping tracks: {track1.track_id} and {track2.track_id} "
-                        f"(IoU={iou:.3f})"
-                    )
-
-        return overlapping_ids
-
     def process_local_tracks(
         self,
         camera_id: str,
@@ -406,10 +374,8 @@ class GlobalTrackManager:
         # Clean up stale LOST/GRACE tracks (handles GRACE→LOST and LOST→REMOVED transitions)
         self._cleanup_lost_tracks(current_time)
 
-        # Find tracks with overlapping bounding boxes (skip Re-ID for these)
-        overlapping_track_ids = self._find_overlapping_track_ids(
-            local_tracks, self.reid_config.skip_overlapping_iou
-        )
+        # Appearance (Re-ID) evidence is only attributable to isolated tracks
+        isolated = isolated_track_ids(local_tracks, self.reid_config.skip_overlapping_iou)
 
         # Process new local tracks
         for local_track_id in new_track_ids:
@@ -418,8 +384,10 @@ class GlobalTrackManager:
                 continue
 
             # Try gallery match for immediate identity assignment
-            with profiler.measure("GlobalTracker.gallery_match"):
-                gallery_match = self._try_gallery_match(camera_id, local_track)
+            gallery_match = None
+            if local_track.track_id in isolated:
+                with profiler.measure("GlobalTracker.gallery_match"):
+                    gallery_match = self._try_gallery_match(camera_id, local_track)
 
             if gallery_match and gallery_match.person_name:
                 # Gallery match — create new track with immediate identity
@@ -427,7 +395,7 @@ class GlobalTrackManager:
                     camera_id,
                     local_track,
                     frame,
-                    has_overlapping_bbox=local_track.track_id in overlapping_track_ids,
+                    isolated=local_track.track_id in isolated,
                 )
                 result.new_global_tracks.append(global_track_id)
 
@@ -464,7 +432,7 @@ class GlobalTrackManager:
                     camera_id,
                     local_track,
                     frame,
-                    has_overlapping_bbox=local_track.track_id in overlapping_track_ids,
+                    isolated=local_track.track_id in isolated,
                 )
                 result.new_global_tracks.append(global_track_id)
 
@@ -516,15 +484,13 @@ class GlobalTrackManager:
                 state_before = self.identity_linker.get_track_state(global_track_id)
                 person_id_before = state_before.person_id if state_before else None
 
-                # Skip Re-ID if this track overlaps with another (num_persons > 1)
-                num_persons = 2 if local_track.track_id in overlapping_track_ids else 1
                 with profiler.measure("IdentityLinker.process_track"):
                     self.identity_linker.process_track(
                         global_track_id,
                         frame,
                         local_track.last_crop,
                         local_track.bbox,
-                        num_persons_in_frame=num_persons,
+                        isolated=local_track.track_id in isolated,
                         precomputed_reid=(local_track.last_reid_embedding, local_track.last_reid_quality)
                         if local_track.last_reid_embedding is not None else None,
                         camera_id=camera_id,
@@ -627,7 +593,7 @@ class GlobalTrackManager:
         camera_id: str,
         local_track: LocalTrack,
         frame: np.ndarray,
-        has_overlapping_bbox: bool = False,
+        isolated: bool = True,
     ) -> str:
         """Create a new global track.
 
@@ -635,7 +601,7 @@ class GlobalTrackManager:
             camera_id: Camera where track was created
             local_track: Local track from ByteTrack
             frame: Current frame
-            has_overlapping_bbox: Whether this track overlaps with another
+            isolated: Box overlaps no other track (attribution.py)
 
         Returns:
             New global track ID
@@ -658,15 +624,14 @@ class GlobalTrackManager:
         # Register with identity linker
         self.identity_linker.register_track(global_track_id)
 
-        # Initial Re-ID extraction (skip if overlapping with another track)
+        # Initial identification (appearance evidence only if isolated)
         if local_track.last_crop is not None:
-            num_persons = 2 if has_overlapping_bbox else 1
             self.identity_linker.process_track(
                 global_track_id,
                 frame,
                 local_track.last_crop,
                 local_track.bbox,
-                num_persons_in_frame=num_persons,
+                isolated=isolated,
                 camera_id=camera_id,
             )
 
@@ -815,7 +780,7 @@ class GlobalTrackManager:
         camera_id: str,
         local_track: LocalTrack,
     ) -> Optional[CrossCameraMatch]:
-        """Try to match new track against the shared Re-ID gallery.
+        """Try to match an isolated new track against the shared Re-ID gallery.
 
         Returns:
             CrossCameraMatch if matched, else None
@@ -828,7 +793,7 @@ class GlobalTrackManager:
 
         with profiler.measure("ReIDGallery.match"):
             match_result = self.identity_linker.reid_gallery_manager.match_new_track(
-                local_track.last_crop, 1
+                local_track.last_crop
             )
 
         if not match_result.matched:
@@ -992,9 +957,10 @@ class GlobalTrackManager:
     ):
         """Propagate identity between simultaneously active tracks in shared zones.
 
-        For each zone visible on multiple cameras, if camera A sees exactly 1 person
-        and camera B sees exactly 1 person, and one is face-identified while the other
-        is unidentified, transfer identity via handover method.
+        For each zone visible on multiple cameras, if camera A and camera B each see
+        exactly one person (location evidence rule, attribution.py — the whole
+        camera, briefly lost tracks included, not just the zone) and one is
+        identified while the other is not, transfer identity via handover method.
         """
         if not self.zone_manager:
             return
@@ -1009,8 +975,7 @@ class GlobalTrackManager:
                     tracks_a = cameras[cam_a]
                     tracks_b = cameras[cam_b]
 
-                    # Both cameras must see exactly 1 person in this zone
-                    if len(tracks_a) != 1 or len(tracks_b) != 1:
+                    if self._persons_on_camera(cam_a) != 1 or self._persons_on_camera(cam_b) != 1:
                         continue
 
                     track_a_id = tracks_a[0][0]
@@ -1057,6 +1022,20 @@ class GlobalTrackManager:
                         f"Zone identity propagation: zone='{zone_name}' "
                         f"{src_track} -> {rcv_track} (person_id={src_state.person_id})"
                     )
+
+    def _persons_on_camera(self, camera_id: str) -> int:
+        """People a camera sees now: active tracks + tracks lost < RECENTLY_LOST_SEC ago."""
+        now = datetime.now()
+        count = 0
+        for track in self._tracks.values():
+            if track.current_camera_id != camera_id:
+                continue
+            if track.state in (TrackState.NEW, TrackState.TRACKED):
+                count += 1
+            elif track.state == TrackState.GRACE and track.last_seen is not None \
+                    and (now - track.last_seen).total_seconds() < RECENTLY_LOST_SEC:
+                count += 1
+        return count
 
     def get_global_track(self, global_track_id: str) -> Optional[GlobalTrack]:
         """Get a global track by ID."""

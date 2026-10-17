@@ -17,6 +17,7 @@ from src.detection.motion_detector import MotionDetector, BaseMotionDetector
 from src.detection.person_detector import PersonDetector, DetectionResult
 from src.utils.image_utils import crop_bbox
 from src.recognition.identification_manager import IdentificationManager, TrackIdentity
+from src.tracking.attribution import isolated_track_ids
 from src.tracking.byte_tracker import ByteTracker
 from src.tracking.zone_manager import ZoneManager
 from src.tracking.stationary_tracker import StationaryTracker
@@ -199,7 +200,7 @@ class CameraProcessor:
         # Tracking
         track_result = self.tracker.update(detections, frame)
         current_track_ids = {t.track_id for t in track_result.tracks}
-        num_persons = len(track_result.tracks)
+        isolated = isolated_track_ids(track_result.tracks, self.config.reid.skip_overlapping_iou)
 
         # Handle lost tracks
         lost_ids = self._previous_track_ids - current_track_ids
@@ -226,7 +227,7 @@ class CameraProcessor:
             should_try_reid = is_new_track or (self._frame_counter % self.id_manager.reid_confirm_interval == 0)
 
             if should_try_reid and not self.id_manager.is_identified(track_key):
-                gallery_crop = self.id_manager.try_reid_match(track_key, crop, num_persons)
+                gallery_crop = self.id_manager.try_reid_match(track_key, crop, local_track.track_id in isolated)
                 if gallery_crop is not None:
                     identity = self.id_manager.get_identity(track_key)
                     if log_callback:
@@ -244,7 +245,9 @@ class CameraProcessor:
 
             # Face recognition (periodic, per-camera frame counter)
             if self._frame_counter % self.id_manager.face_check_interval == 0:
-                if self.id_manager.try_face_recognition(track_key, crop, local_track.track_id, num_persons):
+                if self.id_manager.try_face_recognition(
+                    track_key, crop, local_track.track_id, local_track.track_id in isolated
+                ):
                     identity = self.id_manager.get_identity(track_key)
                     if log_callback:
                         log_callback(f"[FACE] {identity.person_name} ({track_key}) score={identity.confidence:.2f} on {self.camera_id}")
@@ -260,7 +263,9 @@ class CameraProcessor:
 
             # Update Re-ID embeddings (periodic)
             if self._frame_counter % self.id_manager.reid_embedding_interval == 0:
-                self.id_manager.update_reid_embedding(track_key, local_track.track_id, crop, num_persons)
+                self.id_manager.update_reid_embedding(
+                    track_key, local_track.track_id, crop, local_track.track_id in isolated
+                )
 
         # Update stationary state
         track_ids = [t.track_id for t in track_result.tracks]

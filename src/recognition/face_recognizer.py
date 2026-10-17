@@ -34,6 +34,8 @@ class Face:
     confidence: float
     landmarks: Optional[np.ndarray] = None  # 5 facial landmarks
     embedding: Optional[np.ndarray] = None  # 512-dim embedding
+    # Raw ArcFace output norm before L2 normalization (identity-independent quality proxy)
+    embedding_norm: Optional[float] = None
 
     @property
     def width(self) -> float:
@@ -215,6 +217,7 @@ class FaceRecognizer:
                 confidence=trt_face.confidence,
                 landmarks=trt_face.landmarks,
                 embedding=trt_face.embedding,
+                embedding_norm=trt_face.embedding_norm,
             )
             faces.append(face)
 
@@ -241,6 +244,10 @@ class FaceRecognizer:
                 confidence=float(face_data.det_score),
                 landmarks=face_data.kps if hasattr(face_data, "kps") else None,
                 embedding=face_data.embedding if hasattr(face_data, "embedding") else None,
+                embedding_norm=(
+                    float(face_data.embedding_norm)
+                    if getattr(face_data, "embedding", None) is not None else None
+                ),
             )
             faces.append(face)
 

@@ -20,6 +20,7 @@ from src.config import Config, FaceRecognitionConfig, ReIDConfig
 from src.recognition.face_recognizer import FaceRecognizer
 from src.recognition.reid_extractor import ReIDExtractor, is_grayscale_image
 from src.recognition.reid_gallery import ReIDGalleryManager, DebugImageSaver
+from src.tracking.attribution import owner_face
 from src.utils.image_utils import crop_with_margin
 
 if TYPE_CHECKING:
@@ -379,18 +380,18 @@ class IdentificationManager:
         self,
         track_id: str,
         crop: np.ndarray,
-        num_persons: int,
+        isolated: bool,
         camera_id: Optional[str] = None,
         frame: Optional[np.ndarray] = None,
     ) -> Optional[np.ndarray]:
         """Backward compatibility for try_reid_match."""
-        return self.process_track(track_id, crop, num_persons, camera_id, frame)
+        return self.process_track(track_id, crop, isolated, camera_id, frame)
 
     def process_track(
         self,
         track_id: str,
         crop: np.ndarray,
-        num_persons: int,
+        isolated: bool,
         camera_id: Optional[str] = None,
         frame: Optional[np.ndarray] = None,
     ) -> Optional[np.ndarray]:
@@ -399,21 +400,21 @@ class IdentificationManager:
         Args:
             track_id: Track identifier
             crop: Person crop image
-            num_persons: Number of persons in frame
+            isolated: Box overlaps no other track (src/tracking/attribution.py)
             camera_id: Optional camera ID for snapshot saving
             frame: Optional full frame for snapshot saving
 
         Returns:
             Gallery crop if matched, None otherwise
         """
-        if not self.reid_gallery_manager or crop.size == 0:
+        if not self.reid_gallery_manager or crop.size == 0 or not isolated:
             return None
 
         # Skip grayscale/IR images
         if is_grayscale_image(crop):
             return None
 
-        match_result = self.reid_gallery_manager.match_new_track(crop, num_persons)
+        match_result = self.reid_gallery_manager.match_new_track(crop)
         identity = self.get_identity(track_id)
 
         if match_result.best_person_name:
@@ -463,7 +464,6 @@ class IdentificationManager:
         new_track_id: str,
         new_crop: np.ndarray,
         candidate_track_ids: list[str],
-        num_persons_in_frame: int = 1,
     ) -> Optional[CrossCameraMatch]:
         """Match a new track against existing tracks using Re-ID.
 
@@ -473,14 +473,10 @@ class IdentificationManager:
             new_track_id: ID of the new track
             new_crop: Person crop from new track
             candidate_track_ids: IDs of tracks to match against
-            num_persons_in_frame: Number of persons in frame
 
         Returns:
             CrossCameraMatch object or None
         """
-        if num_persons_in_frame > 1:
-            return None
-
         if not self.reid_extractor or new_crop.size == 0:
             return None
 
@@ -511,7 +507,7 @@ class IdentificationManager:
 
         # Also try shared gallery for lost face-identified persons
         if self.reid_gallery_manager:
-            match_result = self.reid_gallery_manager.match_new_track(new_crop, num_persons_in_frame)
+            match_result = self.reid_gallery_manager.match_new_track(new_crop)
             if match_result.matched and match_result.score > best_score:
                 return CrossCameraMatch(
                     matched_track_id=new_track_id,
@@ -528,7 +524,7 @@ class IdentificationManager:
         track_id: str,
         person_crop: np.ndarray,
         local_track_id: int,
-        num_persons: int,
+        isolated: bool,
         camera_id: Optional[str] = None,
         frame: Optional[np.ndarray] = None,
     ) -> bool:
@@ -538,7 +534,7 @@ class IdentificationManager:
             track_id: Track identifier
             person_crop: Person crop image
             local_track_id: Local tracker ID (for Re-ID gallery)
-            num_persons: Number of persons in frame
+            isolated: Box overlaps no other track (gallery is only fed then)
             camera_id: Camera ID for unidentified face capture
             frame: Optional full frame for snapshot saving
 
@@ -562,14 +558,10 @@ class IdentificationManager:
             identity.has_multiple_faces = False
             return False
 
-        # Check for multiple faces (indicates 2+ people in crop)
-        if len(face_result.faces) > 1:
-            identity.has_multiple_faces = True
-            return False
-
-        identity.has_multiple_faces = False
-        face = face_result.faces[0]
-        if face.embedding is None:
+        # Face evidence: only the face this box owns (attribution.py)
+        face, ambiguous = owner_face(face_result.faces, person_crop.shape[1])
+        identity.has_multiple_faces = len(face_result.faces) > 1
+        if ambiguous or face.embedding is None:
             return False
 
         scores = self.score_face(face.embedding)
@@ -634,9 +626,9 @@ class IdentificationManager:
                     )
 
             # Update Re-ID gallery with face-confirmed identity
-            if self.reid_gallery_manager:
+            if self.reid_gallery_manager and isolated:
                 self.reid_gallery_manager.update_track_embedding(
-                    local_track_id, person_crop, best_name, num_persons
+                    local_track_id, person_crop, best_name
                 )
             return True
 
@@ -663,9 +655,9 @@ class IdentificationManager:
         track_id: str,
         local_track_id: int,
         crop: np.ndarray,
-        num_persons: int,
+        isolated: bool,
     ):
-        """Update Re-ID embedding for a face-identified track.
+        """Update Re-ID embedding for a face-identified, isolated track.
 
         Note: Grayscale/IR and multi-face checks are handled by ReIDGalleryManager.
 
@@ -673,15 +665,15 @@ class IdentificationManager:
             track_id: Track identifier
             local_track_id: Local tracker ID
             crop: Person crop image
-            num_persons: Number of persons in frame
+            isolated: Box overlaps no other track (attribution.py)
         """
-        if not self.reid_gallery_manager:
+        if not self.reid_gallery_manager or not isolated:
             return
 
         identity = self._identities.get(track_id)
         if identity and identity.is_face_identified and crop.size > 0:
             self.reid_gallery_manager.update_track_embedding(
-                local_track_id, crop, identity.person_name, num_persons
+                local_track_id, crop, identity.person_name
             )
 
     # ==================== Utility ====================

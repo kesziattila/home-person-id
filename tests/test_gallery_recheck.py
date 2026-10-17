@@ -81,7 +81,7 @@ class TestGalleryRecheck:
         repo.get_person_by_name.return_value = mock_person
 
         crop = np.zeros((100, 50, 3), dtype=np.uint8)
-        success = linker._try_gallery_identification(state, crop, 1, "cam_a")
+        success = linker._try_gallery_identification(state, crop, "cam_a")
 
         assert success is True
         assert state.person_id == 10
@@ -106,7 +106,7 @@ class TestGalleryRecheck:
         state.last_gallery_check = time.time()
 
         crop = np.zeros((100, 50, 3), dtype=np.uint8)
-        success = linker._try_gallery_identification(state, crop, 1, "cam_a")
+        success = linker._try_gallery_identification(state, crop, "cam_a")
 
         assert success is False
         # Gallery should not be called
@@ -126,7 +126,7 @@ class TestGalleryRecheck:
         mock_gallery.match_new_track.return_value = match_result
 
         crop = np.zeros((100, 50, 3), dtype=np.uint8)
-        success = linker._try_gallery_identification(state, crop, 1, "cam_a")
+        success = linker._try_gallery_identification(state, crop, "cam_a")
 
         assert success is False
         # Gallery should have been called
@@ -147,7 +147,7 @@ class TestGalleryRecheck:
         # process_track should return early for identified tracks
         result = linker.process_track(
             "global_1", frame, crop, (10, 10, 50, 90),
-            num_persons_in_frame=1,
+            isolated=True,
         )
 
         # Should not call gallery recheck
@@ -165,7 +165,7 @@ class TestGalleryRecheck:
         state = linker.register_track("global_1")
         crop = np.zeros((100, 50, 3), dtype=np.uint8)
 
-        success = linker._try_gallery_identification(state, crop, 1, "cam_a")
+        success = linker._try_gallery_identification(state, crop, "cam_a")
         assert success is False
 
     def test_gallery_match_no_person_in_db(self):
@@ -186,7 +186,7 @@ class TestGalleryRecheck:
         repo.get_person_by_name.return_value = None
 
         crop = np.zeros((100, 50, 3), dtype=np.uint8)
-        success = linker._try_gallery_identification(state, crop, 1, "cam_a")
+        success = linker._try_gallery_identification(state, crop, "cam_a")
 
         assert success is False
         assert state.person_id is None
@@ -215,7 +215,7 @@ class TestGalleryRecheck:
 
         result = linker.process_track(
             "global_1", frame, crop, (10, 10, 50, 90),
-            num_persons_in_frame=1,
+            isolated=True,
             camera_id="cam_a",
         )
 

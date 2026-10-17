@@ -163,9 +163,8 @@ class ReIDConfig:
     min_visibility: float = 0.5
     # Path for temporary crop storage (reduces memory usage)
     crop_cache_path: str = "data/cache/reid_crops"
-    # Skip Re-ID for detections with overlapping bounding boxes (IoU > threshold).
-    # Helps avoid storing embeddings when people are close together (e.g., parent+child).
-    # Set to 0.0 to disable. Recommended: 0.15
+    # Re-ID evidence only for isolated tracks: overlap (intersection / smaller box)
+    # with every other box <= this (src/tracking/attribution.py). 0.0 disables.
     skip_overlapping_iou: float = 0.15
     # Use TensorRT native backend (bypasses PyTorch, lowest memory)
     # Requires TensorRT engine: python tools/convert_reid_to_trt.py
@@ -363,6 +362,18 @@ class MetricsConfig:
     track_events_enabled: bool = True
     # Delete daily metric files older than this
     retention_days: int = 30
+    # Identity audit samples (annotated frame + full-res track crops) for offline
+    # review of what the system labelled (skill review-identities)
+    audit_enabled: bool = True
+    # Seconds between periodic samples per camera while tracks are in view
+    audit_interval_sec: float = 60.0
+    # A label change samples immediately, but at most this often per camera
+    audit_change_min_interval_sec: float = 5.0
+    # Annotated frame width (crops stay full resolution, capped in height)
+    audit_max_width: int = 1280
+    audit_crop_max_height: int = 640
+    # Images are large (~0.3-1 MB per sample): keep them shorter than other metrics
+    audit_retention_days: int = 7
 
 
 @dataclass

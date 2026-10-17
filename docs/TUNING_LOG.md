@@ -124,3 +124,59 @@ identity and "last known room" — not continuous identity of every person at ev
   Face analyzer still lacks evidence (best lo95 0.91 < 0.99) → no threshold change.
 - Next: compare a daylight sample with yesterday afternoon; decide on night strategy
   (IR face gallery vs presence-only at night).
+
+### 2026-10-17 08:23 UTC — gallery refresh + ambiguous multi-face attempts (uncommitted, live)
+- Daylight 07:00–08:14 UTC: tracks/min ground_floor 1.2, living_room 1.7, recreate 11 % (3 people,
+  busy). Relaxed lost-track matching rejected: in 7 identified pairs it would have joined 2 wrong.
+- Face galleries last updated in June; live top1 ≥ 0.6 rate: Ati 119/465, Judit 4/121, Virag 13/329.
+  Assigned 11 high-quality unidentified faces (sharp, eyes visible, q ≥ 0.85, ≥ 160 px):
+  Judit 7, Virag 2, Ati 2 (gallery 86 → 97).
+- Bug: production took the largest face even with several in the head region; all 19 "wrong"
+  high scores were Ati/Virag mix-ups (global_56136: child's track got face_match Ati).
+  Change: >1 face ≥ min_face_size → logged with num_faces, never accepted/saved; analyzer skips them.
+- Next: per-person top1 ≥ 0.6 rate for Judit/Virag after a day; share of num_faces > 1 attempts.
+
+### 2026-10-17 08:56 UTC — face crop quality: grain read as sharpness (uncommitted, live)
+- Grain-only night crops (ground_floor, barely a face) scored sharpness 1.00 / quality 0.79:
+  Laplacian focus and the Immerkaer "detail" term both measure grain as detail; quality weights
+  sharpness only 15 % (size/det_conf/frontalness/brightness dominate; landmarks on grain still
+  give frontalness 1.0).
+- Change: 4th sharpness term = structure-to-noise ratio at native resolution (flat-region noise
+  sigma vs smoothed face-center std). Grain-only 4.1–4.9, every gallery crop ≥ 10.3 → map 6→0,
+  10→1 (conservative; moderately grainy 12–24 overlaps usable low-contrast gallery faces).
+- Labelled crops kept (gitignored) in tests/test-images/sensitive/face_quality/.
+
+### 2026-10-17 09:25 UTC — log raw ArcFace embedding norm (uncommitted, live)
+- Identity-independent quality proxy, free (read before L2 normalization in the TRT embedder).
+  Logged as `emb_norm` per face attempt and `embedding_norm` (+ `sharpness`) in
+  unidentified_face_saved events. No gating yet.
+- Offline hint (InsightFace re-detection on saved crops): grain-only crops often not re-detected,
+  others ~15–19; usable 18.6–27 — overlaps, so validate on live data first.
+- Next: after a few days compare emb_norm of accepted vs rejected attempts and of crops the user
+  assigns vs dismisses; gate only if it separates cleanly.
+
+### 2026-10-17 10:15 UTC — new-track Re-ID gallery match ignored persons-in-frame (uncommitted, live)
+- ground_floor: Virag's new box half-covered Ati (IoU 0.30) and was labelled "Ati" via
+  reid_gallery (sim 0.78) at creation. GlobalTrackManager._try_gallery_match passed a hard-coded
+  num_persons_in_frame=1; all other Re-ID paths pass the real count (gallery refuses > 1).
+- Fix: pass len(local_tracks). Gallery recheck retries once the person is alone on the camera.
+- Side note: this path logs no reid_match event, so tuning_kpis reid_matches undercounts.
+- living_room same moment: Virag face 0.46–0.58 for ~30 s (side view, ~108 px), accepted at 0.61.
+
+### 2026-10-17 10:43 UTC — identity review loop + unified evidence attribution (uncommitted, live)
+- New: identity audit samples (metrics.audit_*: annotated frame + full-res crops, every 60 s per
+  camera and on label change; 0.04 ms main-thread cost), tools/find_contradictions.py
+  (outcome-based: duplicate_person, teleport, label_flip, face_disagrees, absent_person),
+  tools/audit_sheet.py, skill review-identities.
+- First reviews found: (1) after restart Ati stayed unnamed 90 s — Virag's face at the edge of
+  his box made the morning's multi-face skip block him; (2) zone handover put "Ati" on Virag's
+  ground_floor box (Ati's track briefly lost there, Virag's feet outside the living_room zone).
+- Root cause shared with the earlier gallery and multi-face bugs: seven ad-hoc "is this evidence
+  his" checks with three rules. Replaced by src/tracking/attribution.py: face → owner_face;
+  appearance → isolated_track_ids (overlap over the smaller box ≤ reid.skip_overlapping_iou),
+  passed down as `isolated`; location → exactly one person per camera incl. tracks lost < 5 s.
+  num_persons_in_frame removed everywhere.
+- After deploy: living_room Ati + Virag both face-named within seconds; ground_floor (two people,
+  merged side-view boxes) stays unnamed instead of wrong. 0 contradictions in the first samples.
+- Re-ID gallery: in-memory only, rebuilt from scratch at restart (DB reid_embeddings is a log,
+  never read for matching) — no cleanup needed after this change.

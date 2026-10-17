@@ -103,6 +103,8 @@ def load_attempts(path: Path, since: Optional[str] = None) -> list[Attempt]:
                 continue  # partially written last line
             if r.get("top1_person_id") is None:
                 continue
+            if r.get("ambiguous", r.get("num_faces", 1) > 1):
+                continue  # the scored face may belong to another person
             attempts.append(Attempt(
                 ts=r["ts"], track_id=r["track_id"], camera_id=r.get("camera_id"),
                 top1_person_id=int(r["top1_person_id"]), top1=r["top1"], top2=r["top2"],

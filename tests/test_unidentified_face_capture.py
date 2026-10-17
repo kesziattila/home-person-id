@@ -99,7 +99,7 @@ class TestUnidentifiedFaceCapture:
             track_id="test_track",
             person_crop=person_crop,
             local_track_id=1,
-            num_persons=1,
+            isolated=True,
             camera_id="test_camera",
         )
 
@@ -140,7 +140,7 @@ class TestUnidentifiedFaceCapture:
             track_id="test_track",
             person_crop=person_crop,
             local_track_id=1,
-            num_persons=1,
+            isolated=True,
             camera_id="test_camera",
         )
 
@@ -172,7 +172,7 @@ class TestUnidentifiedFaceCapture:
             track_id="test_track",
             person_crop=person_crop,
             local_track_id=1,
-            num_persons=1,
+            isolated=True,
             camera_id=None,  # No camera_id
         )
 
@@ -207,7 +207,7 @@ class TestUnidentifiedFaceCapture:
             track_id="test_track",
             person_crop=person_crop,
             local_track_id=1,
-            num_persons=1,
+            isolated=True,
             camera_id="test_camera",
         )
 
@@ -428,20 +428,16 @@ class TestBlurDetection:
         from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
         from src.config import UnidentifiedFacesConfig
 
-        # Create a sharp image with natural-looking noise and edges
-        # Random texture with varying intensities (like a natural image)
-        np.random.seed(42)
-        img = np.random.randint(50, 200, (200, 200), dtype=np.uint8)
-
-        # Add some sharp edges
-        img[50:150, 90:110] = 30  # Dark vertical stripe
-        img[80:120, 40:160] = 220  # Bright horizontal stripe
-
-        # Add fine detail/texture (high frequency)
-        for i in range(0, 200, 4):
-            for j in range(0, 200, 4):
-                if (i + j) % 8 == 0:
-                    img[i:i+2, j:j+2] = np.clip(img[i:i+2, j:j+2] + 50, 0, 255)
+        # Create a sharp image: smooth shading (like skin/lighting), crisp features
+        # at all orientations and mild noise. (Pure per-pixel random noise is
+        # grain, not detail — rejected since 2026-10-17.)
+        rng = np.random.default_rng(42)
+        img = cv2.resize(rng.uniform(50, 200, (6, 6)), (200, 200), interpolation=cv2.INTER_CUBIC)
+        for _ in range(40):
+            center = tuple(int(v) for v in rng.integers(0, 200, 2))
+            axes = tuple(int(v) for v in rng.integers(6, 25, 2))
+            cv2.ellipse(img, center, axes, float(rng.uniform(0, 180)), 0, 360, float(rng.uniform(10, 245)), -1)
+        img = np.clip(img + rng.normal(0, 3.0, img.shape), 0, 255).astype(np.uint8)
 
         config = UnidentifiedFacesConfig(enabled=True)
         mock_repo = MagicMock()

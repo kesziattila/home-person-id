@@ -320,7 +320,6 @@ class ReIDGalleryManager:
         track_id: int,
         crop: np.ndarray,
         person_name: Optional[str] = None,
-        num_persons_in_frame: int = 1,
         embedding: Optional[np.ndarray] = None,
         quality: Optional[float] = None,
         now: Optional[float] = None,
@@ -332,20 +331,16 @@ class ReIDGalleryManager:
         At most one update per `update_interval_sec` per track: the multi-face check
         runs a face detector (~15ms on Jetson), too expensive for every frame.
         Pass `embedding`/`quality` when the caller already extracted them.
+        Call only for isolated tracks (src/tracking/attribution.py).
 
         Args:
             track_id: Track ID
             crop: Person crop image
             person_name: Person name if identified
-            num_persons_in_frame: Number of persons detected in the frame
 
         Returns:
             True if embedding was updated
         """
-        # Skip when multiple persons in frame to avoid confusion
-        if num_persons_in_frame > 1:
-            return False
-
         now = time.time() if now is None else now
         last = self._last_update.get(track_id)
         if last is not None and now - last < self.update_interval_sec:
@@ -486,25 +481,16 @@ class ReIDGalleryManager:
         if data:
             data.cleanup()
 
-    def match_new_track(
-        self,
-        crop: np.ndarray,
-        num_persons_in_frame: int = 1,
-    ) -> MatchResult:
-        """Try to match a new track against the gallery.
+    def match_new_track(self, crop: np.ndarray) -> MatchResult:
+        """Try to match a crop against the gallery (only for isolated tracks, see attribution.py).
 
         Args:
             crop: Person crop image
-            num_persons_in_frame: Number of persons in the frame
 
         Returns:
             MatchResult with match information
         """
         result = MatchResult()
-
-        # Skip when multiple persons to avoid confusion
-        if num_persons_in_frame > 1:
-            return result
 
         # Skip if gallery is empty
         if not self._gallery:
@@ -557,25 +543,17 @@ class ReIDGalleryManager:
 
         return result
 
-    def get_reid_score(
-        self,
-        crop: np.ndarray,
-        num_persons_in_frame: int = 1,
-    ) -> float:
+    def get_reid_score(self, crop: np.ndarray) -> float:
         """Get best Re-ID score for a crop without committing to a match.
 
         Used for display purposes to show current Re-ID confidence.
 
         Args:
             crop: Person crop image
-            num_persons_in_frame: Number of persons in frame
 
         Returns:
-            Best similarity score, or -1 if no gallery or multiple persons
+            Best similarity score, or -1 if no gallery
         """
-        if num_persons_in_frame > 1:
-            return -1.0
-
         if not self._gallery:
             return -1.0
 
