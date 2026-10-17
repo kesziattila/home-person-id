@@ -204,3 +204,15 @@ identity and "last known room" — not continuous identity of every person at ev
   GlobalTrackManager._tracks_on_camera — location evidence counts briefly lost tracks, identity
   exclusivity counts only LIVE tracks (persons_tracked_on_camera → `persons_present`). The
   linker's own camera/time bookkeeping and SAME_CAMERA_ACTIVE_WINDOW_SEC are gone.
+
+### 2026-10-17 11:33 UTC — detection log for offline ByteTrack replay (uncommitted, live)
+- Fragmentation today (track_events): living_room 639 births (277 new / 242 assoc_fail / 120
+  duplicate), ground_floor 477 (213 / 152 / 112). Walking: new track next to a track lost 4-6
+  frames earlier, IoU ~0, 0.7-1.5 box diagonals away. Detector ~16 fps total (~5 fps per moving
+  camera), not the bottleneck.
+- No ground truth to tune against, so: metrics.detection_log_* writes every tracker input
+  (boxes, confidences, frame shape, float16 Re-ID; empty frames too) to <metrics>/detections/;
+  tools/replay_tracking.py re-runs the real ByteTracker on it with config sweeps and compares
+  with the live track_events (fidelity check). Next: record a walking session, check fidelity,
+  sweep match_thresh / track_buffer / duplicate handling; frame capture sessions (stage 2) for
+  visual ground truth.

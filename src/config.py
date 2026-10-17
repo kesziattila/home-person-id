@@ -360,6 +360,13 @@ class MetricsConfig:
     # Log ByteTrack births / revivals / suppressed duplicates with nearest tracks
     # (explains track fragmentation; tools/analyze_track_events.py)
     track_events_enabled: bool = True
+    # Log every tracker input (detections per processed frame) to <path>/detections/
+    # so tools/replay_tracking.py can re-run ByteTrack offline with other settings
+    detection_log_enabled: bool = True
+    # Include Re-ID embeddings (float16) for appearance-association experiments
+    detection_log_reid: bool = True
+    # ~100-300 MB per active day with Re-ID: shorter than other metrics
+    detection_log_retention_days: int = 7
     # Delete daily metric files older than this
     retention_days: int = 30
     # Identity audit samples (annotated frame + full-res track crops) for offline

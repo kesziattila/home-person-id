@@ -23,6 +23,7 @@ from src.recognition.identity_linker import IdentityLinker
 from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 from src.stream.manager import StreamManager
 from src.tracking.byte_tracker import ByteTrackerManager
+from src.tracking.detection_log import DetectionLog
 from src.tracking.global_tracker import GlobalTrackManager, GlobalTrackingResult
 from src.tracking.stationary_tracker import StationaryTracker
 from src.tracking.zone_manager import ZoneManager
@@ -123,6 +124,12 @@ class PersonIDSystem:
         self._track_event_writer = (
             DailyJsonlWriter(Path(self.config.metrics.path) / "track_events", self.config.metrics.retention_days)
             if self.config.metrics.track_events_enabled else None
+        )
+        self._detection_log = (
+            DetectionLog(Path(self.config.metrics.path) / "detections",
+                         self.config.metrics.detection_log_retention_days,
+                         with_reid=self.config.metrics.detection_log_reid)
+            if self.config.metrics.detection_log_enabled else None
         )
         self.stationary_tracker = StationaryTracker(self.config.tracking.stationary_timeout)
         self.zone_manager = ZoneManager(self.config.zones)
@@ -555,7 +562,10 @@ class PersonIDSystem:
         motion_result = result.motion_result
         detections = result.detections
 
-        # 1. Update tracking
+        # 1. Update tracking (its exact input is logged for offline replay)
+        if self._detection_log:
+            with profiler.measure("DetectionLog.write"):
+                self._detection_log.write(camera_id, result.timestamp, detections, result.reid_embeddings)
         with profiler.measure("ByteTracker.update"):
             track_result = self.tracker_manager.update(
                 camera_id, detections, frame_image, result.reid_embeddings

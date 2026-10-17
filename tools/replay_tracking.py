@@ -1,0 +1,162 @@
+"""Re-run ByteTrack offline on the logged tracker inputs and compare settings.
+
+Input: `<metrics>/detections/` (src/tracking/detection_log.py, pulled with
+scripts/remote/fetch_metrics.sh). Every logged frame is fed, in order, into the
+real `ByteTracker` with the live tracking config (--config) plus overrides, so
+a variant's outcome is exactly what the live system would have produced on
+those frames. Trackers are reset at session (process restart) boundaries.
+
+Per camera and variant it reports:
+- births / their class (new, assoc_fail, duplicate — tools/analyze_track_events.py)
+- confirmed tracks (fewer for the same people = less fragmentation)
+- tracked_dets: confident detections that ended up on a confirmed track
+  (a variant must not "fix" fragmentation by tracking less)
+- appearance_breaks: Re-ID samples on a track that look like someone else
+  (cosine to the track's recent appearance < APPEARANCE_BREAK_SIM) — a proxy for
+  ID switches, which a more lenient association risks. Compare against the
+  base variant's level (pose changes also cause some).
+
+--track-events compares the base variant with what the live tracker logged in
+the same window (fidelity check: should match closely).
+
+Usage:
+    PYTHONPATH=. python tools/replay_tracking.py local/remote/metrics \\
+        --config local/remote/config.jetson-live.yaml --since 2026-10-17T11:30 \\
+        --sweep match_thresh=0.3,0.25,0.2 [--set track_buffer=90] [--camera living_room]
+"""
+
+import argparse
+import dataclasses
+import itertools
+from collections import defaultdict
+from pathlib import Path
+from typing import Optional
+
+import numpy as np
+
+from src.config import TrackingConfig
+from src.tracking import detection_log
+from src.tracking.byte_tracker import ByteTracker
+from tools.analyze_track_events import load_events, summarize
+
+APPEARANCE_BREAK_SIM = 0.45
+APPEARANCE_WINDOW = 10
+
+
+def _parse_value(text: str):
+    for cast in (int, float):
+        try:
+            return cast(text)
+        except ValueError:
+            pass
+    return text
+
+
+def variants(sets: list[str], sweeps: list[str]) -> list[dict]:
+    """Cartesian product of --sweep values on top of --set overrides."""
+    base = {k: _parse_value(v) for k, v in (s.split("=", 1) for s in sets)}
+    axes = [(k, [_parse_value(x) for x in v.split(",")]) for k, v in (s.split("=", 1) for s in sweeps)]
+    if not axes:
+        return [base]
+    return [{**base, **dict(zip([k for k, _ in axes], combo))}
+            for combo in itertools.product(*[vals for _, vals in axes])]
+
+
+def replay(records: list[dict], config: TrackingConfig, breaks: Optional[list] = None) -> dict[str, dict]:
+    """Run ByteTrack per (session, camera) over the records; per-camera outcome."""
+    trackers: dict[tuple[str, str], ByteTracker] = {}
+    events: list[dict] = []
+    stats: dict[str, dict] = defaultdict(lambda: {
+        "frames": 0, "confirmed_tracks": 0, "tracked_dets": 0, "appearance_samples": 0, "appearance_breaks": 0})
+    seen_emb: dict[tuple, int] = {}                 # (session, camera, track) -> id() of last sample
+    recent: dict[tuple, list[np.ndarray]] = defaultdict(list)
+    for record in records:
+        key = (record.get("session", ""), record["camera_id"])
+        tracker = trackers.get(key)
+        if tracker is None:
+            tracker = trackers[key] = ByteTracker(record["camera_id"], config)
+        result = tracker.update(detection_log.to_detection_result(record), None,
+                                detection_log.reid_embeddings(record))
+        cam = stats[record["camera_id"]]
+        cam["frames"] += 1
+        cam["confirmed_tracks"] += len(result.new_track_ids)
+        for t in result.tracks:
+            if t.time_since_update != 0:
+                continue
+            cam["tracked_dets"] += 1
+            emb, tkey = t.last_reid_embedding, (*key, t.track_id)
+            if emb is None or seen_emb.get(tkey) == id(emb):
+                continue  # no new Re-ID sample for this track in this frame
+            seen_emb[tkey] = id(emb)
+            history = recent[tkey]
+            if history:
+                ref = np.mean(history, axis=0)
+                cam["appearance_samples"] += 1
+                sim = float(emb @ ref) / (np.linalg.norm(emb) * np.linalg.norm(ref) + 1e-9)
+                if sim < APPEARANCE_BREAK_SIM:
+                    cam["appearance_breaks"] += 1
+                    if breaks is not None:
+                        breaks.append((record["ts"], record["camera_id"], t.track_id, round(sim, 2), len(history)))
+            history.append(emb)
+            del history[:-APPEARANCE_WINDOW]
+        events.extend(dataclasses.asdict(e) for e in result.association_events)
+    summary = summarize(events)
+    return {camera: {**s, **summary.get(camera, {})} for camera, s in stats.items()}
+
+
+def _row(label: str, r: dict) -> str:
+    births = r.get("births", {})
+    return (f"  {label:<34} births={r.get('births_total', 0):>4} "
+            f"new={births.get('new', 0):>4} assoc_fail={births.get('assoc_fail', 0):>4} "
+            f"dup={births.get('duplicate', 0):>4}  confirmed={r.get('confirmed_tracks', '-'):>4} "
+            f"tracked_dets={r.get('tracked_dets', '-'):>5}  "
+            f"appearance_breaks={r.get('appearance_breaks', '-')}/{r.get('appearance_samples', '-')}")
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("metrics", type=Path, help="local metrics dir (contains detections/)")
+    p.add_argument("--config", type=Path, help="live config: base tracking settings")
+    p.add_argument("--since")
+    p.add_argument("--until")
+    p.add_argument("--camera")
+    p.add_argument("--set", action="append", default=[], help="tracking override key=value")
+    p.add_argument("--sweep", action="append", default=[], help="key=v1,v2,... (cartesian product)")
+    p.add_argument("--track-events", action="store_true", help="compare with the live track_events log")
+    p.add_argument("--show-breaks", action="store_true", help="list appearance breaks (likely ID switches)")
+    args = p.parse_args()
+
+    base = TrackingConfig()
+    if args.config:
+        from src.config import load_config
+        base = load_config(str(args.config)).tracking
+    records = list(detection_log.load(args.metrics / "detections", args.since, args.until, args.camera))
+    if not records:
+        raise SystemExit("no detection log records in the window")
+    print(f"{len(records)} frames {records[0]['ts']} .. {records[-1]['ts']}  base: {dataclasses.asdict(base)}")
+
+    live: Optional[dict] = None
+    if args.track_events:
+        live_events = [e for e in load_events(args.metrics / "track_events", None, args.camera)
+                       if records[0]["ts"] <= e["ts"] <= records[-1]["ts"]]
+        live = summarize(live_events)
+
+    results = {}
+    for overrides in variants(args.set, args.sweep):
+        label = ",".join(f"{k}={v}" for k, v in overrides.items()) or "base"
+        breaks: list = []
+        results[label] = replay(records, dataclasses.replace(base, **overrides), breaks)
+        if args.show_breaks:
+            for ts, camera, track_id, sim, n in breaks:
+                print(f"  break [{label}] {ts} {camera} local track {track_id}: sim {sim} to its last {n} samples")
+
+    for camera in sorted({c for r in results.values() for c in r}):
+        print(f"{camera}:")
+        if live is not None:
+            print(_row("live (track_events)", live.get(camera, {})))
+        for label, r in results.items():
+            print(_row(label, r.get(camera, {})))
+
+
+if __name__ == "__main__":
+    main()

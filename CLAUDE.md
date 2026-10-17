@@ -81,7 +81,7 @@ System runs live on a Jetson; all remote interaction goes through `scripts/remot
 - `sync_db.sh` — consistent DB copy → `local/remote/database.db`
 - `fetch_snapshots.sh --event|--query|--path` → `local/remote/snapshots/`
 - `fetch_config.sh` → `local/remote/config.jetson-live.yaml`; `push_config.sh [file|--rollback]` — the only way to change the live config (validates, backs up to remote `data/config-backups/`)
-- `fetch_metrics.sh` → `local/remote/metrics/` (face scores → `tools/analyze_face_scores.py`; ByteTrack births/revivals/duplicates → `tools/analyze_track_events.py`)
+- `fetch_metrics.sh` → `local/remote/metrics/` (face scores → `tools/analyze_face_scores.py`; ByteTrack births/revivals/duplicates → `tools/analyze_track_events.py`; every tracker input → `detections/` → `tools/replay_tracking.py` re-runs the real ByteTrack offline with config sweeps — tune tracking there, not live)
 - `grab_frames.sh [cam…]` → latest frames with zones drawn (`/api/v1/frame/{cam}`) for zone review
 - Self-tuning: `tune-live` skill, journal in `docs/TUNING_LOG.md`, KPIs `queries/tuning_kpis.sql`
 - Identity spot-check: `review-identities` skill — `fetch_audit.sh` (audit samples: annotated frame + track crops, `metrics.audit_*`), `tools/find_contradictions.py` (outcome-based, no per-bug logging), `tools/audit_sheet.py` (contact sheets)

@@ -473,6 +473,13 @@ metrics:
   # tracks to <path>/track_events/ (explains track fragmentation;
   # tools/analyze_track_events.py)
   track_events_enabled: true
+  # Log every tracker input (detections per processed frame, empty ones too) to
+  # <path>/detections/ for offline ByteTrack replay/tuning (tools/replay_tracking.py)
+  detection_log_enabled: true
+  # Include Re-ID embeddings (float16, ~1.4 KB per confident detection)
+  detection_log_reid: true
+  # ~100-300 MB per active day with Re-ID
+  detection_log_retention_days: 7
   # Delete daily files older than this many days
   retention_days: 30
   # Identity audit samples for offline review (skill review-identities): an annotated
