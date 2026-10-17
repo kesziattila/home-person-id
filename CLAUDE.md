@@ -85,6 +85,7 @@ System runs live on a Jetson; all remote interaction goes through `scripts/remot
 - `fetch_config.sh` → `local/remote/config.jetson-live.yaml`; `push_config.sh [file|--rollback]` — the only way to change the live config (validates, backs up to remote `data/config-backups/`)
 - `fetch_metrics.sh` → `local/remote/metrics/` (face scores → `tools/analyze_face_scores.py`; ByteTrack births/revivals/duplicates → `tools/analyze_track_events.py`; every tracker input → `detections/` → `tools/replay_tracking.py` re-runs the real ByteTrack offline with config sweeps — tune tracking there, not live)
 - `capture_frames.sh start <min>|stop|status|fetch [day]` — time-limited full frames of every logged record (trigger file, no restart; cap `metrics.frame_capture_max_gb`) → `tools/redetect.py` re-runs the detector (`detection.*`/`reid.*` overrides) into a same-format detection log → `replay_tracking.py`; tune the detector there, not live
+- `install_gpu_clock.sh [--status|--uninstall]` — systemd unit keeping the GPU at max clock (the governor left it at 305 MHz; infer 26.5 → 14 ms); check `tegrastats` GR3D_FREQ when timings regress
 - `grab_frames.sh [cam…]` → latest frames with zones drawn (`/api/v1/frame/{cam}`) for zone review
 - Self-tuning: `tune-live` skill, journal in `docs/TUNING_LOG.md`, KPIs `queries/tuning_kpis.sql`
 - Identity spot-check: `review-identities` skill — `fetch_audit.sh` (audit samples: annotated frame + track crops, `metrics.audit_*`), `tools/find_contradictions.py` (outcome-based, no per-bug logging), `tools/audit_sheet.py` (contact sheets)

@@ -1,0 +1,18 @@
+# Keep the Jetson GPU at its maximum clock (installed by scripts/remote/install_gpu_clock.sh).
+#
+# The devfreq governor (nvhost_podgov) left the GPU at its 305 MHz minimum under this app's
+# bursty load (one inference every ~80 ms) even in MAXN_SUPER: PersonDetector.infer 26.5 ms
+# at 305 MHz vs 14.0 ms at 1020 MHz (2026-10-17, docs/TUNING_LOG.md). Raising min_freq to
+# max_freq fixes it without jetson_clocks' CPU/memory clock locking; a reboot alone resets it.
+[Unit]
+Description=Jetson GPU minimum clock = maximum (home-person-id)
+After=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'for d in /sys/class/devfreq/*.gpu; do cat "$d/max_freq" > "$d/min_freq"; done'
+ExecStop=/bin/sh -c 'for d in /sys/class/devfreq/*.gpu; do tr " " "\\n" < "$d/available_frequencies" | grep . | sort -n | head -1 > "$d/min_freq"; done'
+
+[Install]
+WantedBy=multi-user.target

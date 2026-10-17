@@ -412,6 +412,16 @@ detection:
    ```
    *Note: This can significantly improve CPU-bound tasks like motion detection (e.g., from 21ms down to 8ms per frame).*
 
+   **GPU clock (installed on the live Jetson):** even in `MAXN_SUPER` the GPU devfreq governor
+   (`nvhost_podgov`) may keep the GPU at its minimum (305 MHz on Orin Nano) under this app's
+   bursty load — one inference every ~80 ms. Measured 2026-10-17: `PersonDetector.infer`
+   26.5 ms at 305 MHz vs 14.0 ms at 1020 MHz, face detection 34.0 → 18.9 ms, Re-ID batch
+   45.0 → 27.2 ms, ~9-10 W, ~59 °C. Check with `tegrastats` (`GR3D_FREQ x%@[MHz]`).
+   `scripts/remote/install_gpu_clock.sh` installs `scripts/jetson/gpu-min-freq.service`, which
+   sets the GPU `min_freq` to `max_freq` at boot (only the GPU, unlike `jetson_clocks`);
+   `--status` shows the clocks, `--uninstall` removes it. Sharing one CUDA context between the
+   TensorRT engines was tried and gave no gain.
+
 2. **Use TensorRT** - 2-3x faster inference
 3. **Enable motion detection** - Skip frames without motion
 4. **Reduce FPS** - 5 FPS is usually sufficient
@@ -438,6 +448,7 @@ Jetson has unified memory - GPU and CPU share RAM. Solutions:
 
 - Convert models to TensorRT (recommended for all components)
 - Check GPU is being used: `tegrastats` should show GPU activity
+- Check the GPU clock: `GR3D_FREQ x%@[305]` while busy means the governor left it at minimum — see "GPU clock" above
 - If using InsightFace legacy mode (not native TensorRT), ensure `onnxruntime-gpu` is installed
 
 ### Model download fails

@@ -297,3 +297,13 @@ identity and "last known room" — not continuous identity of every person at ev
   copies ~2, execute 10.0, total 18.4 ms; yolo26m execute 17.9, total 26.5 ms; pinned host buffers
   save ~1-2 ms. Live PersonDetector.infer is ~25 ms vs ~12 ms standalone → ~13 ms in-process
   contention (4 separate CUDA contexts and/or GIL) — next: py-spy on the live process.
+
+## 2026-10-17 ~17:30 UTC — GPU clock, not CUDA contexts
+- Jetson in MAXN_SUPER, but the GPU devfreq governor (nvhost_podgov) kept the GPU at its minimum
+  305 MHz (max 1020) under the bursty live load (one inference every ~80 ms, 45-90% busy).
+- Shared primary CUDA context for all engines (experiment, reverted): infer 25.7 → 26.4 ms, no gain.
+- GPU min_freq raised to max (sysfs, until reboot; original saved in ~/yolo26m-bench/gpu_min_freq.orig):
+  infer 26.5 → 14.0 ms, detect 36.9 → 25.2, face detect 34.0 → 18.9, Re-ID batch 45.0 → 27.2,
+  MainLoop 76.6 → 67.4 (original per-engine contexts). tj ~59 °C, VDD_IN ~9-10 W.
+- Identity review 17:26–17:46 UTC (per-person anchor deployed): Ati 12 labels, Judit 6, all correct;
+  0 contradictions; children never named; one merged Judit+child box stayed unnamed.
