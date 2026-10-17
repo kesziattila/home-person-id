@@ -6,7 +6,9 @@
 # Usage: scripts/remote/capture_frames.sh start <minutes>   capture every logged frame for N minutes
 #        scripts/remote/capture_frames.sh stop
 #        scripts/remote/capture_frames.sh status            trigger, frames per day, disk use
-#        scripts/remote/capture_frames.sh fetch [YYYY-MM-DD] frames + detection log of a UTC day
+#        scripts/remote/capture_frames.sh fetch [YYYY-MM-DD] [HHMM-HHMM]
+#                                       frames (+ detection log) of a UTC day, optionally only a
+#                                       UTC time window — frames are ~0.7 MB each, mind local disk
 #   then: PYTHONPATH=. python tools/redetect.py local/remote/metrics --config ... --out ...
 source "$(dirname "${BASH_SOURCE[0]}")/_lib.sh"
 
@@ -39,10 +41,30 @@ REMOTE
         ;;
     fetch)
         DAY="${2:-$(date -u +%F)}"
+        WINDOW="${3:-}"
         DEST="$PROJECT_ROOT/$LOCAL_PULL_DIR/metrics/detections"
         mkdir -p "$DEST/frames/$DAY"
+        filter=()
+        if [[ -n "$WINDOW" ]]; then
+            [[ "$WINDOW" =~ ^([0-9]{4})-([0-9]{4})$ ]] || { echo "window must be HHMM-HHMM (UTC)" >&2; exit 2; }
+            list=$(ssh_jetson "cd '$DET/frames/$DAY' && find . -name '*.jpg'" \
+                | awk -v a="${BASH_REMATCH[1]}" -v b="${BASH_REMATCH[2]}" -F/ \
+                    '{ t = substr($NF, 1, 4) } t >= a && t < b { print substr($0, 3) }')
+            [[ -n "$list" ]] || { echo "no frames in $WINDOW UTC"; exit 0; }
+            printf '%s\n' "$list" > "$DEST/.fetch_list"
+            filter=(--files-from="$DEST/.fetch_list")
+        fi
+        if [[ -n "$WINDOW" ]]; then
+            need_kb=$(ssh_jetson "cd '$DET/frames/$DAY' && xargs -d '\\n' du -ck | tail -1 | cut -f1" < "$DEST/.fetch_list")
+        else
+            need_kb=$(ssh_jetson "du -sk '$DET/frames/$DAY' | cut -f1")
+        fi
+        free_kb=$(df -Pk "$DEST" | awk 'NR == 2 { print $4 }')
+        if (( need_kb + 1048576 > free_kb )); then
+            echo "Not enough local disk: need ~$((need_kb / 1024)) MB + 1 GB headroom, $((free_kb / 1024)) MB free" >&2; exit 1
+        fi
         rsync -az -e "ssh ${SSH_OPTS[*]}" "$JETSON_HOST:$DET/$DAY.jsonl" "$DEST/"
-        rsync -az -e "ssh ${SSH_OPTS[*]}" "$JETSON_HOST:$DET/frames/$DAY/" "$DEST/frames/$DAY/"
+        rsync -az -e "ssh ${SSH_OPTS[*]}" "${filter[@]}" "$JETSON_HOST:$DET/frames/$DAY/" "$DEST/frames/$DAY/"
         echo "Pulled frames $DAY -> $DEST/frames/$DAY ($(find "$DEST/frames/$DAY" -name '*.jpg' | wc -l) frames)"
         ;;
     *)

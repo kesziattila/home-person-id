@@ -255,3 +255,23 @@ identity and "last known room" — not continuous identity of every person at ev
   detection.*/reid.* overrides into a same-format log → replay_tracking.py.
 - Smoke test: 1 min capture, 48 frames, no dropped camera frames; nobody in view, so live
   TensorRT vs local PyTorch yolo26s agreed trivially (0 persons). Next: capture with 2-3 people.
+
+## Identity review 2026-10-17 13:19–15:19 UTC (last 2 h, skill review-identities)
+- Samples: 51 audit samples (59 index rows), 0 automatic contradictions (find_contradictions).
+- Labelled tracks: 5, all "Judit" (4 reid_gallery, 1 face). Visually: 2 likely correct (glasses
+  visible), 3 unsure (red top, no face visible; same red top as an unknown track at 14:51:48).
+- Unnamed: 49 samples. No wrong name seen. Missed: a single adult in a black hoodie 15:01–15:13 UTC
+  (~6 samples, ground_floor/living_room/entrance); face scores 0.21–0.50 against threshold 0.60,
+  so no name. Also brief face scores 0.19–0.46 on other unnamed tracks.
+- Cause (missed): frontal, low-res faces (65×40 px) and back views; a detector/face gap, not a wrong name.
+
+## 2026-10-17 16:07–16:19 UTC — detector variants on captured family frames
+- Capture: 7447 frames; ground_floor 1737 frames with 2 people, living_room 410 with 2 and 20 with 3.
+- 254 sampled multi-person frames, PyTorch on CPU vs live TensorRT log (460 confident persons):
+  yolo26s@640 464 (+20/-16 frames, = backend noise), yolo26s@1280 447 (+28/-37, worse),
+  yolo26m@640 493 (+37/-11; extra boxes mostly real: children next to/behind an adult, adult+child
+  at the door split; 1-2 possible duplicates). CPU time s640 0.08 s, m640 0.19 s per frame.
+- Live yolo26s TRT detect ~34 ms; capture ran ~12 detector frames/s → yolo26m (est. 2–2.5×) would sit
+  at the throughput limit. Decision (user): not pursuing a bigger detector for now.
+- Identity review of the same window: 7 Ati labels, all correct (6 face 0.60–0.66 after 6 natural
+  walk-through refs were added, 1 handover); children and Judit unnamed (faces down / away); 0 findings.
