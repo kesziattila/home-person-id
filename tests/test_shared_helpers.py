@@ -76,7 +76,7 @@ def test_create_person_detector_picks_backend_from_config():
         create_person_detector(DetectionConfig(
             model="m.engine", use_tensorrt_native=True, confidence_threshold=0.15,
         ))
-        trt.assert_called_once_with(model_path="m.engine", confidence_threshold=0.15)
+        trt.assert_called_once_with(model_path="m.engine", confidence_threshold=0.15, nms_iou_threshold=0.4)
         pt.assert_not_called()
 
         create_person_detector(DetectionConfig(

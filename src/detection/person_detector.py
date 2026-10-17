@@ -289,6 +289,22 @@ class PersonDetector:
         logger.info(f"Person detector warmed up with shape {frame_shape}")
 
 
+def suppress_overlapping(detections: list[Detection], iou_threshold: float) -> list[Detection]:
+    """Class-agnostic NMS: keep the higher-confidence box of any pair with IoU > threshold.
+
+    YOLO engines exported with baked-in/end-to-end NMS still emit near-identical
+    person boxes (live 2026-10-16: second boxes with IoU 0.7-0.93 against a tracked
+    person created new tracks). Containment is deliberately NOT suppressed: a child
+    sitting in front of an adult has a box inside the adult's box.
+    """
+    if len(detections) < 2 or iou_threshold <= 0:
+        return detections
+    boxes = [[d.bbox[0], d.bbox[1], d.bbox[2] - d.bbox[0], d.bbox[3] - d.bbox[1]] for d in detections]
+    keep = cv2.dnn.NMSBoxes(boxes, [d.confidence for d in detections], 0.0, iou_threshold)
+    keep = sorted(int(np.asarray(i).ravel()[0]) for i in keep)
+    return [detections[i] for i in keep]
+
+
 class TensorRTDetector:
     """Person detector using TensorRT directly (no PyTorch dependency).
 
@@ -306,6 +322,7 @@ class TensorRTDetector:
         model_path: str,
         confidence_threshold: float = 0.5,
         input_size: int = 640,
+        nms_iou_threshold: float = 0.4,
     ):
         """Initialize TensorRT detector.
 
@@ -313,6 +330,7 @@ class TensorRTDetector:
             model_path: Path to TensorRT engine file (.engine or .trt)
             confidence_threshold: Minimum confidence for detections
             input_size: Model input size (assumes square input)
+            nms_iou_threshold: Class-agnostic NMS applied on top of the engine's output
         """
         from src.inference.tensorrt_base import TensorRTDetectorBase
 
@@ -321,6 +339,7 @@ class TensorRTDetector:
             model_path=model_path,
             confidence_threshold=confidence_threshold,
             input_size=input_size,
+            nms_iou_threshold=nms_iou_threshold,
         )
         self.confidence_threshold = confidence_threshold
 
@@ -360,12 +379,14 @@ class _TensorRTPersonDetectorImpl:
         model_path: str,
         confidence_threshold: float = 0.5,
         input_size: int = 640,
+        nms_iou_threshold: float = 0.4,
     ):
         from src.inference.tensorrt_base import TensorRTDetectorBase
 
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
         self.input_size = input_size
+        self.nms_iou_threshold = nms_iou_threshold
 
         # Lazy initialization
         self._base: Optional[TensorRTDetectorBase] = None
@@ -408,7 +429,7 @@ class _TensorRTPersonDetectorImpl:
         self._base = YOLODetector(
             self.model_path,
             self.confidence_threshold,
-            0.4,  # nms_threshold not used for YOLO with baked NMS
+            self.nms_iou_threshold,
             self.input_size,
         )
         # Eagerly load engine to make buffers available
@@ -475,7 +496,7 @@ class _TensorRTPersonDetectorImpl:
                 )
             )
 
-        return detections
+        return suppress_overlapping(detections, self.nms_iou_threshold)
 
     def warmup(self, frame_shape: tuple[int, int, int] = (1080, 1920, 3)) -> None:
         """Warm up the engine."""
@@ -509,6 +530,7 @@ def create_person_detector(config: DetectionConfig):
         return TensorRTDetector(
             model_path=model_path,
             confidence_threshold=config.confidence_threshold,
+            nms_iou_threshold=config.nms_iou_threshold,
         )
 
     return PersonDetector(
