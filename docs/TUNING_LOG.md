@@ -195,3 +195,12 @@ identity and "last known room" — not continuous identity of every person at ev
 - Config: reid.skip_overlapping_iou renamed to reid.max_overlap (live config pushed, backup
   config.yaml.20261017T110126Z).
 - Watch: id_upgraded events (face corrections of Re-ID labels) and label_flip findings.
+
+### 2026-10-17 11:25 UTC — duplicate-person guard blocked a person's own return (uncommitted, live)
+- 11:14 living_room: ByteTrack dropped Ati's face-named track; 0.9 s later his new track
+  matched the gallery as Ati (0.80) and was rejected — the guard counted any track processed in
+  the last 5 s (IdentityLinker.last_camera_id/last_seen_time) as present, the lost one included.
+- Fix (one rule, not a patch): both "who is on this camera" questions now come from
+  GlobalTrackManager._tracks_on_camera — location evidence counts briefly lost tracks, identity
+  exclusivity counts only LIVE tracks (persons_tracked_on_camera → `persons_present`). The
+  linker's own camera/time bookkeeping and SAME_CAMERA_ACTIVE_WINDOW_SEC are gone.

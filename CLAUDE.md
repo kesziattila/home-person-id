@@ -34,7 +34,7 @@
 - Skip grayscale/IR crops: HSV `mean_saturation < 15.0`
 - Skip multi-person crops: `len(face_result.faces) > 1`, detected with `config.multi_face_min_size` (default 20px, lower than recognition's 80px), passed as a param to `detect_faces()`
 - Skip low visibility (`min_visibility`)
-- Evidence attribution lives ONLY in `src/tracking/attribution.py`: face → `owner_face`; appearance (Re-ID extract/match/gallery update) → isolated tracks (`isolated_track_ids`, overlap over the smaller box ≤ `reid.max_overlap`), passed down as `isolated: bool`; location (zone handover) → each camera sees exactly one person incl. briefly lost tracks. Don't add per-path person-count checks
+- Evidence attribution lives ONLY in `src/tracking/attribution.py`: face → `owner_face`; appearance (Re-ID extract/match/gallery update) → isolated tracks (`isolated_track_ids`, overlap over the smaller box ≤ `reid.max_overlap`), passed down as `isolated: bool`; location (zone handover) → each camera sees exactly one person incl. briefly lost tracks; identity exclusivity (duplicate-person guard) → a person is held by at most one LIVE track per camera (`GlobalTrackManager.persons_tracked_on_camera`, passed down as `persons_present`; lost tracks never block). Don't add per-path person-count checks
 - Gallery: store per-embedding source crops (each embedding may come from a different frame); cap gallery size per person
 - Save match-debug snapshots (current crop, gallery crop, similarity) to `data/snapshots/` with timestamp + person name
 

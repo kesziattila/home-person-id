@@ -2,7 +2,7 @@
 
 Every identity path needs the same answer, so it lives here and nowhere else:
 
-- Face evidence belongs to the face the box owns (`IdentityLinker._owner_face`).
+- Face evidence belongs to the face the box owns (`owner_face`).
 - Appearance evidence (Re-ID extraction, gallery match/recheck, gallery update)
   is attributable only to an ISOLATED track: its box does not overlap another
   box on the camera, so its crop shows one person. Overlap is measured over the
@@ -10,6 +10,10 @@ Every identity path needs the same answer, so it lives here and nowhere else:
 - Location evidence (zone / cross-camera identity propagation) is attributable
   only when each camera sees exactly ONE person, counting briefly lost tracks
   (a person the tracker dropped for a few frames is still there).
+- Identity exclusivity (duplicate-person guard): a person is held by at most one
+  LIVE track per camera; a lost track never blocks, since a new track with its
+  identity on the same camera is almost always the same person coming back.
+  Both camera rules are answered by GlobalTrackManager._tracks_on_camera.
 
 History: before 2026-10-17 this was spread over seven checks with three rules
 (`num_persons_in_frame > 1` in the gallery, a fake "2 if overlapping else 1",

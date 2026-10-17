@@ -52,12 +52,6 @@ class IdentificationResult:
     stationary_time: Optional[int] = None
 
 
-# A track counts as "currently active on a camera" for the duplicate-person guard
-# if it was processed within this window. Tracks are processed several times per
-# second, so 5s comfortably covers active tracks while excluding GRACE/LOST ones.
-SAME_CAMERA_ACTIVE_WINDOW_SEC = 5.0
-
-
 @dataclass
 class TrackIdentityState:
     """Identity state for a global track.
@@ -84,8 +78,7 @@ class TrackIdentityState:
     last_gallery_check: float = 0.0
     identified_at: Optional[float] = None
 
-    # Where the track was last processed (for the same-camera duplicate-person guard)
-    last_camera_id: Optional[str] = None
+    # Last processing time (idle-based eviction in cleanup_old_tracks)
     last_seen_time: float = field(default_factory=time.time)
 
     @property
@@ -295,6 +288,7 @@ class IdentityLinker:
         isolated: bool = True,
         precomputed_reid: Optional[tuple[np.ndarray, float]] = None,
         camera_id: Optional[str] = None,
+        persons_present: frozenset[int] = frozenset(),
     ) -> IdentificationResult:
         """Process a track for identification.
 
@@ -310,6 +304,9 @@ class IdentityLinker:
                 (Re-ID) evidence is only used and stored for isolated tracks
             precomputed_reid: Optional pre-computed Re-ID (embedding, quality)
             camera_id: Camera ID for unidentified face capture
+            persons_present: Persons held by OTHER live tracks on this camera
+                (GlobalTrackManager.persons_tracked_on_camera); a gallery match
+                proposing one of them is rejected (one person, one live track per camera)
 
         Returns:
             IdentificationResult with identification status
@@ -317,9 +314,6 @@ class IdentityLinker:
         state = self.register_track(global_track_id)
         current_time = time.time()
 
-        # Track camera presence for the same-camera duplicate-person guard
-        if camera_id:
-            state.last_camera_id = camera_id
         state.last_seen_time = current_time
 
         # Face until face-confirmed; an appearance-based label is re-checked less
@@ -335,7 +329,7 @@ class IdentityLinker:
         if isolated:
             self._update_reid_gallery(state, person_crop, precomputed_reid)
             if not state.is_identified:
-                self._try_gallery_identification(state, person_crop, camera_id)
+                self._try_gallery_identification(state, person_crop, camera_id, persons_present)
 
         return self.get_identity(global_track_id)
 
@@ -443,49 +437,12 @@ class IdentityLinker:
 
     # ==================== Gallery Recheck ====================
 
-    def is_person_active_on_camera(
-        self,
-        camera_id: str,
-        exclude_track_id: Optional[str] = None,
-        person_id: Optional[int] = None,
-        person_name: Optional[str] = None,
-    ) -> bool:
-        """Check whether a person is already held by another active track on a camera.
-
-        Same-camera duplicate-person guard: two simultaneous tracks on the SAME
-        camera cannot be the same physical person, so gallery matches proposing
-        an already-present person are rejected (observed live: a second person
-        scoring just above the Re-ID threshold was labeled as the person sitting
-        next to them).
-
-        Args:
-            camera_id: Camera to check
-            exclude_track_id: Track asking the question (excluded from the scan)
-            person_id: Person to look for (preferred)
-            person_name: Person name alternative when no id is available
-
-        Returns:
-            True if another recently-processed track on this camera has the person
-        """
-        now = time.time()
-        for track_id, state in self._track_states.items():
-            if track_id == exclude_track_id or not state.is_identified:
-                continue
-            if state.last_camera_id != camera_id:
-                continue
-            if now - state.last_seen_time > SAME_CAMERA_ACTIVE_WINDOW_SEC:
-                continue
-            if person_id is not None and state.person_id == person_id:
-                return True
-            if person_name is not None and self._get_person_name(state.person_id) == person_name:
-                return True
-        return False
-
     def _try_gallery_identification(
         self,
         state: TrackIdentityState,
         person_crop: np.ndarray,
         camera_id: Optional[str] = None,
+        persons_present: frozenset[int] = frozenset(),
     ) -> bool:
         """Try to identify an unidentified (isolated) track via the shared Re-ID gallery.
 
@@ -495,6 +452,7 @@ class IdentityLinker:
             state: Track identity state
             person_crop: Person crop image
             camera_id: Camera ID for event logging
+            persons_present: Persons held by other live tracks on this camera
 
         Returns:
             True if identification succeeded
@@ -522,10 +480,8 @@ class IdentityLinker:
         if not person:
             return False
 
-        # Same-camera duplicate-person guard
-        if camera_id and self.is_person_active_on_camera(
-            camera_id, exclude_track_id=state.global_track_id, person_id=person.id
-        ):
+        # One person, one live track per camera (duplicate-person guard)
+        if person.id in persons_present:
             logger.info(
                 f"Gallery recheck rejected for {state.global_track_id}: "
                 f"{match_result.person_name} (sim={match_result.score:.2f}) is already "

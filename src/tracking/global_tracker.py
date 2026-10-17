@@ -409,11 +409,6 @@ class GlobalTrackManager:
                         state.confirm_identity(
                             person.id, gallery_match.score, IdMethod.REID_GALLERY
                         )
-                        # Make the new identity immediately visible to the
-                        # same-camera duplicate-person guard (process_track
-                        # hasn't stamped the camera yet)
-                        state.last_camera_id = camera_id
-                        state.last_seen_time = time.time()
                         # Update database and in-memory track
                         self.repository.update_track(
                             global_track_id, person_id=person.id
@@ -494,6 +489,7 @@ class GlobalTrackManager:
                         precomputed_reid=(local_track.last_reid_embedding, local_track.last_reid_quality)
                         if local_track.last_reid_embedding is not None else None,
                         camera_id=camera_id,
+                        persons_present=self.persons_tracked_on_camera(camera_id, exclude=global_track_id),
                     )
 
                 # If track just became identified (or was corrected), update person zone
@@ -631,6 +627,7 @@ class GlobalTrackManager:
                 local_track.bbox,
                 isolated=isolated,
                 camera_id=camera_id,
+                persons_present=self.persons_tracked_on_camera(camera_id, exclude=global_track_id),
             )
 
         # Save to database
@@ -795,11 +792,9 @@ class GlobalTrackManager:
         if not match_result.matched:
             return None
 
-        # Same-camera duplicate-person guard: a new track cannot be a person who
-        # is already actively tracked on this same camera.
-        if self.identity_linker.is_person_active_on_camera(
-            camera_id, person_name=match_result.person_name
-        ):
+        # One person, one live track per camera (duplicate-person guard)
+        person = self.repository.get_person_by_name(match_result.person_name)
+        if person and person.id in self.persons_tracked_on_camera(camera_id):
             logger.info(
                 f"Gallery match rejected for new track on {camera_id}: "
                 f"{match_result.person_name} (sim={match_result.score:.2f}) is already "
@@ -1010,19 +1005,36 @@ class GlobalTrackManager:
                         f"{src_track} -> {rcv_track} (person_id={src_state.person_id})"
                     )
 
-    def _persons_on_camera(self, camera_id: str) -> int:
-        """People a camera sees now: active tracks + tracks lost < RECENTLY_LOST_SEC ago."""
+    def _tracks_on_camera(self, camera_id: str, recently_lost: bool) -> list[str]:
+        """Global tracks a camera holds now: live (NEW/TRACKED), plus — if `recently_lost` —
+        tracks lost < RECENTLY_LOST_SEC ago (attribution.py)."""
         now = datetime.now()
-        count = 0
-        for track in self._tracks.values():
+        ids = []
+        for track_id, track in self._tracks.items():
             if track.current_camera_id != camera_id:
                 continue
             if track.state in (TrackState.NEW, TrackState.TRACKED):
-                count += 1
-            elif track.state == TrackState.GRACE and track.last_seen is not None \
+                ids.append(track_id)
+            elif recently_lost and track.state == TrackState.GRACE and track.last_seen is not None \
                     and (now - track.last_seen).total_seconds() < RECENTLY_LOST_SEC:
-                count += 1
-        return count
+                ids.append(track_id)
+        return ids
+
+    def _persons_on_camera(self, camera_id: str) -> int:
+        """Location evidence: people a camera sees, briefly lost tracks included (errs to "more")."""
+        return len(self._tracks_on_camera(camera_id, recently_lost=True))
+
+    def persons_tracked_on_camera(self, camera_id: str, exclude: Optional[str] = None) -> frozenset[int]:
+        """Identity exclusivity: persons held by LIVE tracks on a camera (~0.01ms for 5 tracks).
+
+        A person can be only one live track per camera, so a gallery match proposing
+        one of these is rejected. A lost track never blocks: on the same camera, a new
+        track with the lost track's identity is almost always that person coming back.
+        """
+        return frozenset(
+            pid for tid in self._tracks_on_camera(camera_id, recently_lost=False)
+            if tid != exclude and (pid := self._person_id(tid)) is not None
+        )
 
     def get_global_track(self, global_track_id: str) -> Optional[GlobalTrack]:
         """Get a global track by ID."""

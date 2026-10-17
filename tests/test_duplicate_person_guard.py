@@ -6,19 +6,20 @@ gallery rechecks, producing two simultaneous "Rozika" tracks on one camera.
 
 Fix 1 — same-camera duplicate-person guard: two simultaneous tracks on the
 SAME camera cannot be the same physical person, so gallery matches proposing
-an already-present person are rejected.
+a person held by a LIVE track there are rejected
+(GlobalTrackManager.persons_tracked_on_camera; lost tracks never block).
 
 Fix 2 — reid.min_consecutive_matches is now enforced in the gallery recheck
 (it was parsed but never applied): a single noisy frame cannot flip identity.
 """
 
-import time
 from unittest.mock import MagicMock
 
 import numpy as np
 
 from src.config import FaceRecognitionConfig, ReIDConfig
 from src.recognition.identity_linker import IdentityLinker
+from src.tracking.track import TrackState
 
 
 def _make_linker(min_consecutive_matches: int = 1) -> tuple[IdentityLinker, MagicMock, MagicMock]:
@@ -68,61 +69,55 @@ CROP = np.zeros((100, 50, 3), dtype=np.uint8)
 
 
 class TestSameCameraDuplicatePersonGuard:
-    def test_rejected_when_person_already_active_on_same_camera(self):
+    def test_recheck_rejected_when_person_is_held_on_this_camera(self):
         linker, repo, mock_gallery = _make_linker()
-        # Rozika already actively tracked on cam_a
-        holder = linker.register_track("global_1")
-        holder.person_id = 4
-        holder.last_camera_id = "cam_a"
-        holder.last_seen_time = time.time()
-
         _mock_match(mock_gallery, repo, person_id=4)
-        new_state = linker.register_track("global_2")
-        assert linker._try_gallery_identification(new_state, CROP, "cam_a") is False
-        assert new_state.person_id is None
+        state = linker.register_track("global_2")
+        assert linker._try_gallery_identification(state, CROP, "cam_a", frozenset({4})) is False
+        assert state.person_id is None
 
-    def test_allowed_when_person_is_on_different_camera(self):
+    def test_recheck_allowed_when_person_is_not_held(self):
         linker, repo, mock_gallery = _make_linker()
-        holder = linker.register_track("global_1")
-        holder.person_id = 4
-        holder.last_camera_id = "cam_b"  # overlapping camera views are legitimate
-        holder.last_seen_time = time.time()
-
         _mock_match(mock_gallery, repo, person_id=4)
-        new_state = linker.register_track("global_2")
-        assert linker._try_gallery_identification(new_state, CROP, "cam_a") is True
-        assert new_state.person_id == 4
+        state = linker.register_track("global_2")
+        assert linker._try_gallery_identification(state, CROP, "cam_a", frozenset({1})) is True
+        assert state.person_id == 4
 
-    def test_allowed_when_same_camera_holder_is_stale(self):
-        linker, repo, mock_gallery = _make_linker()
-        holder = linker.register_track("global_1")
-        holder.person_id = 4
-        holder.last_camera_id = "cam_a"
-        holder.last_seen_time = time.time() - 60.0  # lost long ago
 
-        _mock_match(mock_gallery, repo, person_id=4)
-        new_state = linker.register_track("global_2")
-        assert linker._try_gallery_identification(new_state, CROP, "cam_a") is True
+def _gtm_with(*tracks):
+    """GlobalTrackManager with (track_id, camera, state, person_id) tracks."""
+    from datetime import datetime
+    from src.tracking.track import GlobalTrack
+    from tests.test_cross_camera_zone_propagation import _make_global_track_manager
+    manager = _make_global_track_manager()
+    for track_id, camera, state, person_id in tracks:
+        manager._tracks[track_id] = GlobalTrack(track_id=track_id, state=state, current_camera_id=camera,
+                                                last_seen=datetime.now())
+        linker_state = manager.identity_linker.register_track(track_id)
+        linker_state.person_id = person_id
+    return manager
 
-    def test_asking_track_is_excluded_from_scan(self):
-        linker, _, _ = _make_linker()
-        state = linker.register_track("global_1")
-        state.person_id = 4
-        state.last_camera_id = "cam_a"
-        state.last_seen_time = time.time()
-        assert linker.is_person_active_on_camera(
-            "cam_a", exclude_track_id="global_1", person_id=4
-        ) is False
 
-    def test_person_name_lookup_for_new_track_path(self):
-        linker, _, _ = _make_linker()
-        state = linker.register_track("global_1")
-        state.person_id = 4
-        state.last_camera_id = "cam_a"
-        state.last_seen_time = time.time()
-        linker._id_manager.get_person_name = MagicMock(return_value="Rozika")
-        assert linker.is_person_active_on_camera("cam_a", person_name="Rozika") is True
-        assert linker.is_person_active_on_camera("cam_a", person_name="Ati") is False
+class TestPersonsTrackedOnCamera:
+    def test_live_tracks_on_the_camera_count(self):
+        manager = _gtm_with(("g1", "cam_a", TrackState.TRACKED, 4), ("g2", "cam_a", TrackState.NEW, None))
+        assert manager.persons_tracked_on_camera("cam_a") == {4}
+
+    def test_other_camera_does_not_count(self):
+        manager = _gtm_with(("g1", "cam_b", TrackState.TRACKED, 4))  # overlapping views are legitimate
+        assert manager.persons_tracked_on_camera("cam_a") == frozenset()
+
+    def test_asking_track_is_excluded(self):
+        manager = _gtm_with(("g1", "cam_a", TrackState.TRACKED, 4))
+        assert manager.persons_tracked_on_camera("cam_a", exclude="g1") == frozenset()
+
+    def test_just_lost_track_does_not_block_its_person_coming_back(self):
+        # Live 2026-10-17 11:14 UTC: ByteTrack dropped Ati's living_room track; 0.9 s
+        # later his new track matched the gallery as Ati (0.80) and was rejected because
+        # the lost track still counted as "active" -> he stayed unnamed.
+        manager = _gtm_with(("g_lost", "cam_a", TrackState.GRACE, 1))
+        assert manager.persons_tracked_on_camera("cam_a") == frozenset()
+        assert manager._persons_on_camera("cam_a") == 1  # location evidence still counts him
 
 
 class TestGalleryRecheckConsecutiveMatches:
