@@ -224,6 +224,7 @@ class ReIDGalleryManager:
         face_recognizer: Optional["FaceRecognizer"] = None,
         repository: Optional["Repository"] = None,
         debug_saver: Optional['DebugImageSaver'] = None,
+        update_interval_sec: float = 0.0,
     ):
         """Initialize the gallery manager.
 
@@ -237,6 +238,8 @@ class ReIDGalleryManager:
             face_recognizer: Optional face recognizer for multi-face detection
             repository: Optional repository for database persistence
             debug_saver: Optional debug image saver
+            update_interval_sec: Minimum seconds between embedding updates of one track
+                (0 = every call); bounds the per-frame cost of the quality checks
         """
         self.reid_extractor = reid_extractor
         self.similarity_threshold = similarity_threshold
@@ -247,6 +250,8 @@ class ReIDGalleryManager:
         self.face_recognizer = face_recognizer
         self.repository = repository
         self.debug_saver = debug_saver
+        self.update_interval_sec = update_interval_sec
+        self._last_update: dict[int, float] = {}
 
         # Create crop cache directory if specified
         if self.crop_cache_path:
@@ -316,11 +321,17 @@ class ReIDGalleryManager:
         crop: np.ndarray,
         person_name: Optional[str] = None,
         num_persons_in_frame: int = 1,
+        embedding: Optional[np.ndarray] = None,
+        quality: Optional[float] = None,
+        now: Optional[float] = None,
     ) -> bool:
         """Update Re-ID embedding for an active track.
 
         Should be called periodically for face-identified tracks.
         Automatically skips grayscale/IR images and crops with multiple faces.
+        At most one update per `update_interval_sec` per track: the multi-face check
+        runs a face detector (~15ms on Jetson), too expensive for every frame.
+        Pass `embedding`/`quality` when the caller already extracted them.
 
         Args:
             track_id: Track ID
@@ -335,6 +346,12 @@ class ReIDGalleryManager:
         if num_persons_in_frame > 1:
             return False
 
+        now = time.time() if now is None else now
+        last = self._last_update.get(track_id)
+        if last is not None and now - last < self.update_interval_sec:
+            return False
+        self._last_update[track_id] = now
+
         # Skip grayscale/IR images - Re-ID relies on color features
         if is_grayscale_image(crop):
             return False
@@ -343,7 +360,8 @@ class ReIDGalleryManager:
         if self._has_multiple_faces(crop):
             return False
 
-        embedding, quality = self.reid_extractor.extract(crop, return_quality=True)
+        if embedding is None or quality is None:
+            embedding, quality = self.reid_extractor.extract(crop, return_quality=True)
         if quality < 0.3:
             return False
 
@@ -370,6 +388,7 @@ class ReIDGalleryManager:
         Returns:
             True if embeddings were stored in gallery
         """
+        self._last_update.pop(track_id, None)
         if track_id not in self._track_data:
             return False
 
@@ -462,6 +481,7 @@ class ReIDGalleryManager:
 
     def clear_track_data(self, track_id: int):
         """Clear track data without storing to gallery."""
+        self._last_update.pop(track_id, None)
         data = self._track_data.pop(track_id, None)
         if data:
             data.cleanup()

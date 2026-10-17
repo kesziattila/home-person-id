@@ -218,6 +218,7 @@ class IdentificationManager:
                     face_recognizer=self.face_recognizer,
                     repository=self.repository,
                     debug_saver=self._debug_saver,
+                    update_interval_sec=self.reid_config.gallery_update_interval_sec,
                 )
         return self._reid_gallery_manager
 

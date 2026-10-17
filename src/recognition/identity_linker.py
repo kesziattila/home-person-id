@@ -638,7 +638,8 @@ class IdentityLinker:
                 if person_name:
                     track_id_num = hash(state.global_track_id) % (10**9)
                     self.reid_gallery_manager.update_track_embedding(
-                        track_id_num, crop, person_name, num_persons_in_frame
+                        track_id_num, crop, person_name, num_persons_in_frame,
+                        embedding=embedding, quality=quality,
                     )
 
     # ==================== Gallery Recheck ====================

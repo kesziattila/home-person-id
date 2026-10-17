@@ -14,6 +14,16 @@ import numpy as np
 from src.recognition.identity_linker import IdentityLinker, TrackIdentityState
 
 
+def _dim(frame: np.ndarray, x1: int, y1: int, x2: int, y2: int) -> None:
+    """Darken a panel area in place (same look as a 60% black overlay, ROI only).
+
+    Blending only the ROI instead of copying/blending the whole 4K frame saves
+    ~10ms per frame on the Jetson main thread.
+    """
+    roi = frame[max(0, y1):y2, max(0, x1):x2]
+    roi[:] = (roi * 0.4).astype(frame.dtype)
+
+
 class DebugOverlayRenderer:
     """Renders debug information on preview frames.
 
@@ -66,9 +76,7 @@ class DebugOverlayRenderer:
         padding = 6
         panel_h = len(lines) * line_h + padding * 2
         panel_w = 300
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (0, 0), (panel_w, panel_h), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+        _dim(frame, 0, 0, panel_w, panel_h)
 
         for i, line in enumerate(lines):
             y = padding + (i + 1) * line_h
@@ -88,9 +96,7 @@ class DebugOverlayRenderer:
         panel_w = 420
         x_start = w - panel_w
 
-        overlay = frame.copy()
-        cv2.rectangle(overlay, (x_start, h - panel_h), (w, h), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.6, frame, 0.4, 0, frame)
+        _dim(frame, x_start, h - panel_h, w, h)
 
         for i, line in enumerate(lines):
             y = h - panel_h + padding + (i + 1) * line_h

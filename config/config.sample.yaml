@@ -280,6 +280,12 @@ reid:
   # so identification on one camera propagates to others even without zone overlap.
   gallery_recheck_interval: 10.0
 
+  # Minimum seconds between shared Re-ID gallery updates of one identified track.
+  # Each update runs a grayscale check and a face detector (multi-face check, ~15ms
+  # on Jetson); the gallery keeps only gallery_size embeddings, so updating every
+  # frame was wasted main-thread time. 0 = every frame.
+  gallery_update_interval_sec: 1.0
+
   # Log track_recovered events to the database.
   # These fire frequently when ByteTrack briefly loses a detection — disable to reduce noise.
   log_track_recovery: false

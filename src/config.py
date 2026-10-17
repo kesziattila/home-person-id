@@ -180,6 +180,9 @@ class ReIDConfig:
     # Periodically checks unidentified tracks against the shared Re-ID gallery,
     # so identification on one camera propagates to others even without zone overlap.
     gallery_recheck_interval: float = 10.0
+    # Minimum seconds between shared-gallery embedding updates of one identified track
+    # (each update runs grayscale + multi-face checks; gallery keeps only gallery_size)
+    gallery_update_interval_sec: float = 1.0
     # Log track_recovered events to the database.
     # These fire frequently when ByteTrack briefly loses a detection.
     # Disable to reduce event noise.
