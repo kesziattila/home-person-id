@@ -387,8 +387,8 @@ unidentified_faces:
   # Directory for storing face images
   images_path: "data/unidentified_faces"
 
-  # Maximum faces to keep per camera (oldest are deleted)
-  max_per_camera: 20
+  # Maximum faces to keep per camera (the lowest quality are deleted)
+  max_per_camera: 50
 
   # Face quality model: eDifFIQA-tiny ONNX (CPU, ~6 ms/face on x86), one learned
   # score of how usable a face is for recognition. Download (7 MB) from

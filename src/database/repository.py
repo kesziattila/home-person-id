@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from sqlalchemy import text
+from sqlalchemy import case, text
 from sqlalchemy.orm import Session
 
 from src.database.models import (
@@ -770,9 +770,13 @@ class Repository:
     def cleanup_unidentified_faces_for_camera(
         self, camera_id: str, max_count: int
     ) -> int:
-        """Keep only the newest N unidentified faces per camera.
+        """Keep only the N best unidentified faces per camera (quality, then newest).
 
         Archived faces don't count and are not deleted here (retention removes them).
+        Best, not newest: live 2026-10-18 a learnable crop (#1203, quality 0.46) was
+        evicted within an hour by 19 newer, mostly dark ones (0.32-0.42) before
+        anyone could review it. Legacy rows (hand-made score, `blur_score` set) rank
+        last; their scores are on another scale.
 
         Args:
             camera_id: Camera ID
@@ -782,12 +786,13 @@ class Repository:
             Number of faces deleted
         """
         with self.get_session() as session:
-            # Get faces to keep (newest first)
             keep_faces = (
                 session.query(UnidentifiedFace.id)
                 .filter(UnidentifiedFace.camera_id == camera_id,
                         UnidentifiedFace.superseded_by_id.is_(None))
-                .order_by(UnidentifiedFace.created_at.desc())
+                .order_by(case((UnidentifiedFace.blur_score.is_(None), 0), else_=1),
+                          UnidentifiedFace.quality_score.desc(),
+                          UnidentifiedFace.created_at.desc())
                 .limit(max_count)
                 .all()
             )

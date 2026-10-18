@@ -235,7 +235,7 @@ class UnidentifiedFacesConfig:
     # Directory to store face images
     images_path: str = "data/unidentified_faces"
     # Maximum number of unidentified faces to keep per camera
-    max_per_camera: int = 20
+    max_per_camera: int = 50
     # Face quality model (eDifFIQA-tiny ONNX, CPU): one learned score of how
     # usable a face is for recognition — replaced the hand-made sharpness /
     # noise / frontalness / brightness metrics (2026-10-18)

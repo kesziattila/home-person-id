@@ -432,3 +432,10 @@ identity and "last known room" — not continuous identity of every person at ev
   before the loss, so a returning person's new track stays matchable); a guard rejection resets
   the gallery streak.
 - Frame capture 16:00 recorded nothing: `frame_capture_max_gb` 20 GB was full (10-17 + 10-18).
+- 17:15 UTC: unidentified-face camera cap (`max_per_camera` 20) now keeps the best faces (quality,
+  then newest), not the newest: Virag's learnable #1203 (0.46) had been evicted within an hour by
+  19 newer dark living_room crops (0.32–0.42). Added to Virag's gallery: #1128, #1250 and #1203
+  (re-uploaded from the local copy) → 35 face embeddings.
+- 17:19 UTC: `unidentified_faces.max_per_camera` 20 → 50 (live config backup
+  config.yaml.20261018T171918Z; default and sample too). With the best-first cap a larger cap keeps
+  good crops through an unreviewed evening (~20 suggestions/hour in living_room, ~1 in 10 good).

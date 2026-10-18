@@ -410,7 +410,7 @@ See `config/config.yaml` for all options. Key settings:
 | `face_recognition.use_tensorrt` | Enable TensorRT acceleration | false |
 | `face_recognition.trt_max_workspace_size` | TensorRT workspace limit (bytes, 0=default) | 0 |
 | `unidentified_faces.enabled` | Capture unidentified faces | true |
-| `unidentified_faces.max_per_camera` | Max faces to keep per camera | 20 |
+| `unidentified_faces.max_per_camera` | Max faces to keep per camera (the best by quality) | 50 |
 | `unidentified_faces.quality_model` | Face quality model (eDifFIQA-tiny ONNX) | models/fiqa/ediffiqa_tiny_jun2024.onnx |
 | `unidentified_faces.min_quality_score` | Min face quality to save | 0.3 |
 | `unidentified_faces.learning_min_quality` | Min face quality for "Learning" (enroll) | 0.45 |

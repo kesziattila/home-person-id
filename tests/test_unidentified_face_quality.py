@@ -126,6 +126,14 @@ class TestOneSuggestionPerTrack:
         assert len(repo.get_unidentified_faces(archived=False)) == 2
         assert len(repo.get_unidentified_faces(archived=True)) == 3
 
+    def test_camera_cap_keeps_the_best_not_the_newest(self, tmp_path):
+        """Live #1203 (0.46, learnable) was evicted within an hour by 19 newer dark crops."""
+        manager, repo = _manager(tmp_path, max_per_camera=2)
+        for i, quality in enumerate((0.46, 0.35, 0.33, 0.6)):
+            manager._process_task(_task(manager, quality, f"global_{i}", seed=30 + i))
+        kept = sorted(f.quality_score for f in repo.get_unidentified_faces(archived=False))
+        assert kept == pytest.approx([0.46, 0.6])
+
 
 def _aligned_live_faces(label):
     """Labelled live crops (gitignored), aligned by insightface landmarks like live."""
