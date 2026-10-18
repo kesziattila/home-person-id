@@ -439,3 +439,11 @@ identity and "last known room" — not continuous identity of every person at ev
 - 17:19 UTC: `unidentified_faces.max_per_camera` 20 → 50 (live config backup
   config.yaml.20261018T171918Z; default and sample too). With the best-first cap a larger cap keeps
   good crops through an unreviewed evening (~20 suggestions/hour in living_room, ~1 in 10 good).
+
+## 2026-10-18 19:47 UTC — face threshold 0.60 → 0.54, min_margin 0.0 → 0.10
+- Replay (tools/analyze_face_scores.py, 26 306 attempts since 10-16, pseudo-labels from ≥0.60
+  anchors): identified tracks 260 → 394, labelled wrong tracks 0, attempt precision 0.993;
+  impostor p99 0.41, genuine p50 0.47. 0.50 would give 526 tracks with 1 wrong track.
+- Caveat: tracks that never reach 0.60 (e.g. Virag on ground_floor) are unlabelled — exactly the
+  ones the lower threshold names. Check the 2026-10-19 audit; if clean, consider 0.50.
+- Live config backup config.yaml.20261018T194737Z.
