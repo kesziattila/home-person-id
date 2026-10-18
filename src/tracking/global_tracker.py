@@ -377,7 +377,8 @@ class GlobalTrackManager:
         self._cleanup_lost_tracks(current_time)
 
         # Appearance (Re-ID) evidence is only attributable to isolated tracks
-        isolated = isolated_track_ids(local_tracks, self.reid_config.max_overlap)
+        isolated = isolated_track_ids(local_tracks, self.reid_config.max_overlap,
+                                      self._lost_neighbours(camera_id, local_tracks))
 
         # Process new local tracks
         for local_track_id in new_track_ids:
@@ -1040,6 +1041,25 @@ class GlobalTrackManager:
                     and (now - track.last_seen).total_seconds() < RECENTLY_LOST_SEC:
                 ids.append(track_id)
         return ids
+
+    def _lost_neighbours(self, camera_id: str, local_tracks: list) -> dict[int, list[tuple]]:
+        """Appearance evidence: per live local track, last boxes of tracks on the camera lost
+        < RECENTLY_LOST_SEC ago, AFTER that track appeared (attribution.isolated_track_ids).
+        A track without a global track yet is new and gets none: it may be the lost person."""
+        lost = []
+        for track_id in self._tracks_on_camera(camera_id, recently_lost=True):
+            track = self._tracks[track_id]
+            box = self._last_bboxes.get((camera_id, track.current_local_track_id))
+            if track.state == TrackState.GRACE and box is not None:
+                lost.append((track.last_seen, box))
+        if not lost:
+            return {}
+        neighbours = {}
+        for local_track in local_tracks:
+            global_track = self._tracks.get(self._local_to_global.get((camera_id, local_track.track_id), ""))
+            if global_track is not None:
+                neighbours[local_track.track_id] = [box for lost_at, box in lost if global_track.first_seen < lost_at]
+        return neighbours
 
     def _persons_on_camera(self, camera_id: str) -> int:
         """Location evidence: people a camera sees, briefly lost tracks included (errs to "more")."""

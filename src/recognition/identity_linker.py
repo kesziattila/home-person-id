@@ -521,8 +521,13 @@ class IdentityLinker:
         if not person:
             return False
 
-        # One person, one live track per camera (duplicate-person guard)
+        # One person, one live track per camera (duplicate-person guard). A rejection
+        # breaks the streak like a miss: live 2026-10-18 15:55 UTC Virag's track
+        # collected Ati 1/3, 2/3, was rejected twice, then confirmed at 3/3 the
+        # moment Ati's track was briefly lost
         if person.id in persons_present:
+            state.gallery_candidate_person_id = None
+            state.gallery_consecutive_matches = 0
             logger.info(
                 f"Gallery recheck rejected for {state.global_track_id}: "
                 f"{match_result.person_name} (sim={match_result.score:.2f}) is already "

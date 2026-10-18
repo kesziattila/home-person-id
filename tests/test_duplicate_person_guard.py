@@ -84,6 +84,19 @@ class TestSameCameraDuplicatePersonGuard:
         assert state.person_id == 4
 
 
+    def test_guard_rejection_breaks_the_streak(self):
+        # Live 2026-10-18 15:55 UTC: Ati 1/3, 2/3, rejected, rejected, then 3/3 accepted
+        # on Virag's track the moment Ati's own track was briefly lost
+        linker, repo, mock_gallery = _make_linker(min_consecutive_matches=3)
+        _mock_match(mock_gallery, repo, person_id=1, score=0.93)
+        state = linker.register_track("global_2")
+        linker._try_gallery_identification(state, CROP, "cam_a")
+        linker._try_gallery_identification(state, CROP, "cam_a")
+        linker._try_gallery_identification(state, CROP, "cam_a", frozenset({1}))
+        assert linker._try_gallery_identification(state, CROP, "cam_a") is False
+        assert state.person_id is None
+
+
 def _gtm_with(*tracks):
     """GlobalTrackManager with (track_id, camera, state, person_id) tracks."""
     from datetime import datetime

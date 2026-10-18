@@ -8,6 +8,8 @@ Every identity path needs the same answer, so it lives here and nowhere else:
   is attributable only to an ISOLATED track: its box does not overlap another
   box on the camera, so its crop shows one person. Overlap is measured over the
   SMALLER box, so a child's box inside an adult's counts even at low IoU.
+  A neighbour the tracker dropped a moment ago (< RECENTLY_LOST_SEC) still
+  counts with its last box: dropping a seated person for 1-3 s is common.
 - Location evidence (zone / cross-camera identity propagation) is attributable
   only when each camera sees exactly ONE person, counting briefly lost tracks
   (a person the tracker dropped for a few frames is still there).
@@ -73,8 +75,22 @@ def overlap_of_smaller(a: tuple, b: tuple) -> float:
     return ix * iy / smaller if smaller > 0 else 0.0
 
 
-def isolated_track_ids(tracks: Iterable[_Boxed], max_overlap: float) -> set[int]:
+def isolated_track_ids(
+    tracks: Iterable[_Boxed],
+    max_overlap: float,
+    lost_neighbours: Optional[dict[int, list[tuple]]] = None,
+) -> set[int]:
     """Tracks whose box overlaps no other box by more than `max_overlap` (~0.1ms for 5 tracks).
+
+    `lost_neighbours`: per track, last boxes of neighbours the tracker dropped
+    less than RECENTLY_LOST_SEC ago; they count like live boxes, since the person
+    is still sitting there. Live 2026-10-18 15:49-16:05 UTC (living_room): ByteTrack
+    kept dropping Ati's track for 1-3 s while Virag sat next to him; each drop made
+    her box "isolated" (297 of its 299 isolated frames), fed a crop of both into
+    her gallery, and two of her tracks were named Ati by gallery recheck (0.82,
+    0.90); Ati's box was "isolated" by her drops 651 times. Only neighbours lost
+    after the track appeared count (the caller decides): a NEW track may be the
+    lost person coming back and must stay matchable.
 
     `max_overlap <= 0` disables the check (every track counts as isolated).
     """
@@ -87,6 +103,10 @@ def isolated_track_ids(tracks: Iterable[_Boxed], max_overlap: float) -> set[int]
             if overlap_of_smaller(a.bbox, b.bbox) > max_overlap:
                 isolated.discard(a.track_id)
                 isolated.discard(b.track_id)
+    for track in tracks:
+        if any(overlap_of_smaller(track.bbox, box) > max_overlap
+               for box in (lost_neighbours or {}).get(track.track_id, ())):
+            isolated.discard(track.track_id)
     return isolated
 
 

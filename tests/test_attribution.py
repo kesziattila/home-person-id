@@ -103,6 +103,45 @@ def test_isolated_new_track_still_gets_gallery_identity():
     assert _person(gtm, linker, 77) is not None
 
 
+def test_neighbour_lost_a_moment_ago_still_counts():
+    """Live 2026-10-18 15:49-16:05 UTC: ByteTrack kept dropping Ati's track for 1-3 s
+    while Virag sat next to him; each drop made her box "isolated" (297 of 299
+    isolated frames in replay) and two of her tracks were gallery-named Ati."""
+    gtm, linker = _manager()
+    ati, virag = _track(72, (100, 100, 300, 260)), _track(77, (200, 150, 320, 330))
+    _process(gtm, [ati, virag], [72, 77])
+    _process(gtm, [ati, virag], [])
+    linker.process_track = MagicMock()
+
+    gtm.process_local_tracks(camera_id="ground_floor", local_tracks=[virag],
+                             frame=np.zeros((480, 640, 3), dtype=np.uint8),
+                             new_track_ids=[], lost_track_ids=[72])
+    _process(gtm, [virag], [])
+
+    assert linker.process_track.call_args.kwargs["isolated"] is False
+
+
+def test_new_track_where_a_person_was_just_lost_stays_matchable():
+    # Live 2026-10-17 11:14 UTC: Ati's track was dropped and his new track came back
+    gtm, linker = _manager()
+    _process(gtm, [_track(72, (100, 100, 300, 260))], [72])
+    gtm.process_local_tracks(camera_id="ground_floor", local_tracks=[],
+                             frame=np.zeros((480, 640, 3), dtype=np.uint8),
+                             new_track_ids=[], lost_track_ids=[72])
+    linker.reid_gallery_manager.match_new_track.reset_mock()
+
+    _process(gtm, [_track(80, (105, 100, 305, 260))], [80])
+
+    linker.reid_gallery_manager.match_new_track.assert_called()
+    assert _person(gtm, linker, 80) is not None
+
+
+def test_lost_neighbour_boxes_count_like_live_boxes():
+    track = _box(1, (0, 0, 100, 200))
+    assert isolated_track_ids([track], 0.15, {1: [(50, 0, 150, 200)]}) == set()
+    assert isolated_track_ids([track], 0.15, {1: [(400, 0, 500, 200)]}) == {1}
+
+
 # -------------------------------------------------------------- location rule
 
 def test_no_handover_while_the_other_person_is_briefly_lost():

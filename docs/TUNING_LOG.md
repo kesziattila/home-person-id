@@ -416,3 +416,19 @@ identity and "last known room" — not continuous identity of every person at ev
 - No box covering two people got a name. Face attempts since 12:43: 31 accepted, 120 lone
   off-centre faces now ambiguous; only 4 of those scored ≥ 0.6 (all Ati, two checked: Ati alone,
   head near the box edge while walking/holding a jacket) — Ati was named on other tracks anyway.
+
+## 2026-10-18 15:53–16:05 UTC — Virag named Ati beside him (living_room)
+- Live: Virag's tracks global_59006 (15:56:00, gallery recheck 0.90) and global_59012 (16:03:30,
+  0.82) were named Ati while Ati's face-named track sat next to her. Ati's gallery matched her box
+  at 0.97 (her own: 0.89); Virag's gallery held two crops showing both (15:53:31).
+- Cause: ByteTrack dropped Ati's seated track for 1–3 s again and again; isolation counted only
+  live boxes, so each drop made Virag's box "isolated" (replay: 297 of 299 isolated frames of
+  track 155; 22 of track 150 incl. 15:53:31; 107 of 115 of track 160), and vice versa Ati's box
+  651 times → crops of both fed both galleries, gallery recheck ran on her box.
+- The duplicate-person guard rejected Ati twice, but the 3-match streak survived the rejections
+  and completed when Ati's track was lost at that moment.
+- Fix (16:09 UTC deploy, restart cleared the in-memory galleries): neighbours lost
+  < RECENTLY_LOST_SEC ago count with their last box for isolation (only for tracks that existed
+  before the loss, so a returning person's new track stays matchable); a guard rejection resets
+  the gallery streak.
+- Frame capture 16:00 recorded nothing: `frame_capture_max_gb` 20 GB was full (10-17 + 10-18).
