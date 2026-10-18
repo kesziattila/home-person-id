@@ -80,7 +80,7 @@ def test_accepts_requires_threshold_and_margin(top1, top2, threshold, margin, ex
 def _linker(tmp_path, similarities, threshold=0.42, min_margin=0.10):
     recognizer = MagicMock()
     recognizer.detect_faces.return_value = FaceDetectionResult(
-        faces=[Face(bbox=(10.0, 10.0, 110.0, 130.0), confidence=0.9, embedding=EMB)],
+        faces=[Face(bbox=(100.0, 10.0, 200.0, 130.0), confidence=0.9, embedding=EMB)],
         frame_shape=(400, 400, 3),
     )
     recognizer.compare_embeddings_batch.return_value = np.array(similarities)

@@ -15,6 +15,14 @@ Refinement (audit review 2026-10-17 10:25 UTC): sitting side by side, Virag's fa
 poked into the right edge of Ati's box and kept Ati unidentified for 90 s. The face
 whose center lies in the middle half of the head region owns the box; only when no
 face or several faces are central is the attempt ambiguous.
+
+Refinement (identity review 2026-10-18 11:40 UTC, living_room, replayed offline on
+captured frames): a box covering Judit lying on the sofa and Ati at its end
+(global_58350) saw ONLY Ati's face, at 0.83 of the head region width, and a
+single face owned the box unconditionally: 32 accepts, the box was named Ati, its
+crops fed Ati's Re-ID gallery (142 samples) and it kept "Ati" on Judit after Ati
+left. Ati's own boxes had the face at 0.53-0.55 (all 39 of their accepts central).
+A lone face must be central too.
 """
 
 import json
@@ -106,3 +114,20 @@ def test_neighbour_face_at_the_box_edge_does_not_block_the_owner(tmp_path):
 
     assert state.person_id == 1
     assert {r["num_faces"] for r in _records(tmp_path)} == {2}
+
+
+def test_lone_face_at_the_box_edge_does_not_name_the_box(tmp_path):
+    """A box covering two people where only the neighbour's face is visible."""
+    linker, unidentified = _linker(tmp_path, [EDGE])
+    state = _attempts(linker)
+
+    assert state.person_id is None
+    records = _records(tmp_path)
+    assert [r["num_faces"] for r in records] == [1, 1, 1]
+    assert not any(r["accepted"] for r in records)
+    unidentified.submit.assert_not_called()
+
+
+def test_lone_central_face_names_the_box(tmp_path):
+    linker, _ = _linker(tmp_path, [ADULT])
+    assert _attempts(linker).person_id == 1

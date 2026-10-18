@@ -387,3 +387,32 @@ identity and "last known room" — not continuous identity of every person at ev
 - living_room: day/night sensitivity High → Low (11:33 local), so it switches to grayscale later
   at dawn.
 - Compare face quality and accept rate per camera on the 2026-10-19 morning against 2026-10-18.
+
+## 2026-10-18 11:40–11:50 UTC — Identity review: living_room, 3 people (Ati, Judit, Virag)
+- Frame capture 11:41–11:49 (2269 living_room frames, local) for offline replay.
+- Ati: 7 samples, correct face, but track global_58350 was a box covering Judit (lying on the
+  sofa) + Ati. After Ati left it kept "Ati" on Judit alone (11:45:11 via reid_gallery 0.82,
+  rechecks 0.85–0.90) → 1 wrong sample (Judit named Ati).
+- That track flushed 142 Re-ID samples into Ati's gallery (repeated brief-loss flushes).
+- Replay (ByteTrack on the detection log, same local ids as live; CPU face model on every 3rd
+  captured frame): the merged box saw ONLY Ati's face, at 0.83 of the head region width, and
+  `owner_face` gave a lone face to the box unconditionally → 32 accepts (track 158, also a merged
+  box: 3). Ati's own boxes: face at 0.53–0.55, all 39 accepts central.
+- Re-ID cannot tell them apart here: Judit's own track vs Ati's solo samples 0.79, so the anchor
+  gate (anchor_similarity 0.55) let the merged crops in once the box was named.
+- Fix (12:42 UTC deploy): a lone face must also be central (middle half) to own the box; off-centre
+  = ambiguous (logged, never accepted). Replay: merged boxes 35 → 0 accepts, solo boxes unchanged.
+- Open: Re-ID gallery match has no margin vs other people's galleries (0.70 threshold, same-room
+  people at ~0.79); Ati's gallery still holds the merged-box samples.
+- Judit: 0 named (lying, phone in front of face; best face 0.56, not accepted).
+- Virag: named once (11:49:49 face 0.65); 5 unknown tracks (swing, back of head) — expected.
+
+## 2026-10-18 12:21–13:22 UTC — Identity review (after the lone-face fix, deployed 12:42)
+- 146 audit samples, find_contradictions: 0 findings.
+- Named: Ati 54/54 correct (49 reid_gallery 0.70–0.90, 5 face), Judit 14/14 (face, gallery,
+  handover; lying on the sofa named by face 0.61 on ground_floor), Virag 4/4 (entrance, gallery).
+- 75 unknown: visiting children at the entrance, top-down hallway heads, backs; a few misses of
+  known people (Virag hallway 12:30, Judit lying on ground_floor 13:07 before her face match).
+- No box covering two people got a name. Face attempts since 12:43: 31 accepted, 120 lone
+  off-centre faces now ambiguous; only 4 of those scored ≥ 0.6 (all Ati, two checked: Ati alone,
+  head near the box edge while walking/holding a jacket) — Ati was named on other tracks anyway.

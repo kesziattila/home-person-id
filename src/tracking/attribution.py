@@ -2,7 +2,8 @@
 
 Every identity path needs the same answer, so it lives here and nowhere else:
 
-- Face evidence belongs to the face the box owns (`owner_face`).
+- Face evidence belongs to the face the box owns (`owner_face`): the face in
+  the middle of the box, even when it is the only one.
 - Appearance evidence (Re-ID extraction, gallery match/recheck, gallery update)
   is attributable only to an ISOLATED track: its box does not overlap another
   box on the camera, so its crop shows one person. Overlap is measured over the
@@ -46,13 +47,17 @@ def owner_face(faces: list, region_width: int) -> tuple:
 
     A person's head sits near the horizontal middle of their own box; a
     neighbour's face poking into it sits near the edge (live: Virag's face at the
-    right edge of Ati's box kept Ati unidentified while they sat together). With
-    several faces, the one centered in the middle half of the region owns the box;
-    none or several there (a parent bending over a child) = ambiguous: the caller
-    may score it for analysis but must not accept or store it.
+    right edge of Ati's box kept Ati unidentified while they sat together). The
+    face centered in the middle half of the region owns the box; none or several
+    there (a parent bending over a child) = ambiguous: the caller may score it
+    for analysis but must not accept or store it.
+
+    This holds for a single face too (live 2026-10-18 11:39-11:45 UTC): a box
+    covering Judit lying on the sofa and Ati sitting at its end saw only Ati's
+    face, at 0.83 of the region width; it was accepted 32 times, named the box
+    Ati, fed 142 of its crops to Ati's Re-ID gallery and kept the name on Judit
+    after Ati left. Ati's own box had the same face at 0.53.
     """
-    if len(faces) == 1:
-        return faces[0], False
     center = region_width / 2
     central = [f for f in faces if abs((f.bbox[0] + f.bbox[2]) / 2 - center) < region_width / 4]
     if len(central) == 1:

@@ -43,7 +43,7 @@ def test_embedder_returns_normalized_embedding_and_raw_norm():
 
 
 def test_linker_logs_embedding_norm_and_passes_it_to_unidentified_faces(tmp_path):
-    face = Face(bbox=(10.0, 10.0, 130.0, 150.0), confidence=0.9, embedding=EMB, embedding_norm=17.25)
+    face = Face(bbox=(90.0, 10.0, 210.0, 150.0), confidence=0.9, embedding=EMB, embedding_norm=17.25)
     recognizer = MagicMock()
     recognizer.detect_faces.return_value = FaceDetectionResult(faces=[face], frame_shape=(400, 400, 3))
     recognizer.compare_embeddings_batch.return_value = np.array([0.40])
