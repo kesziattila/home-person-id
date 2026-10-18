@@ -20,6 +20,7 @@
 - Identification methods = `IdMethod` enum (`src/recognition/id_method.py`, `.strength`, `.is_appearance`); never compare method strings. Face keeps checking appearance-labelled tracks and may correct them
 - Who a track is lives ONLY in `IdentityLinker`'s `TrackIdentityState`; `GlobalTrackManager._person_id()` reads it — never cache person ids on `GlobalTrack`
 - On-disk metrics: `src/utils/jsonl_writer.DailyJsonlWriter` under `metrics.path/<stream>/` (daily UTC files, retention) — reuse it for new metric streams
+- Face quality (unidentified-face save gate, "Learning", best crop per track) = ONE learned score, `FaceQualityAssessor` (eDifFIQA-tiny, CPU) on the aligned face; don't add hand-made photo metrics (sharpness/noise/pose terms failed on live crops, see `face_quality.py`)
 - Centralize validation where data enters the system (e.g. grayscale/multi-face checks live in `ReIDGalleryManager.update_track_embedding()`), not in callers
 
 ## Performance & Memory

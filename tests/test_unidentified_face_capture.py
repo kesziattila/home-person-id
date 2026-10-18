@@ -55,6 +55,7 @@ class TestUnidentifiedFaceCapture:
         mock_face = MagicMock()
         mock_face.embedding = np.random.randn(512).astype(np.float32)
         mock_face.bbox = np.array([10, 10, 50, 50])  # x1, y1, x2, y2
+        mock_face.landmarks = np.array([[22, 25], [38, 25], [30, 33], [24, 42], [36, 42]], dtype=np.float32)
 
         # Mock face detection result
         mock_result = MagicMock()
@@ -116,6 +117,8 @@ class TestUnidentifiedFaceCapture:
         assert call_args.kwargs["camera_id"] == "test_camera"
         assert call_args.kwargs["track_id"] == "test_track"
         assert call_args.kwargs["embedding"] is not None
+        assert call_args.kwargs["aligned_face"].shape == (112, 112, 3)   # what the quality model scores
+        assert call_args.kwargs["face_bbox"] == (10, 10, 50, 50)          # the face, not the margin crop
         print(f"submit() called with: {call_args.kwargs.keys()}")
 
     def test_unidentified_face_submitted_when_gallery_empty(
@@ -384,104 +387,3 @@ class TestCropUtilities:
         expected_height = int((80 - 20) * 0.5)  # 30
         assert face_region.shape[0] == expected_height
         assert face_region.shape[1] == 80  # 90-10
-
-
-class TestBlurDetection:
-    """Test blur detection for quality scoring."""
-
-    def test_motion_blur_detected(self):
-        """Test that motion blur is detected by gradient anisotropy.
-
-        Laplacian variance fails to detect motion blur because edges still
-        exist (just smeared) — this very image keeps a high Laplacian from its
-        glasses edges. The gradient-anisotropy component of _compute_sharpness
-        catches it: motion blur kills gradients along the smear direction.
-        (The previous FFT high-frequency-ratio metric also failed here once
-        computed at the fixed 112x112 scale — sensor noise dominated.)
-        """
-        import cv2
-        from pathlib import Path
-        from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
-        from src.config import UnidentifiedFacesConfig
-
-        # Load motion blurred test image
-        test_image_path = Path("tests/test-images/sensitive/20260130_205338_088f1a6c.jpg")
-        if not test_image_path.exists():
-            pytest.skip("Motion blur test image not available")
-
-        img = cv2.imread(str(test_image_path))
-        assert img is not None, "Failed to load test image"
-
-        # Create manager to access _compute_sharpness
-        config = UnidentifiedFacesConfig(enabled=True)
-        mock_repo = MagicMock()
-        manager = UnidentifiedFaceManager(config, mock_repo)
-
-        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        sharpness_score = manager._compute_sharpness(gray)
-
-        # Motion blurred image must fail the default 0.4 gate
-        # (calibrated 2026-06-06: this sample scores ~0.36; usable live crops 0.87+)
-        assert sharpness_score < 0.4, (
-            f"Motion blur not detected! Sharpness score {sharpness_score:.2f} "
-            f"should be below 0.4 for motion-blurred images"
-        )
-
-    def test_sharp_image_high_score(self):
-        """Test that sharp images get high sharpness score."""
-        import cv2
-        from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
-        from src.config import UnidentifiedFacesConfig
-
-        # Create a sharp image: smooth shading (like skin/lighting), crisp features
-        # at all orientations and mild noise. (Pure per-pixel random noise is
-        # grain, not detail — rejected since 2026-10-17.)
-        rng = np.random.default_rng(42)
-        img = cv2.resize(rng.uniform(50, 200, (6, 6)), (200, 200), interpolation=cv2.INTER_CUBIC)
-        for _ in range(40):
-            center = tuple(int(v) for v in rng.integers(0, 200, 2))
-            axes = tuple(int(v) for v in rng.integers(6, 25, 2))
-            cv2.ellipse(img, center, axes, float(rng.uniform(0, 180)), 0, 360, float(rng.uniform(10, 245)), -1)
-        img = np.clip(img + rng.normal(0, 3.0, img.shape), 0, 255).astype(np.uint8)
-
-        config = UnidentifiedFacesConfig(enabled=True)
-        mock_repo = MagicMock()
-        manager = UnidentifiedFaceManager(config, mock_repo)
-
-        sharpness_score = manager._compute_sharpness(img)
-
-        # Sharp natural-looking image should have good sharpness score (>0.5)
-        assert sharpness_score > 0.5, (
-            f"Sharp image not detected! Sharpness score {sharpness_score:.2f} "
-            f"should be above 0.5 for sharp images"
-        )
-
-    def test_gaussian_blur_detected(self):
-        """Test that Gaussian blur is detected."""
-        import cv2
-        from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
-        from src.config import UnidentifiedFacesConfig
-
-        # Blur a natural-looking textured image (random texture like a real
-        # crop; a synthetic binary checkerboard is pathological for any
-        # frequency/gradient-based measure)
-        np.random.seed(7)
-        img = np.random.randint(40, 215, (200, 200), dtype=np.uint8)
-
-        blurred = cv2.GaussianBlur(img, (21, 21), 0)
-
-        config = UnidentifiedFacesConfig(enabled=True)
-        mock_repo = MagicMock()
-        manager = UnidentifiedFaceManager(config, mock_repo)
-
-        sharpness_score = manager._compute_sharpness(blurred)
-
-        # Blurred image should have LOW sharpness score (<0.3)
-        assert sharpness_score < 0.3, (
-            f"Gaussian blur not detected! Sharpness score {sharpness_score:.2f} "
-            f"should be below 0.3 for blurred images"
-        )
-
-
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])

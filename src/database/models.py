@@ -215,11 +215,16 @@ class UnidentifiedFace(Base):
     # Quality metrics
     quality_score = Column(Float, nullable=False)
     blur_score = Column(Float, nullable=True)
-    face_size = Column(Integer, nullable=True)  # Face bbox width in pixels
+    # Min side of the detected face box in pixels (before 2026-10-18: width of the
+    # 30%-margin crop, ~1.6x the face)
+    face_size = Column(Integer, nullable=True)
     # Head pose score (0-1, 1 = frontal); NULL on rows captured before 2026-06
     frontalness = Column(Float, nullable=True)
     # Face detector confidence at capture; NULL on rows captured before 2026-06
     det_confidence = Column(Float, nullable=True)
+    # Archived: a better crop of the same track replaced this one as the track's
+    # suggestion (kept for history, hidden from the review list)
+    superseded_by_id = Column(Integer, nullable=True)
 
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -246,6 +251,7 @@ def migrate_database(engine):
         "ALTER TABLE persons ADD COLUMN zone_is_estimated BOOLEAN DEFAULT 1",
         "ALTER TABLE unidentified_faces ADD COLUMN frontalness FLOAT",
         "ALTER TABLE unidentified_faces ADD COLUMN det_confidence FLOAT",
+        "ALTER TABLE unidentified_faces ADD COLUMN superseded_by_id INTEGER",
     ]
     with engine.connect() as conn:
         for sql in migrations:

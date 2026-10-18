@@ -17,9 +17,9 @@ export default {
                     </select>
                     <select v-model="qualityFilter" @change="loadFaces" class="bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm">
                         <option value="0">All Quality</option>
-                        <option value="0.4">40%+</option>
-                        <option value="0.5">50%+</option>
-                        <option value="0.6">60%+</option>
+                        <option value="0.35">35%+</option>
+                        <option value="0.45">45%+</option>
+                        <option value="0.55">55%+</option>
                     </select>
                     <label class="flex items-center gap-2 text-sm cursor-pointer">
                         <input type="checkbox" v-model="learningOnly" @change="loadFaces" class="rounded">
@@ -56,7 +56,7 @@ export default {
                             Review
                         </div>
 
-                        <div :class="getQualityColor(face.quality_score)" class="absolute top-2 right-2 text-xs px-2 py-1 rounded">
+                        <div :class="getQualityColor(face)" class="absolute top-2 right-2 text-xs px-2 py-1 rounded">
                             Q: {{ (face.quality_score * 100).toFixed(0) }}%
                         </div>
                     </div>
@@ -168,25 +168,13 @@ export default {
             }
         },
         isGoodForLearning(face) {
-            // Thresholds calibrated on labeled live crops (2026-06-07):
-            // pose junk (profiles, top-of-head) passes photographic quality but
-            // fails frontalness/det_confidence; pixelated small crops fail size.
-            // frontalness/det_confidence are NULL on rows captured before the
-            // scores were stored — those require manual review, never "Learning".
-            const LEARNING_QUALITY_THRESHOLD = 0.6;
-            const LEARNING_SHARPNESS_THRESHOLD = 0.5;
-            const LEARNING_FRONTALNESS_THRESHOLD = 0.6;
-            const LEARNING_DET_CONFIDENCE_THRESHOLD = 0.65;
-            const LEARNING_MIN_FACE_SIZE = 110;
-            return (face.quality_score || 0) >= LEARNING_QUALITY_THRESHOLD
-                && (face.blur_score || 0) >= LEARNING_SHARPNESS_THRESHOLD
-                && face.frontalness != null && face.frontalness >= LEARNING_FRONTALNESS_THRESHOLD
-                && face.det_confidence != null && face.det_confidence >= LEARNING_DET_CONFIDENCE_THRESHOLD
-                && (face.face_size || 0) >= LEARNING_MIN_FACE_SIZE;
+            // Decided server-side from the face quality model score
+            // (unidentified_faces.learning_min_quality)
+            return face.learnable;
         },
-        getQualityColor(score) {
-            if (score > 0.6) return 'bg-green-600';
-            if (score > 0.4) return 'bg-yellow-600';
+        getQualityColor(face) {
+            if (face.learnable) return 'bg-green-600';
+            if ((face.quality_score || 0) >= 0.35) return 'bg-yellow-600';
             return 'bg-red-600';
         },
         getMatchInfo(face) {

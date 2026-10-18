@@ -236,24 +236,27 @@ class UnidentifiedFacesConfig:
     images_path: str = "data/unidentified_faces"
     # Maximum number of unidentified faces to keep per camera
     max_per_camera: int = 20
-    # Minimum quality score (0-1) to save a face
+    # Face quality model (eDifFIQA-tiny ONNX, CPU): one learned score of how
+    # usable a face is for recognition — replaced the hand-made sharpness /
+    # noise / frontalness / brightness metrics (2026-10-18)
+    quality_model: str = "models/fiqa/ediffiqa_tiny_jun2024.onnx"
+    # Below this the face is not saved (phone-occluded 0.22-0.37, faded 0.11-0.28)
     min_quality_score: float = 0.3
-    # Minimum sharpness score (0-1) to save a face - rejects motion/focus blur
-    min_sharpness_score: float = 0.4
-    # Minimum frontalness score (0-1) — rejects profile and looking-down poses
-    # (computed from the 5-point landmarks; such poses produce weak ArcFace
-    # embeddings unsuitable for enrollment). Calibrated on live crops:
-    # frontal faces score >=0.79, profiles and look-down poses <=0.23.
-    min_frontalness: float = 0.5
-    # Minimum face size (pixels) for face bbox width
-    min_face_size: int = 60
+    # From this the face is marked "Learning" (good enough to enroll): usable
+    # live crops 0.29-0.70 (low end = looking-down heads), enrolled gallery
+    # faces 0.45-0.68, grainy dawn crops up to 0.45
+    learning_min_quality: float = 0.45
+    # Minimum face size (pixels, min side of the detected face box — not the
+    # margin crop, which is ~1.6x larger and let 44 px faces through until
+    # 2026-10-18). The quality model upscales everything to 112x112 and cannot
+    # see resolution; enrolled faces today were ~70-200 px
+    min_face_size: int = 64
     # Minimum similarity threshold to have a best match (below face threshold but reasonable)
     min_match_score: float = 0.3
-    # Embedding similarity threshold for diversity check (skip if too similar to existing)
+    # Embedding similarity threshold for diversity check against other tracks'
+    # suggestions (a track keeps ONE suggestion, its best crop; a better crop
+    # archives the previous one)
     embedding_similarity_threshold: float = 0.7
-    # Minimum seconds between saved faces of the same track (burst suppression —
-    # one sitting episode produced 13 near-duplicate crops in 17s)
-    burst_min_interval_sec: float = 10.0
     # Days to keep unidentified faces before cleanup
     retention_days: int = 30
     # Queue size for background processing

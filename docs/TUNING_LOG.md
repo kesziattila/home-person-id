@@ -319,3 +319,71 @@ identity and "last known room" — not continuous identity of every person at ev
   track was on Judit lying on the ground_floor rug (unnamed, face Judit 0.60 once), Ati then sat at the
   same spot and the track was face-named Ati — correct at naming, no wrong label shown. Few people at
   home after 18:07, so the yolo26m gain on children/close pairs is not yet visible live.
+
+## 2026-10-18 ~07:10 UTC — face suggestions: one per track, grain gate
+- Dawn 04:16–04:51 UTC (dim artificial light): 560 face attempts, 0 accepted. Top-1 was always the
+  right person (Virag max 0.57, Judit 0.54; threshold 0.6). Same as 2026-10-17 04 UTC (2/1210).
+  First accepts from 05:38 UTC as daylight came.
+- Review queue: 44 crops saved, 31 left. Problems:
+  - 13 were from two ground_floor tracks of a face half hidden by a phone, lit by its screen
+    (frontalness 1.0 from hallucinated landmarks, sharpness 1.0);
+  - the per-camera cap of 20 evicted Virag's earlier crops;
+  - same-person crops embed only 0.4–0.6 alike, so the 0.7 diversity check never fired.
+- The "good" dawn crops are grainy: Virag's crops vs her other tracks' crops 0.40–0.50. Enrolling
+  them would not reach 0.6; not enrolled. The real fix is light or camera settings (exposure, NR).
+- Change:
+  - Each track keeps ONE suggestion, its best crop by quality_score. A better crop archives the
+    previous one (`unidentified_faces.superseded_by_id`; row and image kept, hidden from the review
+    list, excluded from the camera cap). This replaces `burst_min_interval_sec`.
+  - The noise term also gates absolute noise sigma: 2.0 → 0, 1.6 → 1.
+    - Grainy dawn crops measure 2.0–2.6 (rejected).
+    - Usable labelled crops measure 0.3–1.3; enrolled gallery crops measure ≤ 1.6 (pass).
+  - Replayed on this morning's 31 crops: 4 suggestions, one per track (Judit hallway, Virag
+    living_room, phone 2). The grainy ground_floor Virag tracks give none.
+    Without the change: 31.
+
+## 2026-10-18 07:41 UTC — face quality = eDifFIQA-tiny (replaces the hand-made metrics)
+- Pixel statistics cannot separate a faded dawn crop from a clean gallery face. Example: Virag
+  uf681 vs Rozika gal70:
+  - noise sigma 1.5 / 1.6;
+  - structure-to-noise 12.9 / 12.2;
+  - edge-to-noise 35 / 34.
+  A threshold on "fadedness" would have rejected good gallery faces (Rozika 69/70/72, Ati 56).
+- Offline, 51 hand-labelled crops (20 bad: faded, grainy, phone; 31 good: gallery, today's Judit,
+  usable set):
+
+  | Score | Split accuracy | Corr. with own-gallery similarity |
+  |---|---|---|
+  | eDifFIQA-tiny | 0.84 | 0.75 |
+  | ArcFace flip consistency | 0.80 | 0.71 |
+  | ArcFace jitter consistency | 0.82 | 0.63 |
+  | det_score | 0.75 | 0.60 |
+  | hand-made formula | 0.82 (tuned in-sample) | 0.31 |
+
+  - The hand-made gate passed 9/20 bad (faded 681–683, 5 phone, gal89) and rejected 7/31 good,
+    mostly gallery faces.
+  - eDifFIQA at 0.45 passes 1/20 bad (grainy, 0.454) and rejects 9/31 good: looking-down heads,
+    plus uf748 at 0.35.
+- Change:
+  - `unidentified_faces.quality_model` is the one quality score: save gate `min_quality_score` 0.3,
+    "Learning" `learning_min_quality` 0.45 (server-side `learnable`; the UI's 5 thresholds are gone),
+    best crop per track.
+  - Removed: sharpness, noise, frontalness, brightness, det weighting; `min_sharpness_score`,
+    `min_frontalness` (also from the live config, backup config.yaml.20261018T074100Z).
+- CPU ONNX Runtime, single thread: 28 ms per face on the Jetson under load (4 threads: 40 ms),
+  ~6 ms on x86. Runs only in the unidentified-face worker.
+- First live track (Virag, living_room): 0.33 (looking down) → 0.48 → 0.54 (near-frontal); the
+  first two were archived. Faces below the 0.3 gate scored 0.12–0.16.
+- 08:04 UTC: the face-size gate now uses the detected face box's min side.
+  - Before, it measured the 30%-margin crop width, ~1.6x the face, so `min_face_size` 60 let
+    ~38 px faces through.
+  - Live #836: a 44 px face (eye distance ~20 px) scored 0.42, the same as a clean 220 px
+    grimace (#829). The model upscales to 112 and cannot see resolution.
+  - `min_face_size` 60 → 64 (live config backup config.yaml.20261018T080418Z).
+
+## 2026-10-18 09:24 UTC — camera settings (environment-specific details in local/camera-settings.md)
+- ground_floor: shutter 1/150 → 1/100. Its morning crops were grainy (noise sigma 2.0–2.6); the
+  hallway at 1/50 gave clean crops.
+- living_room: day/night sensitivity High → Low (11:33 local), so it switches to grayscale later
+  at dawn.
+- Compare face quality and accept rate per camera on the 2026-10-19 morning against 2026-10-18.

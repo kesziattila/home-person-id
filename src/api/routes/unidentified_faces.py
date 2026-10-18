@@ -12,7 +12,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from src.database.repository import Repository
-from src.config import FaceRecognitionConfig
+from src.config import FaceRecognitionConfig, UnidentifiedFacesConfig
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,10 @@ class UnidentifiedFaceResponse(BaseModel):
     created_at: datetime
     reviewed: bool
     dismissed: bool
+    # Set when a better crop of the same track replaced this suggestion
+    superseded_by_id: Optional[int] = None
+    # Good enough to enroll ("Learning"): quality >= learning_min_quality
+    learnable: bool = False
 
 
 class UnidentifiedFacesSummaryResponse(BaseModel):
@@ -53,7 +57,8 @@ class AssignResponse(BaseModel):
 def create_unidentified_faces_router(
     repository: Repository,
     face_config: Optional[FaceRecognitionConfig] = None,
-    faces_dir: str = "data/faces"
+    faces_dir: str = "data/faces",
+    learning_min_quality: float = UnidentifiedFacesConfig.learning_min_quality,
 ) -> APIRouter:
     """Create unidentified faces router with repository dependency.
 
@@ -61,12 +66,18 @@ def create_unidentified_faces_router(
         repository: Database repository instance
         face_config: Face recognition configuration (optional)
         faces_dir: Directory to store registered face images
+        learning_min_quality: Quality from which a face is marked learnable
 
     Returns:
         Configured APIRouter
     """
     router = APIRouter(prefix="/api/v1", tags=["unidentified-faces"])
     faces_path = Path(faces_dir)
+
+    def learnable(face) -> bool:
+        # Rows scored by the hand-made formula (before 2026-10-18, they carry
+        # blur_score) are on another scale; they expire with retention_days
+        return face.blur_score is None and face.quality_score >= learning_min_quality
 
     @router.get("/unidentified-faces", response_model=List[UnidentifiedFaceResponse])
     async def list_unidentified_faces(
@@ -75,6 +86,8 @@ def create_unidentified_faces_router(
         dismissed: Optional[bool] = Query(False, description="Filter by dismissed status"),
         limit: int = Query(50, description="Maximum faces to return", ge=1, le=200),
         offset: int = Query(0, description="Number of faces to skip", ge=0),
+        archived: Optional[bool] = Query(
+            False, description="Filter by archived status (replaced by a better crop of the same track)"),
     ) -> List[UnidentifiedFaceResponse]:
         """List unidentified faces with optional filters."""
         faces = repository.get_unidentified_faces(
@@ -83,6 +96,7 @@ def create_unidentified_faces_router(
             dismissed=dismissed,
             limit=limit,
             offset=offset,
+            archived=archived,
         )
 
         result = []
@@ -109,6 +123,8 @@ def create_unidentified_faces_router(
                 created_at=face.created_at,
                 reviewed=face.reviewed,
                 dismissed=face.dismissed,
+                superseded_by_id=face.superseded_by_id,
+                learnable=learnable(face),
             ))
 
         return result
@@ -153,6 +169,8 @@ def create_unidentified_faces_router(
             created_at=face.created_at,
             reviewed=face.reviewed,
             dismissed=face.dismissed,
+            superseded_by_id=face.superseded_by_id,
+            learnable=learnable(face),
         )
 
     @router.get("/unidentified-faces/{face_id}/image")

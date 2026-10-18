@@ -24,13 +24,13 @@ def test_reproduce_json_serializable_error():
         camera_id="test_cam",
         face_crop=np.zeros((100, 100, 3), dtype=np.uint8),
         embedding=np.random.rand(512).astype(np.float32),
-        face_bbox=(10, 10, 120, 60),
+        face_bbox=(10, 10, 120, 100),
         track_id="global_15",
         best_match_person_id=6,
         best_match_score=np.float32(0.5271), # Numpy float32
-        # Frontal 5-point landmarks — the pose gate rejects landmark-less
-        # tasks (2026-06-07); this test targets JSON safety, not gating
-        landmarks=np.array([[30, 40], [70, 40], [50, 65], [35, 85], [65, 85]], dtype=np.float32),
+        # Landmark-less tasks (no aligned face) are rejected; this test targets
+        # JSON safety, not gating
+        aligned_face=np.zeros((112, 112, 3), dtype=np.uint8),
     )
     
     # We want to test _process_task directly to see if it fails when calling create_event
@@ -39,7 +39,7 @@ def test_reproduce_json_serializable_error():
     # Do not mock create_event; use real Repository path
     
     # Mock quality computation to pass checks
-    manager._compute_quality = MagicMock(return_value=(0.9, 0.9))
+    manager._quality_assessor = MagicMock(score=MagicMock(return_value=np.float32(0.9)))
     manager._is_diverse = MagicMock(return_value=True)
     manager._save_image = MagicMock(return_value="data/test_unidentified/test.jpg")
     

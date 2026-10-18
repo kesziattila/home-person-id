@@ -21,6 +21,7 @@ from src.recognition.face_recognizer import Face, FaceRecognizer
 from src.recognition.id_method import IdMethod
 from src.recognition.reid_extractor import ReIDExtractor, is_grayscale_image
 from src.recognition.reid_gallery import ReIDGalleryManager, DebugImageSaver
+from src.recognition.tensorrt_face import align_face
 from src.tracking.attribution import owner_face
 from src.utils.image_utils import crop_bbox, crop_face_region, crop_with_margin
 from src.utils.profiler import profiler
@@ -562,7 +563,7 @@ class IdentificationManager:
         """Offer a face no gallery person accepted to the unidentified-face manager."""
         if not self._unidentified_face_manager or not camera_id:
             return
-        face_crop, face_bbox = crop_with_margin(attempt.region, attempt.face.bbox, margin_ratio=0.3)
+        face_crop, _ = crop_with_margin(attempt.region, attempt.face.bbox, margin_ratio=0.3)
         if face_crop.size == 0:
             return
         best = attempt.scores.best_entry
@@ -570,13 +571,14 @@ class IdentificationManager:
             camera_id=camera_id,
             face_crop=face_crop,
             embedding=attempt.embedding,
-            face_bbox=face_bbox,
+            face_bbox=tuple(int(v) for v in attempt.face.bbox),   # the face, not the margin crop
             track_id=track_id,
             best_match_person_id=best.person_id if best else None,
             best_match_score=attempt.scores.top1 if attempt.scores.top1 > 0 else None,
             best_match_face_id=best.embedding_id if best else None,
             det_confidence=attempt.face.confidence,
-            landmarks=attempt.face.landmarks,
+            aligned_face=(align_face(attempt.region, attempt.face.landmarks)
+                          if attempt.face.landmarks is not None else None),
             embedding_norm=attempt.face.embedding_norm,
         )
 

@@ -72,21 +72,23 @@ def test_linker_logs_embedding_norm_and_passes_it_to_unidentified_faces(tmp_path
 def test_saved_unidentified_face_event_carries_embedding_norm(tmp_path):
     repo = MagicMock()
     repo.get_unidentified_embeddings_for_camera.return_value = []
+    repo.get_track_suggestion.return_value = None
     repo.add_unidentified_face.return_value = MagicMock(id=5)
     manager = UnidentifiedFaceManager(
         UnidentifiedFacesConfig(
-            enabled=True, images_path=str(tmp_path), min_quality_score=0.0,
-            min_sharpness_score=0.0, min_face_size=10, min_frontalness=0.0,
+            enabled=True, images_path=str(tmp_path), min_quality_score=0.0, min_face_size=10,
         ),
         repo,
     )
+    manager._quality_assessor = MagicMock(score=MagicMock(return_value=0.6))
     task = MagicMock(
         camera_id="cam", track_id="global_1", face_crop=np.full((120, 100, 3), 128, dtype=np.uint8),
         embedding=EMB, best_match_person_id=None, best_match_score=None, best_match_face_id=None,
-        face_bbox=(0, 0, 100, 120), det_confidence=0.8, landmarks=None, embedding_norm=21.5,
+        face_bbox=(0, 0, 100, 120), det_confidence=0.8, aligned_face=np.zeros((112, 112, 3), np.uint8),
+        embedding_norm=21.5,
     )
     manager._process_task(task)
 
     extra = repo.create_event.call_args.kwargs["extra_data"]
     assert extra["embedding_norm"] == pytest.approx(21.5)
-    assert "sharpness" in extra
+    assert extra["quality_score"] == pytest.approx(0.6)

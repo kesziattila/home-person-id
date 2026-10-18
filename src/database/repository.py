@@ -601,6 +601,7 @@ class Repository:
         dismissed: Optional[bool] = None,
         limit: int = 50,
         offset: int = 0,
+        archived: Optional[bool] = None,
     ) -> list[UnidentifiedFace]:
         """Query unidentified faces with filters.
 
@@ -608,6 +609,8 @@ class Repository:
             camera_id: Filter by camera
             reviewed: Filter by reviewed status
             dismissed: Filter by dismissed status
+            archived: Filter by archived status (superseded by a better crop
+                of the same track); None = both
             limit: Maximum results
             offset: Skip first N results
 
@@ -623,6 +626,9 @@ class Repository:
                 query = query.filter(UnidentifiedFace.reviewed == reviewed)
             if dismissed is not None:
                 query = query.filter(UnidentifiedFace.dismissed == dismissed)
+            if archived is not None:
+                column = UnidentifiedFace.superseded_by_id
+                query = query.filter(column.isnot(None) if archived else column.is_(None))
 
             return (
                 query.order_by(UnidentifiedFace.created_at.desc())
@@ -674,12 +680,36 @@ class Repository:
                 .filter(
                     UnidentifiedFace.camera_id == camera_id,
                     UnidentifiedFace.dismissed == False,
+                    UnidentifiedFace.superseded_by_id.is_(None),
                 )
                 .order_by(UnidentifiedFace.created_at.desc())
                 .limit(limit)
                 .all()
             )
             return [np.frombuffer(f.embedding, dtype=np.float32) for f in faces]
+
+    def get_track_suggestion(self, track_id: str) -> Optional[UnidentifiedFace]:
+        """The track's current suggestion: not archived, not yet reviewed or dismissed."""
+        with self.get_session() as session:
+            return (
+                session.query(UnidentifiedFace)
+                .filter(
+                    UnidentifiedFace.track_id == track_id,
+                    UnidentifiedFace.superseded_by_id.is_(None),
+                    UnidentifiedFace.reviewed == False,
+                    UnidentifiedFace.dismissed == False,
+                )
+                .order_by(UnidentifiedFace.created_at.desc())
+                .first()
+            )
+
+    def archive_unidentified_face(self, face_id: int, superseded_by_id: int) -> None:
+        """Archive a suggestion replaced by a better crop of the same track (row and image kept)."""
+        with self.get_session() as session:
+            session.query(UnidentifiedFace).filter(UnidentifiedFace.id == face_id).update(
+                {UnidentifiedFace.superseded_by_id: superseded_by_id}
+            )
+            session.commit()
 
     def update_unidentified_face(
         self,
@@ -742,6 +772,8 @@ class Repository:
     ) -> int:
         """Keep only the newest N unidentified faces per camera.
 
+        Archived faces don't count and are not deleted here (retention removes them).
+
         Args:
             camera_id: Camera ID
             max_count: Maximum faces to keep
@@ -753,7 +785,8 @@ class Repository:
             # Get faces to keep (newest first)
             keep_faces = (
                 session.query(UnidentifiedFace.id)
-                .filter(UnidentifiedFace.camera_id == camera_id)
+                .filter(UnidentifiedFace.camera_id == camera_id,
+                        UnidentifiedFace.superseded_by_id.is_(None))
                 .order_by(UnidentifiedFace.created_at.desc())
                 .limit(max_count)
                 .all()
@@ -766,6 +799,7 @@ class Repository:
                     session.query(UnidentifiedFace)
                     .filter(
                         UnidentifiedFace.camera_id == camera_id,
+                        UnidentifiedFace.superseded_by_id.is_(None),
                         ~UnidentifiedFace.id.in_(keep_ids),
                     )
                     .delete(synchronize_session=False)
@@ -774,7 +808,8 @@ class Repository:
                 # Keep none - delete all
                 count = (
                     session.query(UnidentifiedFace)
-                    .filter(UnidentifiedFace.camera_id == camera_id)
+                    .filter(UnidentifiedFace.camera_id == camera_id,
+                            UnidentifiedFace.superseded_by_id.is_(None))
                     .delete()
                 )
 
@@ -818,7 +853,8 @@ class Repository:
                     UnidentifiedFace.camera_id,
                     func.count(UnidentifiedFace.id).label("count"),
                 )
-                .filter(UnidentifiedFace.dismissed == False)
+                .filter(UnidentifiedFace.dismissed == False,
+                        UnidentifiedFace.superseded_by_id.is_(None))
                 .group_by(UnidentifiedFace.camera_id)
                 .all()
             )

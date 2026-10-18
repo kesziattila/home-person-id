@@ -271,6 +271,23 @@ reid:
 
 ---
 
+### Face Quality Model (unidentified faces)
+
+`unidentified_faces.quality_model` (eDifFIQA-tiny, 7 MB ONNX) scores how usable a
+face is for recognition; it runs on the CPU with ONNX Runtime, only when an
+unidentified face is stored (background thread), so it stays off the GPU. Not
+in git and not copied by `deploy.sh` — copy it once:
+
+```bash
+mkdir -p models/fiqa
+curl -L -o models/fiqa/ediffiqa_tiny_jun2024.onnx \
+  https://huggingface.co/opencv/face_image_quality_assessment_ediffiqa/resolve/main/ediffiqa_tiny_jun2024.onnx
+```
+
+It could be converted with `trtexec` like the other models, but the CPU keeps it
+away from the GPU the live pipeline is bound by. Check `FaceQualityAssessor.score`
+in the Performance Report.
+
 ## Hardware Acceleration (nvJPEG)
 
 ### Install nvjpeg for hardware-accelerated JPEG encoding

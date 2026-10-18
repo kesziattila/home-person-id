@@ -411,9 +411,10 @@ See `config/config.yaml` for all options. Key settings:
 | `face_recognition.trt_max_workspace_size` | TensorRT workspace limit (bytes, 0=default) | 0 |
 | `unidentified_faces.enabled` | Capture unidentified faces | true |
 | `unidentified_faces.max_per_camera` | Max faces to keep per camera | 20 |
-| `unidentified_faces.min_quality_score` | Min quality score (0-1) | 0.3 |
-| `unidentified_faces.min_sharpness_score` | Min sharpness for blur rejection (0-1) | 0.4 |
-| `unidentified_faces.min_face_size` | Min face size for capture (pixels) | 60 |
+| `unidentified_faces.quality_model` | Face quality model (eDifFIQA-tiny ONNX) | models/fiqa/ediffiqa_tiny_jun2024.onnx |
+| `unidentified_faces.min_quality_score` | Min face quality to save | 0.3 |
+| `unidentified_faces.learning_min_quality` | Min face quality for "Learning" (enroll) | 0.45 |
+| `unidentified_faces.min_face_size` | Min detected face size for capture (pixels, min side) | 64 |
 | `unidentified_faces.retention_days` | Days to keep before cleanup | 30 |
 | `vlm.enabled` | Enable VLM integration | false |
 | `vlm.url` | OpenAI-compatible server base URL | http://localhost:8080 |

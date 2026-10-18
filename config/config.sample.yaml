@@ -390,39 +390,31 @@ unidentified_faces:
   # Maximum faces to keep per camera (oldest are deleted)
   max_per_camera: 20
 
-  # Minimum quality score (0-1) to save a face
-  # Quality is based on: face size, sharpness, brightness, detection confidence
+  # Face quality model: eDifFIQA-tiny ONNX (CPU, ~6 ms/face on x86), one learned
+  # score of how usable a face is for recognition. Download (7 MB) from
+  # https://huggingface.co/opencv/face_image_quality_assessment_ediffiqa
+  quality_model: "models/fiqa/ediffiqa_tiny_jun2024.onnx"
+
+  # Below this quality the face is not saved
+  # (live: phone-occluded 0.22-0.37, faded 0.11-0.28)
   min_quality_score: 0.3
 
-  # Minimum sharpness score (0-1) to save a face
-  # min(Laplacian focus, gradient-anisotropy motion, fine-grain detail) at a
-  # fixed 112x112 input — comparable across face sizes; catches focus blur,
-  # motion blur AND low-light NR over-smoothing. Calibrated on 1080p
-  # home-camera crops: usable crops score 0.83+, motion-blurred ~0.36,
-  # NR-smeared evening crops <=0.23, so the 0.4 default gate is meaningful
-  min_sharpness_score: 0.4
+  # From this quality the face is marked "Learning" (good enough to enroll)
+  # (live: enrolled gallery faces 0.45-0.68, usable crops up to 0.70)
+  learning_min_quality: 0.45
 
-  # Minimum frontalness score (0-1) to save a face — rejects profile and
-  # looking-down poses (weak embeddings, unsuitable for enrollment).
-  # Computed from 5-point landmarks; calibrated on live crops: frontal
-  # faces score 0.79+, profile and look-down poses <=0.23. 0 = disabled
-  min_frontalness: 0.5
-
-  # Minimum face size (pixels) for bbox width
-  min_face_size: 60
+  # Minimum face size (pixels, min side of the detected face box). The quality
+  # model upscales every face to 112x112 and cannot see resolution
+  min_face_size: 64
 
   # Minimum match score to record a best match suggestion
   # Faces with scores below this won't have a suggested person
   min_match_score: 0.3
 
-  # Embedding similarity threshold for diversity check
-  # Skips faces too similar to already stored ones
+  # Embedding similarity threshold for diversity check against other tracks'
+  # suggestions. Each track keeps ONE suggestion, its best crop so far; a better
+  # crop archives the previous one (kept for history, hidden from the review list)
   embedding_similarity_threshold: 0.7
-
-  # Minimum seconds between saved faces of the same track (burst suppression).
-  # Prevents one sitting episode from flooding the review queue with
-  # near-duplicates and evicting diverse older candidates. 0 = disabled
-  burst_min_interval_sec: 10.0
 
   # Days to keep unidentified faces before auto-cleanup
   retention_days: 30
