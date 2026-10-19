@@ -447,3 +447,23 @@ identity and "last known room" — not continuous identity of every person at ev
 - Caveat: tracks that never reach 0.60 (e.g. Virag on ground_floor) are unlabelled — exactly the
   ones the lower threshold names. Check the 2026-10-19 audit; if clean, consider 0.50.
 - Live config backup config.yaml.20261018T194737Z.
+
+## 2026-10-19 04:44–04:50 UTC — Virag not named by face (morning departure)
+- 37 attempts, top1 = Virag almost always, best 0.48 (threshold 0.54). living_room: far side of the
+  room at the door, ~43 px faces (her accepts there are ~85 px), knitted hat; hallway: hat, looking
+  down under the high camera. No Virag face accept since 10-18 19:40 → no Re-ID gallery for her.
+- Lowering the threshold would not help (0.50 still misses; ~0.35 needed).
+
+## 2026-10-19 — offline: track-level fusion of weak face attempts (not deployed)
+- Weighted mean (face size × emb_norm) of per-person scores over the last 10 non-ambiguous attempts
+  the live policy rejects; name when fused top1 ≥ T, margin ≥ 0.10, ≥ 3 attempts. Data: face_scores
+  since the lone-face fix (10-18 12:42 UTC). Labelled = tracks with a ≥ 0.60 anchor, evaluated on
+  their non-accepted attempts; new names checked visually on audit crops.
+- T 0.46: 12 right / 0 wrong, 6 new; 0.42: 15/0, 19 new (10 with crops, all correct, 3 named by
+  Re-ID anyway); 0.38: 22/0, 33 new, first error Judit → Virag; 0.34: 48 new, ≥ 2 Judit → Virag.
+- Pre-fix data adds 8 Ati-labelled tracks fused as Virag — two faces alternating in one box, the
+  attribution bug fixed on 10-18, not a fusion error.
+- The morning Virag tracks need T 0.34. Judit's non-frontal faces score 0.37–0.40 on Virag over
+  ~30 attempts (10-19 03:28 UTC) — family resemblance is a systematic error that averaging cannot
+  remove. Not deployed; if ever, T ≥ 0.42 after re-measuring on several days. Next: a pose-robust
+  model (AdaFace) to separate Judit / Virag on non-frontal faces.
