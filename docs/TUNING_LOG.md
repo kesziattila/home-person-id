@@ -467,3 +467,16 @@ identity and "last known room" — not continuous identity of every person at ev
   ~30 attempts (10-19 03:28 UTC) — family resemblance is a systematic error that averaging cannot
   remove. Not deployed; if ever, T ≥ 0.42 after re-measuring on several days. Next: a pose-robust
   model (AdaFace) to separate Judit / Virag on non-frontal faces.
+
+## 2026-10-19 — offline: ArcFace (buffalo_l R50) vs AdaFace (CVLFace IR-50 WebFace4M, IR-101 WebFace12M)
+- Data: 10-18 frame capture (11:40–11:48, 18:23–18:33 UTC; living_room, ground_floor, hallway),
+  replayed ByteTrack tracks, live head region + `owner_face`, same 5-point alignment for all models;
+  27 hand-labelled tracks, 2618 faces (Ati 1210, Judit 630, Virag 778), 875 "hard" (ArcFace own
+  score < 0.40). Gallery = the 112 live gallery source images. Score = max cosine per person.
+- Rank-1 all / hard: ArcFace 0.981 / 0.943, IR-50 0.832 / 0.641, IR-101 0.893 / 0.774.
+  Accepted with zero errors (margin 0.10, t per model): ArcFace 71 %, IR-50 16 %, IR-101 65 %.
+  Judit outranked by Virag: 2.7 / 6.2 / 4.3 %; Virag outranked by Judit: 1.2 / 13.5 / 7.1 %.
+  BGR input is worse for both AdaFace models (RGB is correct).
+- Verdict: no model change. ArcFace ranks even hard faces right; the limit is the absolute
+  per-attempt threshold under family resemblance. Caveats: one day, 3 people, gallery partly
+  picked from ArcFace suggestions. Models deleted after the test.
