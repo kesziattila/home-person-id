@@ -191,3 +191,40 @@ def test_no_handover_when_a_second_person_is_outside_the_zone():
     manager._try_zone_identity_propagation(manager._update_track_zones())
 
     assert receiver.person_id is None
+
+
+# ---------------------------------------------------------------- appearance settled
+
+def _unit(v):
+    v = np.asarray(v, dtype=np.float32)
+    return v / np.linalg.norm(v)
+
+
+def test_appearance_change_blocks_strong_face_for_settle_period():
+    """2026-10-19 17:02: Judit's track switched onto Ati (Re-ID vs EMA 0.49) and one strong Ati
+    face named it. Same-person samples stay >= 0.79 (p1), so they never unsettle a track."""
+    from src.tracking.attribution import APPEARANCE_SETTLE_SEC, appearance_settled, update_appearance
+    from src.tracking.track import LocalTrack
+    track = LocalTrack(track_id=1, camera_id="c", bbox=(0, 0, 1, 1))
+    judit, ati = _unit([1, 0, 0]), _unit([0.45, 0.89, 0])          # cosine 0.45
+    for t in range(10):
+        update_appearance(track, judit + 0.1 * _unit([0, 0, 1]), now=float(t))
+    assert appearance_settled(track, now=10.0)                     # small variation: settled
+    update_appearance(track, ati, now=10.0)
+    assert not appearance_settled(track, now=10.0 + APPEARANCE_SETTLE_SEC - 0.1)
+    assert appearance_settled(track, now=10.0 + APPEARANCE_SETTLE_SEC)
+
+
+def test_byte_tracker_keeps_track_appearance():
+    from src.config import TrackingConfig
+    from src.detection.person_detector import Detection, DetectionResult
+    from src.tracking.byte_tracker import ByteTracker
+    tracker = ByteTracker("c", TrackingConfig())
+    det = DetectionResult(detections=[Detection(bbox=(100.0, 100.0, 200.0, 400.0), confidence=0.9)],
+                          frame_shape=(1000, 1000, 3))
+    emb = _unit([1, 2, 3])
+    for _ in range(5):
+        tracker.update(det, None, {0: (emb, 1.0)})
+    track = tracker.get_track(1)
+    assert np.allclose(track.appearance / np.linalg.norm(track.appearance), emb)
+    assert track.appearance_changed_at == 0.0

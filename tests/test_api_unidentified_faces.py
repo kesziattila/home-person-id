@@ -372,3 +372,120 @@ class TestMarkReviewed:
         """Test marking non-existent face as reviewed."""
         response = client.post("/api/v1/unidentified-faces/999/review")
         assert response.status_code == 404
+
+
+def test_match_scores_rank_the_two_closest_persons_in_the_current_gallery(repository, client, tmp_path):
+    """Review aid (2026-10-19): the quality score alone did not tell whether a suggestion
+    helps — a noisy Judit face close to Virag (0.21) made one more Virag face look like Judit.
+    The API shows the two closest persons by the live scoring rule; an assigned face
+    updates the gallery for the next request."""
+    rng = np.random.default_rng(1)
+    judit_dir, virag_dir = rng.standard_normal(512), rng.standard_normal(512)
+    judit, virag = repository.create_person("Judit"), repository.create_person("Virag")
+    repository.add_face_embedding(judit.id, judit_dir.astype(np.float32))
+    repository.add_face_embedding(virag.id, virag_dir.astype(np.float32))
+    face_emb = (judit_dir + 0.4 * virag_dir).astype(np.float32)
+    face = repository.add_unidentified_face("hallway", face_emb, str(tmp_path / "f.jpg"), 0.5)
+
+    (row,) = client.get("/api/v1/unidentified-faces").json()
+    names = [s["person_name"] for s in row["match_scores"]]
+    scores = [s["score"] for s in row["match_scores"]]
+    assert names == ["Judit", "Virag"] and scores[0] > scores[1] > 0.2
+    assert client.get(f"/api/v1/unidentified-faces/{face.id}").json()["match_scores"] == row["match_scores"]
+
+
+def test_match_scores_empty_without_gallery(repository, client, tmp_path):
+    repository.add_unidentified_face("hallway", np.ones(512, np.float32), str(tmp_path / "f.jpg"), 0.5)
+    (row,) = client.get("/api/v1/unidentified-faces").json()
+    assert row["match_scores"] == []
+
+
+class TestEnrolmentValue:
+    """'Recommended +N' / 'Risky' (2026-10-19 offline, 150 labelled candidates): coverage =
+    other tracks' current suggestions >= 0.5 similar predicted the real gain of enrolling
+    (Spearman 0.71; quality 0.14); the one seriously harmful candidate had a runner-up
+    person ahead of its own (Judit 0.17 vs Virag 0.20)."""
+
+    @staticmethod
+    def _scores(*pairs):
+        from src.api.routes.unidentified_faces import MatchScore
+        return [MatchScore(person_id=i, person_name=n, score=s) for i, (n, s) in enumerate(pairs)]
+
+    def test_label_rules(self):
+        from src.api.routes.unidentified_faces import enrolment_label
+        from src.config import UnidentifiedFacesConfig
+        cfg = UnidentifiedFacesConfig()
+        assert enrolment_label(self._scores(("Ati", 0.53), ("Judit", 0.15)), 8, 0.55, cfg) == ("recommended", "covers_failures")
+        # live #1399: useful (coverage 5) but blurred and grainy (quality 0.45) -> not for the gallery
+        assert enrolment_label(self._scores(("Ati", 0.48), ("Judit", 0.08)), 5, 0.45, cfg) == ("review", "low_quality")
+        assert enrolment_label(self._scores(("Judit", 0.52), ("Virag", 0.16)), 1, 0.54, cfg) == ("review", "low_coverage")  # #1393
+        assert enrolment_label(self._scores(("Judit", 0.17), ("Virag", 0.20)), 9, 0.6, cfg) == ("risky", "close_runner_up")
+        assert enrolment_label(self._scores(("Judit", 0.30), ("Virag", 0.22)), 9, 0.6, cfg)[0] == "risky"
+        assert enrolment_label([], 9, 0.6, cfg) == ("review", "no_gallery")
+
+    def test_coverage_counts_similar_suggestions_of_other_tracks(self, repository, client, tmp_path):
+        rng = np.random.default_rng(3)
+        ati_dir, other = rng.standard_normal(512), rng.standard_normal(512)
+        ati = repository.create_person("Ati")
+        repository.add_face_embedding(ati.id, (ati_dir + 1.5 * rng.standard_normal(512)).astype(np.float32))
+        situation = ati_dir + 0.3 * rng.standard_normal(512)          # a recurring view of Ati, below the threshold
+        faces = [repository.add_unidentified_face(
+            "living_room", (situation + 0.2 * rng.standard_normal(512)).astype(np.float32),
+            str(tmp_path / f"{i}.jpg"), 0.55, track_id=f"global_{i}") for i in range(6)]
+        same_track = repository.add_unidentified_face(
+            "living_room", situation.astype(np.float32), str(tmp_path / "s.jpg"), 0.4, track_id="global_0")
+        repository.add_unidentified_face("hallway", other.astype(np.float32), str(tmp_path / "o.jpg"), 0.4,
+                                         track_id="global_9")
+        body = client.get(f"/api/v1/unidentified-faces/{faces[0].id}").json()
+        assert body["coverage"] == 5                      # the 5 other tracks, not its own track's crop
+        assert body["enrol_label"] == "recommended"
+        same = client.get(f"/api/v1/unidentified-faces/{same_track.id}").json()
+        assert same["coverage"] == 5 and (same["enrol_label"], same["enrol_reason"]) == ("review", "low_quality")
+
+    def test_assignment_logs_the_enrolment_value(self, repository, client, tmp_path):
+        rng = np.random.default_rng(4)
+        judit = repository.create_person("Judit")
+        repository.add_face_embedding(judit.id, rng.standard_normal(512).astype(np.float32))
+        face = repository.add_unidentified_face("hallway", rng.standard_normal(512).astype(np.float32),
+                                                str(tmp_path / "f.jpg"), 0.5, track_id="global_1")
+        assert client.post(f"/api/v1/unidentified-faces/{face.id}/assign", json={"person_id": judit.id}).status_code == 200
+        (event,) = repository.get_events(event_type="face_enrolled")
+        assert event.extra_data["suggestion_id"] == face.id and event.extra_data["enrol_label"] == "review"
+        assert event.extra_data["coverage"] == 0 and event.extra_data["match_scores"][0]["person_name"] == "Judit"
+
+
+def test_coverage_counts_archived_crops_once_per_track(repository, client, tmp_path):
+    """Archived crops (superseded by a better crop of the same track) widen the pool to more
+    tracks / days (live 2026-10-19: 130 -> 380 rows), but a track counts once."""
+    rng = np.random.default_rng(6)
+    ati_dir = rng.standard_normal(512)
+    ati = repository.create_person("Ati")
+    repository.add_face_embedding(ati.id, (ati_dir + 1.5 * rng.standard_normal(512)).astype(np.float32))
+    situation = ati_dir + 0.3 * rng.standard_normal(512)
+    crop = lambda name, track: repository.add_unidentified_face(
+        "living_room", (situation + 0.2 * rng.standard_normal(512)).astype(np.float32),
+        str(tmp_path / f"{name}.jpg"), 0.55, track_id=track)
+    face = crop("f", "global_0")
+    for i in range(1, 4):                       # 3 other tracks, each: best crop + 2 archived crops
+        best = crop(f"b{i}", f"global_{i}")
+        for k in range(2):
+            repository.archive_unidentified_face(crop(f"a{i}{k}", f"global_{i}").id, best.id)
+    old_track_best = crop("x", "global_7")      # a 4th track known only from an archived crop
+    repository.archive_unidentified_face(crop("y", "global_8").id, old_track_best.id)
+    body = client.get(f"/api/v1/unidentified-faces/{face.id}").json()
+    assert body["coverage"] == 5                # global_1..3, global_7, global_8 — not 3 x 3 rows
+
+
+def test_coverage_ignores_suggestions_the_gallery_now_recognises(repository, client, tmp_path):
+    """Live 2026-10-19: 8 of the 11 faces #1403 'covered' were already accepted by the grown
+    gallery — they are no failure any more and must not inflate its +N."""
+    rng = np.random.default_rng(5)
+    situation = rng.standard_normal(512)
+    ati = repository.create_person("Ati")
+    repository.add_face_embedding(ati.id, situation.astype(np.float32))      # gallery already has this view
+    faces = [repository.add_unidentified_face(
+        "living_room", (situation + 0.2 * rng.standard_normal(512)).astype(np.float32),
+        str(tmp_path / f"{i}.jpg"), 0.4, track_id=f"global_{i}") for i in range(6)]
+    body = client.get(f"/api/v1/unidentified-faces/{faces[0].id}").json()
+    assert body["match_scores"][0]["score"] > 0.9
+    assert body["coverage"] == 0 and body["enrol_label"] == "review"

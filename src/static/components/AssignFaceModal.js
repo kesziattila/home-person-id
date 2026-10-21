@@ -1,3 +1,5 @@
+import { enrolBadge, formatMatchScores } from '../utils/formatters.js';
+
 export default {
     template: `
         <div v-if="visible" @click.self="close" class="modal active fixed inset-0 bg-black bg-opacity-75 items-center justify-center z-50 p-4">
@@ -11,6 +13,8 @@ export default {
                     <div class="mb-4">
                         <img :src="'/api/v1/unidentified-faces/' + faceId + '/image'" class="w-32 h-32 object-cover rounded mx-auto mb-2">
                         <div class="text-center mb-2" v-html="qualityInfo"></div>
+                        <div v-if="faceDetails && faceDetails.match_scores && faceDetails.match_scores.length"
+                             class="text-center text-sm mb-2" v-html="formatMatchScores(faceDetails.match_scores)"></div>
                         <div class="text-sm text-gray-400 text-center mb-4">{{ faceInfo }}</div>
                     </div>
                     <div class="mb-4">
@@ -53,15 +57,14 @@ export default {
     computed: {
         qualityInfo() {
             if (!this.faceDetails) return '';
-            const { quality_score, blur_score } = this.faceDetails;
-            const isGood = this.isGoodForLearning(quality_score, blur_score);
-            const qualityText = `Q:${(quality_score*100).toFixed(0)}% S:${(blur_score*100).toFixed(0)}%`;
-            if (isGood) {
-                return `<span class="inline-block bg-green-600 text-xs px-3 py-1 rounded">✓ Good for learning</span>
-                        <span class="text-xs text-gray-500 ml-2">${qualityText}</span>`;
-            }
-            return `<span class="inline-block bg-yellow-600 text-xs px-3 py-1 rounded">⚠ Low quality</span>
-                    <span class="text-xs text-gray-500 ml-2">${qualityText}</span>`;
+            // Enrolment value and quality are both decided server-side, as in the list view
+            // (enrol_label / coverage; learnable = quality >= unidentified_faces.learning_min_quality)
+            const badge = enrolBadge(this.faceDetails);
+            const q = `Q:${(this.faceDetails.quality_score * 100).toFixed(0)}%`;
+            const quality = this.faceDetails.learnable
+                ? `<span class="text-xs text-gray-400 ml-2">${q}</span>`
+                : `<span class="text-xs text-yellow-500 ml-2" title="Face quality below the learning threshold">${q} low quality</span>`;
+            return `<span class="inline-block ${badge.cls} text-xs px-3 py-1 rounded" title="${badge.title}">${badge.text}</span>${quality}`;
         },
         faceInfo() {
             if (!this.faceDetails) return '';
@@ -143,10 +146,6 @@ export default {
                 this.status = { message: 'Error: ' + e.message, error: true };
             }
         },
-        isGoodForLearning(quality, sharpness) {
-            const LEARNING_QUALITY_THRESHOLD = 0.6;
-            const LEARNING_SHARPNESS_THRESHOLD = 0.5;
-            return sharpness >= LEARNING_SHARPNESS_THRESHOLD && quality >= LEARNING_QUALITY_THRESHOLD;
-        }
+        formatMatchScores,
     }
 };

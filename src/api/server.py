@@ -14,7 +14,7 @@ from src.visualization.preview import PreviewBuffer, Visualizer
 from src.tracking.zone_manager import ZoneManager
 from src.utils.image_utils import encode_jpeg
 from src.database.repository import Repository
-from src.config import FaceRecognitionConfig, UnidentifiedFacesConfig
+from src.config import AgeConfig, FaceRecognitionConfig, UnidentifiedFacesConfig
 from src.api.routes.events import create_events_router
 from src.api.routes.persons import create_persons_router
 from src.api.routes.unidentified_faces import create_unidentified_faces_router
@@ -33,6 +33,7 @@ class APIServer:
         use_nvjpeg: bool = False,
         zone_manager: Optional[ZoneManager] = None,
         timeline_min_stay_sec: float = 5.0,
+        age_config: Optional[AgeConfig] = None,
     ):
         self.buffer = buffer
         self.repository = repository
@@ -43,6 +44,7 @@ class APIServer:
         self.use_nvjpeg = use_nvjpeg
         self.zone_manager = zone_manager
         self.timeline_min_stay_sec = timeline_min_stay_sec
+        self.age_config = age_config
         self.app = FastAPI(title="Home Person ID API")
         self.executor = ThreadPoolExecutor(max_workers=os.cpu_count() or 4)
 
@@ -56,6 +58,15 @@ class APIServer:
     def setup_routes(self):
         # Mount static files directory
         self.app.mount("/static", StaticFiles(directory=self.static_dir), name="static")
+
+        @self.app.middleware("http")
+        async def revalidate_ui(request: Request, call_next):
+            """UI files: always revalidate (ETag -> cheap 304). Without Cache-Control a phone
+            browser kept stale ES modules (components/*.js) even across reloads (2026-10-19)."""
+            response = await call_next(request)
+            if request.url.path == "/" or request.url.path.startswith("/static/"):
+                response.headers["Cache-Control"] = "no-cache"
+            return response
 
         @self.app.get("/")
         async def index():
@@ -100,7 +111,8 @@ class APIServer:
             if self.face_config:
                 persons_router = create_persons_router(
                     self.repository,
-                    self.face_config
+                    self.face_config,
+                    age_config=self.age_config,
                 )
                 self.app.include_router(persons_router)
                 logger.info("Persons API routes registered")
@@ -111,7 +123,7 @@ class APIServer:
                     self.repository,
                     self.face_config,
                     faces_dir=self.face_config.faces_dir if self.face_config else "data/faces",
-                    learning_min_quality=self.unidentified_faces_config.learning_min_quality,
+                    config=self.unidentified_faces_config,
                 )
                 self.app.include_router(unidentified_faces_router)
                 logger.info("Unidentified faces API routes registered")

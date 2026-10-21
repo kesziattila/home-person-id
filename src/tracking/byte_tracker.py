@@ -5,6 +5,7 @@ detections using only IoU and motion prediction, without requiring Re-ID feature
 """
 
 import logging
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -13,6 +14,7 @@ from filterpy.kalman import KalmanFilter
 
 from src.config import TrackingConfig
 from src.detection.person_detector import Detection, DetectionResult
+from src.tracking.attribution import update_appearance
 from src.tracking.track import LocalTrack, TrackState
 from src.utils.image_utils import crop_bbox
 
@@ -488,6 +490,7 @@ class ByteTracker:
         """Attach the pre-computed Re-ID embedding and crop for a detection."""
         if reid_embeddings and det_idx in reid_embeddings:
             track.last_reid_embedding, track.last_reid_quality = reid_embeddings[det_idx]
+            update_appearance(track, track.last_reid_embedding, time.time())
         if frame is not None:
             track.last_crop = self._extract_crop(frame, track.bbox)
 

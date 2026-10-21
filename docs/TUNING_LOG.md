@@ -17,6 +17,22 @@ identity and "last known room" — not continuous identity of every person at ev
 | face policy precision lo95 (analyzer, live pseudo-labels) | n/a | ≥ 0.99 |
 | zones: person location matches the room on frame review | not checked | all cameras |
 
+## Tuning order (false positive / false negative)
+
+Agreed 2026-10-20: when a review finds a wrong name (FP) or a missed person (FN), start by
+re-tuning the EXISTING knobs below with an offline replay. A new rule, concept or exception
+comes only after these are measured and exhausted.
+
+| Knob | Where | Live value | Reserve / note |
+|---|---|---|---|
+| face `similarity_threshold` / `min_margin` | config `face_recognition` | 0.48 / 0.20 | family impostor max 0.37 (Judit vs Virag gallery), guest children unmeasured |
+| face `strong_threshold` / `strong_min_margin` | config `face_recognition` | 0.58 / 0.15 | single attempt names the track |
+| `APPEARANCE_SETTLE_SEC` | `attribution.py` constant | 5 s | reserve: 3 s still blocks the 19:02 switch (blocked down to 1 s), 0/425 labelled strong faces blocked at any value; 3 s would have named Virag 10-20 06:46 |
+| `APPEARANCE_CHANGE_SIM` | `attribution.py` constant | 0.6 | same-person samples p1 0.79, the switch 0.49 |
+| `reid.max_overlap` | config `reid` | 0.15 | isolation for appearance evidence |
+| `age.max_ratio` | config `age` | 2.5 | age veto |
+| `enrol_min_coverage` | config (default) | 5 | Recommended suggestions |
+
 ## Entry template
 
 ```
@@ -480,3 +496,256 @@ identity and "last known room" — not continuous identity of every person at ev
 - Verdict: no model change. ArcFace ranks even hard faces right; the limit is the absolute
   per-attempt threshold under family resemblance. Caveats: one day, 3 people, gallery partly
   picked from ArcFace suggestions. Models deleted after the test.
+
+## 2026-10-19 10:42 UTC — hallway zones: "outside" only from the door (live config)
+- Problem: `hallway` had `exit_destination: outside`, so every track lost anywhere in the hallway
+  set the person outside. Since 10-16: 53 outside transitions, 36 back inside within 5 min (Judit
+  ~10x on 10-19 morning while dressing Virag at the door; 10-18 18:32 Judit went upstairs and was
+  set outside).
+- Replay of hallway tracks (10-17..19, detection log): the two real exits of 10-19 ended at
+  (0.90, 0.67) and (0.85, 0.72) — beside the opened door, the first one outside the old door
+  polygon; 149 track ends sat on the frame bottom (y = 1.0) below every polygon (zone None).
+- Change: hallway zone without exit_destination; door zone ("outside") widened to the frame's right
+  edge; hallway/outside bottom edges at y = 1.01. Replay: tracks ending in the door zone 55 / 261
+  (was: any hallway loss); people standing at the coat corner can still be lost there.
+  Backup config.yaml.20261019T104233Z. Check tomorrow morning's departures.
+
+## 2026-10-19 — offline: age as an identity cue (MiVOLO v2)
+- insightface genderage: Virag 28–31 y on frontal gallery faces → useless for children.
+- MiVOLO v2 (d1_384, face + body; safetensors from the HF repo, source read, run locally): gallery
+  ages Ati 34.6, Judit 33.6, Virag 6.8, Rozika 65.1. On 482 labelled 10-18 samples: Virag median
+  8.4, adults 33–35; per-track medians Virag ≤ 15.6, adults ≥ 28.9. Works on backs/hats (10-19
+  entrance Virag 5.5); the entrance top-down view underestimates adults (12–16).
+- Generic rule, no hand-made "child" class: veto person p for a track when track median age and p's
+  gallery age differ by more than x2.5, after ≥ 3 samples → true person vetoed 0 / 428 decisions;
+  Virag vetoed on all 17 adult tracks; on 9 / 10 Virag tracks only Virag stays compatible.
+- Jetson: ONNX (F.fold replaced by an identical grouped conv_transpose2d), trtexec FP16 24.6 ms
+  GPU / 32 ms with copies while live; FP16 vs FP32 ≤ 0.11 y. Test files in /root/mivolo_test.
+- Non-frontal faces added to the face gallery (cross-window split): no gain — they match the
+  person's other-session faces at 0.28 vs 0.42 for the frontal gallery; a junk crop (hand) in the
+  gallery named 10 Ati faces Virag.
+
+## 2026-10-19 11:09 UTC — apparent-age veto live (age.enabled, MiVOLO TensorRT FP16)
+- Code: src/recognition/age_estimator.py + age_gate.py; veto in TrackIdentityState.confirm_identity
+  (every naming path), a contradicted name is revoked (`id_revoked`, reason "age ..."); samples only
+  on isolated tracks, ≤ 7 per track, ≥ 1 s apart, latest face crop while fresh else body only.
+- Live config: max_ratio 2.5, min_samples 3, model models/mivolo_v2/mivolo_d1_384_fp16.engine.
+  Backup config.yaml.20261019T110912Z. Warmup: person ages from the gallery in 2.6 s —
+  Ati 35.2, Judit 36.5, Virag 7.5 (n=9), Rozika 64.8.
+- Tuning log `<metrics>/age/` → `tools/analyze_age.py` (per-track medians, vetoes at swept ratios,
+  live names from the audit). Check 10-20: vetoes on Judit/Virag, any veto of a correct name,
+  `AgeEstimator.estimate` in the perf report. Code not committed yet (live experiment).
+- 13:20 UTC: gallery ages stored per image in face_embeddings (apparent_age, age_model; added by
+  migrate_database), re-estimated only when age.model changes; refresh every 60 s picks up new
+  enrolments. Person card / detail show the person's age and per-image ages (API
+  /persons/{id}/detail: apparent_age, apparent_age_images, images[].apparent_age). Live: Virag images
+  5.8–14.2 y (1 of 10 without a face), adults 28.9–39.0, Rozika 59.9–67.3.
+- Gallery cleanup (user request): deleted face images #28 (Judit, looking down), #57 (Virag, dark),
+  #58 (Virag, dark profile, 26 y) — offline on the 10-18 labelled faces with the live gallery
+  embeddings they changed no accept (593 at 0.54) and removed 1 Judit/Virag confusion each at most.
+  Kept #97 (Virag profile, tight crop, no face for the age detector): without it Virag's accepts at
+  0.54 fell 39 → 10 and named tracks 11 → 9; it made 11 live face matches (10-17/18). Local copies
+  of all gallery images in local/remote/gallery/.
+
+## 2026-10-19 — enrolment review: quality score is a filter, not a value
+- Offline (live gallery embeddings, 10-18 labelled faces): adding #1399 (Ati, blurred, Q 0.45) +3 Ati
+  accepts, no risk (others ≤ 0.08); #1393 (Judit, sharp 3/4 view, Q 0.54) +1/+2; #1390 (Judit, noisy,
+  Q 0.54) and #1387 (Judit, noisy, Q 0.49) +0 and one more Virag face shown as Judit each.
+  The quality model filters junk reliably but within ~0.45-0.55 does not predict enrolment value.
+- UI: suggestions and the assign dialog show the two closest persons in the current gallery
+  (`match_scores`, same rule as live scoring: identification_manager.score_against_gallery), the
+  runner-up in yellow from 0.2. Assign dialog: "Learning" now from the server (`learnable`) — it
+  still used the hand-made rule (quality ≥ 0.6 and sharpness ≥ 0.5), so every new face showed
+  "Low quality, S:0%".
+
+## 2026-10-19 — offline: what predicts the value of enrolling a suggestion
+- 150 candidate faces (unaccepted by the live rule, quality >= 0.3, 23 labelled 10-18 tracks), each
+  added to its person's live gallery; gain = extra correct accepts on OTHER tracks.
+- Spearman with gain@0.54: quality +0.14 (weak), coverage = unaccepted faces of other tracks with
+  cosine >= 0.5 to the candidate +0.71; candidate becomes their best person +0.60. Harm was mostly
+  +1 top-1 confusion; the one serious case (+15 confusions, no gain) had its own person NOT on top
+  (Judit 0.17 < Virag 0.20) → margin >= 0.10 rule.
+- Rule coverage >= 5 and margin >= 0.10: 92 / 150 marked, 91 % good, gain 3097 / 3483; today's
+  "Learning" (quality >= 0.45): 21 marked, 95 % good but only 616 / 3483 of the gain. Live pool
+  check: #1399 coverage 8 → recommended (+3 measured); #1393/#1390/#1387 coverage 3/0/1 → not.
+- Caveats: one day, 27 tracks; the live pool holds one crop per track, so the coverage cut-off must
+  be re-checked on live data.
+- 15:35 local: live — suggestion badge "Recommended +N" / "Risky" / "Review" (enrol_label, coverage
+  from the current suggestion list, server-side), filter "Recommended only"; quality stays a badge.
+  Live list: 134 suggestions → 37 recommended (mostly Ati / Judit just below the threshold in the
+  living room, coverage 5-19), 8 risky, 89 review. Every assignment writes a `face_enrolled` event
+  (label, coverage, match scores, quality) to calibrate enrol_min_coverage on live outcomes.
+
+## 2026-10-19 14:19–14:27 UTC — arrival (Judit, Virag) with the new zones and the age veto
+- Frame capture 14:19–14:26 UTC (4349 frames). Age samples sensible: Virag tracks 5–14 y (entrance
+  5.3 / 5.8), Judit 25–45 y; no veto (no naming contradicted the age).
+- Nobody named at the door or in the hallway (Judit: red hat, looking down, best face 0.45; Re-ID
+  galleries empty after today's restarts); names came by face in the living room 3–4 min later.
+- Judit face-named in the living room at (0.85, 0.52) — behind the sofa by the hallway door, in no
+  zone → her state stayed "outside" (from 04:50). Living-room zone extended there (and bottom to
+  1.01); pushed 14:3x UTC without restart (takes effect at the next restart).
+- With elimination naming, the entrance child track (5.3 y, only child) would have been Virag at the door.
+- Frame analysis of the arrival (live gallery, every frame, CPU): entrance (top-down) 10 faces in
+  595 frames, all weak (Virag top-1 at 0.31-0.38) — no usable face at the door. Hallway: Judit's
+  tracks had 4 and 5 frames >= 0.54 (best 0.60/0.59), Virag 1 (0.54); live sampled ~1 attempt/s
+  and each track got ONE accepted attempt (59487 0.59 at 14:21:22, then lost; 59512 0.56, next
+  0.55 ambiguous) → FACE_CONSECUTIVE_MATCHES = 2 never reached. Lone off-centre faces (person
+  carrying bags / bending): 31/78 and 26/38 hallway faces ambiguous.
+- Single strong accept (top1 >= 0.58, margin >= 0.15) on 10-17..19 face_scores: 1343 strong
+  attempts on anchor-labelled tracks, 0 wrong (0.56: 4 wrong); would name 136 more tracks; 67
+  with audit crops checked visually, no clear wrong name. Not deployed.
+- Living room (every 2nd frame): Virag's sofa track had 18 faces >= 0.54 from 14:22:14 (6 strong),
+  live named her only at 14:23:35 (~80 s later); Judit t13 first >= 0.54 at 14:22:58, live 14:22:59.
+- Live: `face_recognition.strong_threshold 0.58 / strong_min_margin 0.15` — one strong attempt
+  names the track, weaker accepted attempts still need two in a row. Replay
+  (`analyze_face_scores.py --strong-threshold 0.58`, 10-17..19, t 0.54 / m 0.10): named tracks
+  375 → 512 / 2138, 0 wrongly confirmed labelled tracks (labels come from 0.60/0.15 anchors, so
+  the precision check is partly circular — the visual check of 67 above is the independent one).
+  face_scores records now carry `strong`. Rejected: elimination naming for the only age-compatible
+  person (guest children); Re-ID gallery persistence across restarts (restarts are rare live).
+
+## 2026-10-19 16:37–17:07 UTC — Identity review (first 30 min with strong accept)
+- 45 audit samples, 69 rows. Judit 21/21 correct (4 face, 17 reid_gallery — her sweater), Ati 4/4
+  correct (face). Virag (16:42, ground floor / living room) never named: best face 0.43; age samples
+  6–10 y on her tracks, no veto anywhere.
+- Strong accept used on 6 tracks (59663, 59689, 59700, 59704, 59715, 59741); 59663, 59689, 59715
+  had only ONE accepted attempt → named only thanks to it. All correct.
+- find_contradictions: face_disagrees 59694 (Judit, faces "Virag 8/9") is noise — top-1 votes at
+  0.21–0.29; teleport living_room → hallway in 1 s is Judit walking through the door.
+- Ghost: the purple jacket on the living-room hook was a person track (59712 17:01–17:05, also
+  59691), age 26.8 y body-only; people passing in front got merged into it (one accepted face 0.55
+  as Judit). Candidate: exclusion zone for the hook.
+- 17:22 UTC live: living-room exclusion zone for the jacket on the hook, new `mode: contained` (only boxes
+  WHOLLY inside (0.875, 0, 1.0, 0.62) are dropped). The center rule would have dropped Judit / Virag
+  undressing there on arrival (14:21, Judit's face-naming spot). Logged detections 10-17..19 in the
+  strip: 10164 coat-size boxes dropped, 2961 person-size kept, 64 tall dropped (all coat variants).
+- 19:02 local "Judit's top in Ati's timeline": ground_floor ByteTrack switch, track global_59715 = Judit
+  (face attempts leaned Judit 0.47/0.46, ambiguous) jumped onto Ati for ~5 s at 17:02:08 (Re-ID vs
+  the track's earlier appearance 0.92 → 0.55, back to 0.85 at 17:02:13.7); ONE strong Ati face 0.597
+  at 17:02:09 named it — the streak rule would not have — then Judit carried "Ati" into the stairway
+  → upstairs. Strong accept needs a guard against freshly switched tracks.
+- Virag: 14 recent suggestions (all Virag visually) score 0.50–0.53 vs runner-up 0.15–0.30 → the
+  threshold, not the margin, blocks her. Hand-labelled 10-18 faces (2618), live gallery:
+  t 0.54/m 0.10 Virag faces 39/778 tracks 6/10; t 0.48/m 0.20 173/778, 9/10 (Judit tracks 4 → 8/13),
+  0 wrong faces. Adding the 14 suggestions: no gain at 0.54 (39 → 39), +5 at 0.50/0.20 — other-day
+  faces barely match. Live replay 10-17..19 (+strong): t 0.48/m 0.20 tracks 538 → 682 / 2281, 0 wrong
+  labelled tracks, face precision 0.992 (pseudo-labels). Not deployed.
+
+## 2026-10-19 evening — strong-accept switch guard and Virag concepts (offline)
+- Switch guard, Re-ID sample vs the track's appearance EMA (alpha 0.2), ByteTrack replay with logged
+  embeddings. Null (28 hand-labelled single-person 10-18 tracks, 19719 samples): p1 0.79, p5 0.86.
+  The 17:02 switch dipped to 0.49 (and 0.45 on the switch back).
+  (a) a single strong face counts only if no dip < 0.6 in the last 5 s: 0/240 labelled strong faces
+      blocked, 0 tracks lose their name, the 17:02 case blocked. (W 5 s / 0.7: 5.8 % blocked.)
+  (b) revoke a name on any dip < 0.6: 3/28 correct labelled tracks dip (pose/partial crops) → rejected.
+  (c) appearance gate in ByteTrack stage 1 (0.5/0.6, prototype, reverted): births x3-4 on entrance
+      and ground floor (ground floor 688 → 2846) — single Re-ID samples too noisy → rejected.
+- Virag concepts on the labelled 10-18 set (base gallery = enrolments before 10-18), rule 0.54/0.10:
+  base Virag tracks 4/10; same-day gallery of strong faces 7/10, 0 wrong; top-2 mean needs a lower
+  threshold to gain; z-norm from the gallery's impostor stats looks perfect (10/10) but drops Ati's /
+  Rozika's effective threshold to ~0.30 — not measurable for strangers → rejected.
+- Recency check (user: a 1-2 week old face should be as good as a fresh one): 10-19 arrival living-
+  room faces (Virag 206, Judit 40). Virag accepted faces: old gallery (Feb-Jun) 16, +10-17 enrolments
+  16, +10-18 enrolments 18, +6 strong Virag faces of the PREVIOUS day 30, same-day session 30; 0 wrong.
+  → not "same day": recent faces from the home cameras help; the 10-17/18 enrolments (picked from
+  failing suggestions) barely do. Small sample (mostly one sofa track).
+- 17:5x UTC live: guard (a) — `attribution.appearance_settled` (Re-ID vs track EMA < 0.6 in the last
+  5 s → a single strong face may not name the box; the streak still can). face_scores carry `settled`.
+- Adding Virag suggestions (all visually Virag, from 14:40-16:30, not from the probe tracks), rule
+  0.54/0.10: 10-19 arrival probe Virag faces 18 → 44 / 206 with all 10, #1447 alone 18 → 40 (#1462 +3,
+  #1430/#1433 +1, the rest 0); hand-labelled 10-18 faces: 39 → 39 (no gain the day before); 0 wrong.
+  Coverage (the live "Recommended" signal) of #1447 was 1 — it does not predict this gain.
+- Correction (user: #1447 is an IR crop, not recommended, Q 0.47): its whole "18 → 40" gain is 22 faces
+  of ONE sofa track (t10, 14:22-14:23) that already scored 0.50-0.54; #1447 is the same child on the
+  same sofa 1.5 h later (same hair clip), similarity 0.56-0.58. Safe (vs Ati/Judit gallery <= 0.28,
+  labelled Ati/Judit faces p99 0.18) but not evidence of a general gain — the probe is effectively one
+  track. The recommender (coverage 1, quality < 0.50) is not contradicted. Not added. A Virag test
+  set with many tracks / days is needed before judging enrolment picks.
+- 18:4x UTC live: suggestion coverage counts OTHER TRACKS with a similar still-failing suggestion,
+  archived crops included (pool 130 → 380 rows). Live list: 12 → 22 recommended (10 review →
+  recommended, e.g. Virag #1069 entrance 0.57 q 0.55 cov 0 → 5); no label lost. enrol_min_coverage 5
+  unchanged (it was calibrated on one crop per track).
+- Point 4 (lone off-centre face = ambiguous), arrival frames re-run with face position: ground floor
+  40/64 faces ambiguous, hallway 59/139 — ALL lone faces in isolated boxes, face centre at 0.76-0.84
+  (or 0.15-0.25) of the region, every sampled one the box owner (Virag sitting with legs out → wide
+  box; Judit bending / taking off her coat). But they are profile / looking-down faces: would-be
+  accepts at 0.54/0.10 ground floor 0/40, hallway 5/59 (Judit 0.54-0.57). Live 10-17..19 lone
+  ambiguous attempts that would pass: Ati living room 489 (the 10-18 sofa case class: Ati's face in
+  a box over lying Judit, which is also "isolated"), Ati ground floor 99, Virag living room 66,
+  Virag ground floor 1. → the rule is not what blocks Virag on the ground floor (low scores from the
+  top-down angle are); relaxing it for isolated boxes would re-open the 10-18 error class. Unchanged.
+
+## 2026-10-20 04:45–04:48 UTC — Virag morning miss, face threshold 0.54/0.10 → 0.50/0.20
+- Morning: 7 tracks with Virag in view (hallway 2, living room 5), none named all morning.
+- hallway global_59917: one 0.595 face (margin 0.36) passed the strong rule but was blocked by the
+  switch guard: a one-sample appearance dip (0.49) 3.2 s earlier, when the box briefly stretched over
+  Judit walking in, samples right after back at 0.79–0.97. Replayed from the 21:52 restart (same
+  ByteTrack id 34): blocked under the live rule. Seven more faces at 0.51–0.535, margin 0.25–0.36.
+  Living room: best 0.506 / 0.512 (margin 0.35–0.38).
+- Guard alternatives measured (offline, 19:02 switch must stay blocked, 425 labelled strong faces):
+  return-to-pre-dip ≥ 0.8 (works, but an exception to the exception, declined); two consecutive dip
+  samples (FAILS: the 19:02 switch is a one-sample dip too); fast/slow appearance EMA agreement ≥ 0.85
+  (works, 19:02 at 0.79 = thin margin, parked); settle 5 → 3 s (works, kept as reserve).
+- Threshold: labelled 10-18 Virag tracks 6/10 → 7/10 (0.50/0.20), 9/10 (0.48/0.25), Judit 5/13 → 7/13,
+  0 wrong faces at any rule; live 10-19..10-20 face logs: 0 tracks with conflicting persons. Family
+  impostors vs Virag's gallery p99.9 0.33, max 0.37. 0.50/0.20 would have named both morning Virag
+  tracks by the two-attempt streak (06:46:52 hallway, 06:46:55 living room), guard untouched.
+- Change: `face_recognition.similarity_threshold` 0.54 → 0.50, `min_margin` 0.10 → 0.20 (live config,
+  backup 20261020T171028Z, restart 19:10 local). Strong rule and guard unchanged.
+- Risk: unknown children (guests) are not in the data; check their `face_scores` at the next visit.
+- Rollback: `scripts/remote/push_config.sh --rollback && scripts/remote/restart.sh restart`
+- Process: from now on FP/FN findings start with the existing knobs (see "Tuning order").
+
+## 2026-10-20 16:55–17:50 UTC — Virag home-coming review, threshold 0.50 → 0.48, enrol gain
+- 16:55 hallway: Virag stood in front of Ati, her box inside his. Her one face (0.59, margin 0.28) was
+  central in BOTH boxes: Ati's box (global_60192) was named Virag and revoked by the age veto after 9 s
+  (correct: samples 29.9/8.2 face, later Ati's face); her own box (global_60190, replay: on Virag the
+  whole time, no appearance dip) was BLOCKED by the veto: 5 body-only samples 15–40 y (close range,
+  hood, partly behind Ati), median 31.8 vs 7.5 (x4.3). No existing knob fixes it (ratio 4.3, n=5).
+  First clearly wrong veto of 6 (10-19..10-20). Virag tracks: body-only samples > 18.75 y in 14 %,
+  face samples 4 %. No new rule yet, collect more cases.
+- 17:43– living room sofa (global_60251): 125 attempts, head down at a toy, best 0.48/0.24 and
+  0.48/0.22 (Virag) — failed 0.50. Ground-floor view of the same scene best 0.39.
+- Judit: work room 17:03–17:10 unnamed (best 0.42); from 17:36 named by reid_gallery, correct.
+- Change: `similarity_threshold` 0.50 → 0.48 (margin 0.20), backup 20261020T175035Z, restart 19:50 local.
+- Enrol gain at 0.48/0.20 (`virag_enrol_gain.py`): candidates #1548, #1549 (16:55 hallway, frontal,
+  Q 0.69/0.55), #1581 (sofa), #1521, #1340, #1430, #1464, #1458: each +0–1 face, 0 wrong; all 8 together
+  labelled Virag faces 173 → 174/778, failing pool +1 face. The gallery already covers these looks;
+  the remaining failures are head-down/profile/blurred faces (pool top1 0.24–0.48). Not enrolled.
+
+## 2026-10-20 evening — offline: "only unaccounted person" temporal handover (rejected)
+- Case 18:11 UTC: Virag face-named on the living-room camera (global_60301, 0.58) walked into the work
+  room; new unnamed tracks there (ground_floor global_60330, living_room global_60332). Re-ID showed only
+  a candidate (~Virag 0.56 < 0.70: one today-embedding, no anchor yet — a single face-named track today).
+  Zone propagation needs two LIVE tracks (simultaneous); the ground-floor camera also saw Ati. Result:
+  an unknown person on the stairs, then upstairs; Virag stayed "living_room (estimated)".
+- Existing knobs: none. reid.similarity_threshold 0.70 → 0.56 would admit Judit-like 0.57–0.59 matches;
+  `camera_topology.enable_handover` / `HandoverManager` is dead code (constructed in main.py, never called).
+- Rule emulated (`elimination_handover.py`, tracks 10-17..10-20, last detection = track_lost − age_sec):
+  a new track on camera C gets person P iff P is the only named person whose track ended < W s before on
+  C or a zone-sharing camera, P holds no live track, and no other track was born on C in that window.
+  W=5 s: agrees 60 / wrong 8 (0.88) on finally-named tracks; against FACE-named tracks 13 ok / 3 wrong.
+  The 3 face-verified errors: 10-17 07:40–07:44, Virag's track ended and the newcomer was Ati (both in
+  the room, child merged/untracked). Since 10-19 (weekdays, fewer people home) 27/27 and 7/7 face-verified.
+  Strict variant (every other live track on the space named): no better (0.86–0.87). Tonight's case
+  would have been right (global_60330 → Virag).
+- Decision: not implemented — fails exactly when the family is together (≈1 in 5–8 wrong), worse than
+  a missing name. Next: let the 0.48 threshold build Virag's daily Re-ID anchor (two face-named tracks).
+
+## 2026-10-21 03:00–06:15 UTC — morning check of face 0.48 / 0.20 (Identity review)
+- Audit: 135 samples, 28 named tracks reviewed (Judit 23 samples, Virag 5, Ati 2 tracks), all correct;
+  `find_contradictions` 1 lead (global_60435, Judit at the desk named by reid_gallery 0.75, faces
+  "Virag 6/8" all < 0.30 — headphones face, label correct). No age vetoes (620 samples, 0 veto).
+- Virag (awake 04:42): hallway global_60462 face streak 0.51 and global_60472 streak 0.49/0.50 → two
+  face-named tracks → Re-ID anchor formed, gallery fed, global_60473/60474 named by reid_gallery
+  0.75/0.77 (correct). 10-20 morning: 0 named. At 0.54 neither, at 0.50 only 60462 would have been named.
+  Matched gallery faces #19/#24 (Feb); the 10-20 enrolment #1586 (emb 119) was not the match.
+- Virag missed: living room global_60464/60469 (sitting, face 50–70 px, one accept 0.517, no second;
+  grayscale view → no Re-ID), ground_floor global_60460 on the stairs (2 ambiguous faces, child holding a
+  toy), hallway global_60475 (0.37; enrolled by the user as #1625) and entrance global_60482 (leaving
+  with Judit, no face).
+- Impostor margin: closest wrong face = Judit with headphones at the desk scored Virag 0.412/m0.24
+  (global_60423) and 0.387 (global_60402) — 0.07 below the threshold. Judit's accepts 0.48–0.68, all hers.
+- Enrolments since the last check (by the user): #1581 (emb 120), #1625 (emb 121).
+- Decision: keep 0.48 / 0.20. Watch the headphones-Judit → Virag score; if it reaches ≥ 0.45 enrol a
+  headphones Judit face rather than raising the threshold.

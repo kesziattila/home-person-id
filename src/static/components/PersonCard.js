@@ -15,7 +15,7 @@ export default {
                         <span :class="statusColor" class="text-xs px-2 py-1 rounded-full">{{ statusText }}</span>
                     </div>
                     <div class="space-y-1 text-sm text-gray-400">
-                        <div>{{ person.face_count }} face(s)</div>
+                        <div>{{ person.face_count }} face(s)<span v-if="apparentAge != null" title="Apparent age (MiVOLO) from the face gallery — used by the age veto"> · ~{{ apparentAge }} y</span></div>
                         <div v-if="estimatedLocationText" :class="locationColor">{{ estimatedLocationText }}</div>
                         <div v-if="location && location.current_camera_id">{{ location.current_camera_id }}</div>
                         <div v-if="location && location.last_seen">{{ formattedLastSeen }}</div>
@@ -29,6 +29,7 @@ export default {
         return {
             location: null,
             firstImage: null,
+            apparentAge: null,
         };
     },
     computed: {
@@ -80,6 +81,7 @@ export default {
                 ]);
                 this.location = await locationRes.json();
                 const detail = await detailRes.json();
+                this.apparentAge = detail.apparent_age ?? null;
                 if (detail.images && detail.images.length > 0 && detail.images[0].has_image) {
                     this.firstImage = `/api/v1/faces/image/${detail.images[0].id}`;
                 }

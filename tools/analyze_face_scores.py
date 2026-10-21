@@ -14,7 +14,8 @@ is conservative.
 
 Track-level emulation mirrors IdentityLinker: a track is identified once two
 accepted attempts in a row (rejections in between do not reset) agree on the
-same person. Logged attempts are rate-limited, so real coverage is higher.
+same person, or at once by one strong attempt (--strong-threshold/--strong-margin,
+face_recognition.strong_*). Logged attempts are rate-limited, so real coverage is higher.
 
 Usage:
     PYTHONPATH=. python tools/analyze_face_scores.py local/remote/metrics/face_scores \
@@ -125,14 +126,17 @@ def label_tracks(by_track: dict[str, list[Attempt]]) -> tuple[dict[str, int], in
     return labels, conflicted
 
 
-def emulate_track(attempts: list[Attempt], threshold: float, min_margin: float) -> Optional[int]:
-    """Person the linker would confirm (2 accepted in a row, same person), else None."""
+def emulate_track(
+    attempts: list[Attempt], threshold: float, min_margin: float,
+    strong: Optional[tuple[float, float]] = None,
+) -> Optional[int]:
+    """Person the linker would confirm (2 accepted in a row, same person, or one strong), else None."""
     candidate = None
     for a in attempts:
         if not a.accepted(threshold, min_margin):
             continue
-        if a.top1_person_id == candidate:
-            return candidate
+        if a.top1_person_id == candidate or (strong and a.accepted(*strong)):
+            return a.top1_person_id
         candidate = a.top1_person_id
     return None
 
@@ -148,11 +152,12 @@ def wilson_lower(successes: int, n: int, z: float = 1.96) -> Optional[float]:
 
 
 def evaluate(
-    by_track: dict[str, list[Attempt]], labels: dict[str, int], threshold: float, min_margin: float
+    by_track: dict[str, list[Attempt]], labels: dict[str, int], threshold: float, min_margin: float,
+    strong: Optional[tuple[float, float]] = None,
 ) -> PolicyResult:
     n = accepted = correct = identified = wrong_tracks = 0
     for track_id, attempts in by_track.items():
-        confirmed = emulate_track(attempts, threshold, min_margin)
+        confirmed = emulate_track(attempts, threshold, min_margin, strong)
         if confirmed is not None:
             identified += 1
         label = labels.get(track_id)
@@ -189,14 +194,15 @@ def analyze(
     attempts: list[Attempt],
     current: tuple[float, float] = (0.6, 0.0),
     min_precision: float = 0.99,
+    strong: Optional[tuple[float, float]] = None,
 ) -> Report:
     by_track: dict[str, list[Attempt]] = defaultdict(list)
     for a in attempts:
         by_track[a.track_id].append(a)
     labels, conflicted = label_tracks(by_track)
 
-    grid = [evaluate(by_track, labels, t, m) for t in THRESHOLDS for m in MARGINS]
-    current_result = evaluate(by_track, labels, *current)
+    grid = [evaluate(by_track, labels, t, m, strong) for t in THRESHOLDS for m in MARGINS]
+    current_result = evaluate(by_track, labels, *current, strong)
 
     # Live genuine / impostor evidence from labelled non-anchor attempts
     genuine, impostor = [], []
@@ -255,6 +261,8 @@ def main():
     parser.add_argument("--since", help="YYYY-MM-DD, skip older daily files")
     parser.add_argument("--current-threshold", type=float, default=0.6)
     parser.add_argument("--current-margin", type=float, default=0.0)
+    parser.add_argument("--strong-threshold", type=float, default=0.0, help="0 = off")
+    parser.add_argument("--strong-margin", type=float, default=0.15)
     parser.add_argument("--min-precision", type=float, default=0.99)
     parser.add_argument("--json", type=Path, help="write the full report as JSON")
     args = parser.parse_args()
@@ -263,6 +271,7 @@ def main():
         load_attempts(args.path, args.since),
         current=(args.current_threshold, args.current_margin),
         min_precision=args.min_precision,
+        strong=(args.strong_threshold, args.strong_margin) if args.strong_threshold > 0 else None,
     )
     print(f"attempts={report.attempts} tracks={report.tracks} "
           f"labelled={report.labeled_tracks} conflicted={report.conflicted_tracks}")

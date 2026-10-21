@@ -51,6 +51,11 @@
         .face-image:hover {
             transform: scale(1.1);
         }
+        /* Person detail: room for the id and age labels on each image */
+        .face-image.face-image-lg, .face-placeholder.face-image-lg {
+            width: 128px;
+            height: 128px;
+        }
         .face-placeholder {
             width: 80px;
             height: 80px;

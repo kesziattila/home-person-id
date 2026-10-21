@@ -16,11 +16,13 @@
 - Tracker input (detector + exclusion zones + Re-ID of confident dets) = `person_detector.detect_for_tracking()`, shared by the live worker and `tools/redetect.py`
 - Shared helpers, don't re-implement: embedding math → `src/utils/embedding_utils.py` (`l2_normalize`, `cosine_similarity[_batch]`); bbox crops → `image_utils.crop_bbox`; exclusion zones → `DetectionResult.excluding_zones()`; detectors → `create_person_detector(config.detection)`
 - `src/cli_preview.py` = CLI preview pipeline (no DB); `src/visualization/preview.py` = web UI frame buffer/annotations
-- Face: ONE path for preview and production — `IdentificationManager.attempt_face()` (head region, `attribution.owner_face`, `score_face()` → `FaceMatchScores.accepts(similarity_threshold, min_margin)`, `FACE_CONSECUTIVE_MATCHES` streak, `FaceScoreLogger`, unidentified-face submit) returns a `FaceAttempt`; callers only act on `attempt.confirmed`. Ambiguous attempts are logged, never accepted or saved
+- Face: ONE path for preview and production — `IdentificationManager.attempt_face()` (head region, `attribution.owner_face`, `score_face()` → `FaceMatchScores.accepts(similarity_threshold, min_margin)`, `FACE_CONSECUTIVE_MATCHES` streak or one strong attempt (`face_recognition.strong_threshold`/`strong_min_margin`), `FaceScoreLogger`, unidentified-face submit) returns a `FaceAttempt`; callers only act on `attempt.confirmed`. Ambiguous attempts are logged, never accepted or saved
 - Identification methods = `IdMethod` enum (`src/recognition/id_method.py`, `.strength`, `.is_appearance`); never compare method strings. Face keeps checking appearance-labelled tracks and may correct them
 - Who a track is lives ONLY in `IdentityLinker`'s `TrackIdentityState`; `GlobalTrackManager._person_id()` reads it — never cache person ids on `GlobalTrack`
 - On-disk metrics: `src/utils/jsonl_writer.DailyJsonlWriter` under `metrics.path/<stream>/` (daily UTC files, retention) — reuse it for new metric streams
+- Suggestion review: enrolment value (`routes/unidentified_faces.enrolment_label`: coverage = other TRACKS with a similar still-failing suggestion, archived crops included + margin to the runner-up person, `match_scores` via `identification_manager.score_against_gallery` — the one per-person scoring rule) is separate from quality; quality is a junk filter, not a gain predictor
 - Face quality (unidentified-face save gate, "Learning", best crop per track) = ONE learned score, `FaceQualityAssessor` (eDifFIQA-tiny, CPU) on the aligned face; don't add hand-made photo metrics (sharpness/noise/pose terms failed on live crops, see `face_quality.py`)
+- Apparent age (`src/recognition/age_gate.py`, MiVOLO via `AgeEstimator`) only VETOES: `TrackIdentityState.confirm_identity` (every naming path; returns False when refused — callers must not persist) refuses a person whose gallery age differs from the track's median sample age by > `age.max_ratio`; later contradicting samples revoke the name. Person ages come from the face gallery (per image in `face_embeddings.apparent_age`/`age_model`, re-estimated only when `age.model` changes; `age_gate.person_ages_from_gallery` is the one rule for veto and API/UI), never from hand-made age classes; tuning log `<metrics.path>/age/`
 - Centralize validation where data enters the system (e.g. grayscale/multi-face checks live in `ReIDGalleryManager.update_track_embedding()`), not in callers
 
 ## Performance & Memory
@@ -36,7 +38,7 @@
 - Skip grayscale/IR crops: HSV `mean_saturation < 15.0`
 - Skip multi-person crops: `len(face_result.faces) > 1`, detected with `config.multi_face_min_size` (default 20px, lower than recognition's 80px), passed as a param to `detect_faces()`
 - Skip low visibility (`min_visibility`)
-- Evidence attribution lives ONLY in `src/tracking/attribution.py`: face → `owner_face`; appearance (Re-ID extract/match/gallery update) → isolated tracks (`isolated_track_ids`, overlap over the smaller box ≤ `reid.max_overlap`), passed down as `isolated: bool`; location (zone handover) → each camera sees exactly one person incl. briefly lost tracks; identity exclusivity → a person is held by at most one LIVE track per camera (`GlobalTrackManager.persons_tracked_on_camera`, passed down as `persons_present`; lost tracks never block): gallery matches for a held person are rejected, a face confirmation wins and the other track is unnamed (`_enforce_face_exclusivity` → `IdentityLinker.revoke_identity`). Don't add per-path person-count checks
+- Evidence attribution lives ONLY in `src/tracking/attribution.py`: face → `owner_face`; appearance (Re-ID extract/match/gallery update) → isolated tracks (`isolated_track_ids`, overlap over the smaller box ≤ `reid.max_overlap`), passed down as `isolated: bool`; location (zone handover) → each camera sees exactly one person incl. briefly lost tracks; identity exclusivity → a person is held by at most one LIVE track per camera (`GlobalTrackManager.persons_tracked_on_camera`, passed down as `persons_present`; lost tracks never block): gallery matches for a held person are rejected, a face confirmation wins and the other track is unnamed (`_enforce_face_exclusivity` → `IdentityLinker.revoke_identity`). single strong face → only if the box's appearance is settled (`attribution.appearance_settled`: no Re-ID sample < `APPEARANCE_CHANGE_SIM` of the track's EMA in the last `APPEARANCE_SETTLE_SEC`, i.e. no fresh ByteTrack switch), passed down as `appearance_settled`/`allow_strong`. Don't add per-path person-count checks
 - Gallery: store per-embedding source crops (each embedding may come from a different frame); cap gallery size per person
 - Gallery feed is gated by the person's face-confirmed appearance (`attribution.PersonAppearance`, fed only by FACE confirmations in `TrackIdentityState.confirm_identity`, the ONLY way to name a track): an appearance becomes an anchor when face confirmations on two DIFFERENT tracks agree on it (cosine ≥ `reid.anchor_similarity`); samples enter only if they match an anchor; no anchor → no samples. A face proves whose face, not whose box. Never feed the gallery from a name alone
 - Save match-debug snapshots (current crop, gallery crop, similarity) to `data/snapshots/` with timestamp + person name
@@ -44,6 +46,7 @@
 ## OpenCV / UI
 - `cv2.WINDOW_NORMAL` + `cv2.resizeWindow()` for previews — never downscale the image itself
 - Consistent colors per state; readable boxes/labels; show confidence scores for threshold tuning
+- Web UI files (`/`, `/static/*`) are served `Cache-Control: no-cache` (`APIServer.revalidate_ui`): ES modules otherwise stay stale on phones across reloads
 
 ## Configuration
 - Dataclass config sections with sensible defaults; support both file-based and programmatic config
@@ -84,11 +87,12 @@ System runs live on a Jetson; all remote interaction goes through `scripts/remot
 - `sync_db.sh` — consistent DB copy → `local/remote/database.db`
 - `fetch_snapshots.sh --event|--query|--path` → `local/remote/snapshots/`
 - `fetch_config.sh` → `local/remote/config.jetson-live.yaml`; `push_config.sh [file|--rollback]` — the only way to change the live config (validates, backs up to remote `data/config-backups/`)
-- `fetch_metrics.sh` → `local/remote/metrics/` (face scores → `tools/analyze_face_scores.py`; ByteTrack births/revivals/duplicates → `tools/analyze_track_events.py`; every tracker input → `detections/` → `tools/replay_tracking.py` re-runs the real ByteTrack offline with config sweeps — tune tracking there, not live)
+- `fetch_metrics.sh` → `local/remote/metrics/` (face scores → `tools/analyze_face_scores.py`; age samples/vetoes → `tools/analyze_age.py`; ByteTrack births/revivals/duplicates → `tools/analyze_track_events.py`; every tracker input → `detections/` → `tools/replay_tracking.py` re-runs the real ByteTrack offline with config sweeps — tune tracking there, not live)
 - `capture_frames.sh start <min>|stop|status|fetch [day]` — time-limited full frames of every logged record (trigger file, no restart; cap `metrics.frame_capture_max_gb`) → `tools/redetect.py` re-runs the detector (`detection.*`/`reid.*` overrides) into a same-format detection log → `replay_tracking.py`; tune the detector there, not live
 - `install_gpu_clock.sh [--status|--uninstall]` — systemd unit keeping the GPU at max clock (the governor left it at 305 MHz; infer 26.5 → 14 ms); check `tegrastats` GR3D_FREQ when timings regress
 - `grab_frames.sh [cam…]` → latest frames with zones drawn (`/api/v1/frame/{cam}`) for zone review
 - Self-tuning: `tune-live` skill, journal in `docs/TUNING_LOG.md`, KPIs `queries/tuning_kpis.sql`
+- False positive / negative found → first re-tune the EXISTING knobs offline (`docs/TUNING_LOG.md` "Tuning order" table); new rules/concepts only after those are exhausted
 - Identity spot-check: `review-identities` skill — `fetch_audit.sh` (audit samples: annotated frame + track crops, `metrics.audit_*`), `tools/find_contradictions.py` (outcome-based, no per-bug logging), `tools/audit_sheet.py` (contact sheets)
 - `rlog.sh tail|grep|around|errors|perf|stdout` — always bounded; never dump whole logs into context
 

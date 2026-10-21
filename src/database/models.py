@@ -58,6 +58,11 @@ class FaceEmbedding(Base):
     embedding = Column(LargeBinary, nullable=False)  # 512-dim float32 vector
     source_image = Column(String(512))  # Original image path
     created_at = Column(DateTime, default=datetime.utcnow)
+    # Apparent age of the face in source_image and the model file that estimated it
+    # (src/recognition/age_gate.py; re-estimated when age.model changes). An estimate
+    # that found no face is stored as age NULL with the model set
+    apparent_age = Column(Float, nullable=True)
+    age_model = Column(String(128), nullable=True)
 
     # Relationships
     person = relationship("Person", back_populates="face_embeddings")
@@ -252,6 +257,8 @@ def migrate_database(engine):
         "ALTER TABLE unidentified_faces ADD COLUMN frontalness FLOAT",
         "ALTER TABLE unidentified_faces ADD COLUMN det_confidence FLOAT",
         "ALTER TABLE unidentified_faces ADD COLUMN superseded_by_id INTEGER",
+        "ALTER TABLE face_embeddings ADD COLUMN apparent_age FLOAT",
+        "ALTER TABLE face_embeddings ADD COLUMN age_model VARCHAR(128)",
     ]
     with engine.connect() as conn:
         for sql in migrations:

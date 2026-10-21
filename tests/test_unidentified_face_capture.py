@@ -232,6 +232,75 @@ class TestUnidentifiedFaceCapture:
         assert identity.is_face_identified is True
 
 
+    @pytest.mark.parametrize("scores, first_confirms", [
+        ([0.62, 0.40], True),    # strong: top1 >= 0.58 and margin >= 0.15 -> named at once
+        ([0.62, 0.50], False),   # top1 strong but close runner-up -> streak needed
+        ([0.56, 0.30], False),   # accepted, below strong_threshold -> streak needed
+    ])
+    def test_strong_attempt_confirms_without_streak(
+        self, config, mock_face_recognizer, mock_unidentified_manager, scores, first_confirms
+    ):
+        """One strong attempt names the track; weaker accepted ones still need two in a row.
+
+        Arrival 2026-10-19: hallway tracks had a single accepted face each (0.59, 0.56) and
+        stayed unnamed; offline on 10-17..19 logs top1 >= 0.58 / margin >= 0.15 alone was
+        right 1343/1343 times (0.56: 4 wrong).
+        """
+        config.face_recognition.similarity_threshold = 0.54
+        config.face_recognition.min_margin = 0.10
+        config.face_recognition.strong_threshold = 0.58
+        config.face_recognition.strong_min_margin = 0.15
+        mock_face_recognizer.compare_embeddings_batch.return_value = np.array(scores)
+        manager = IdentificationManager(
+            config=config,
+            repository=None,
+            face_gallery=[
+                FaceGalleryEntry(person_id=1, person_name="John", embedding=np.random.randn(512).astype(np.float32)),
+                FaceGalleryEntry(person_id=2, person_name="Jane", embedding=np.random.randn(512).astype(np.float32)),
+            ],
+            unidentified_face_manager=mock_unidentified_manager,
+        )
+        manager._face_recognizer = mock_face_recognizer
+        frame = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+
+        attempt = manager.attempt_face(frame, (0, 0, 100, 200), "t", camera_id="cam")
+        assert attempt.accepted
+        assert attempt.strong is first_confirms
+        assert attempt.confirmed is first_confirms
+        assert manager.attempt_face(frame, (0, 0, 100, 200), "t", camera_id="cam").confirmed  # streak of two
+
+    def test_strong_attempt_not_allowed_after_appearance_change(
+        self, config, mock_face_recognizer, mock_unidentified_manager
+    ):
+        """allow_strong=False (box just switched person): a strong face needs the streak."""
+        config.face_recognition.strong_threshold = 0.58
+        mock_face_recognizer.compare_embeddings_batch.return_value = np.array([0.62, 0.30])
+        manager = IdentificationManager(
+            config=config, repository=None, unidentified_face_manager=mock_unidentified_manager,
+            face_gallery=[
+                FaceGalleryEntry(person_id=1, person_name="John", embedding=np.random.randn(512).astype(np.float32)),
+                FaceGalleryEntry(person_id=2, person_name="Jane", embedding=np.random.randn(512).astype(np.float32)),
+            ],
+        )
+        manager._face_recognizer = mock_face_recognizer
+        frame = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+        attempt = manager.attempt_face(frame, (0, 0, 100, 200), "t", camera_id="cam", allow_strong=False)
+        assert attempt.accepted and not attempt.strong and not attempt.confirmed
+        assert manager.attempt_face(frame, (0, 0, 100, 200), "t", camera_id="cam", allow_strong=False).confirmed
+
+    def test_strong_attempt_off_by_default(self, config, mock_face_recognizer, mock_unidentified_manager):
+        mock_face_recognizer.compare_embeddings_batch.return_value = np.array([0.95])
+        manager = IdentificationManager(
+            config=config, repository=None, unidentified_face_manager=mock_unidentified_manager,
+            face_gallery=[FaceGalleryEntry(person_id=1, person_name="John",
+                                           embedding=np.random.randn(512).astype(np.float32))],
+        )
+        manager._face_recognizer = mock_face_recognizer
+        frame = np.random.randint(0, 255, (100, 100, 3), dtype=np.uint8)
+        attempt = manager.attempt_face(frame, (0, 0, 100, 200), "t", camera_id="cam")
+        assert attempt.accepted and not attempt.strong and not attempt.confirmed
+
+
 class TestUnidentifiedFaceManagerSubmit:
     """Test UnidentifiedFaceManager.submit() directly."""
 

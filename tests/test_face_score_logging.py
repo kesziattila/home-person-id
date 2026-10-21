@@ -197,6 +197,13 @@ def test_emulate_track_needs_two_accepted_attempts_for_same_person():
     assert emulate_track([_a("t", 0, 1, 0.5, 0.1), _a("t", 1, 2, 0.5, 0.1)], 0.42, 0.1) is None
 
 
+def test_emulate_track_one_strong_attempt_confirms():
+    attempts = [_a("t", 0, 2, 0.45, 0.1), _a("t", 1, 1, 0.62, 0.40)]
+    assert emulate_track(attempts, 0.42, 0.1) is None
+    assert emulate_track(attempts, 0.42, 0.1, strong=(0.58, 0.15)) == 1
+    assert emulate_track([_a("t", 0, 1, 0.62, 0.50)], 0.42, 0.1, strong=(0.58, 0.15)) is None
+
+
 def test_analyze_recommends_nothing_without_enough_evidence():
     attempts = [_a("t1", 0, 1, 0.65, 0.1), _a("t1", 1, 1, 0.45, 0.1)]
     report = analyze(attempts)

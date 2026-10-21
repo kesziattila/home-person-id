@@ -141,6 +141,24 @@ When a face is detected but doesn't match any known person (below similarity thr
 - Diversity check prevents storing duplicate faces
 - Per-camera limits keep storage manageable (configurable)
 - Web UI provides one-click assignment to existing persons
+- Each suggestion shows its two closest persons in the current gallery and an enrolment value:
+  **Recommended +N** (clearly one person, a good picture, and alike N other tracks' still-unrecognised
+  faces — it covers a situation where recognition keeps failing), **Risky** (a second person is close) or **Review**.
+  Quality (Q%) is a separate filter: it spots junk but barely predicts the gain of enrolling.
+  Each assignment logs a `face_enrolled` event with the value, for calibrating the thresholds
+
+### 8. Apparent-Age Veto (Optional)
+Face recognition confuses family members (a mother's non-frontal face scores close to
+her daughter's), and Re-ID compares clothes. With `age.enabled`, MiVOLO estimates the
+apparent age of each isolated track from a few face+body samples (it works from behind
+or under a hat) and of each person from their face gallery images; a track is never
+named as someone whose age differs by more than `age.max_ratio` — no age classes are
+configured, it follows the gallery. A name that later samples contradict is revoked
+(`id_revoked`). Age only vetoes, it never names anyone. Each gallery image's age is stored
+with the model name in the database (estimated once, within a minute of enrolment) and the
+person's age (newest images) is shown on the person card and in the person detail, with
+every gallery image's own estimate. Samples, person ages and
+vetoes are logged to `<metrics.path>/age/` for tuning (`src/recognition/age_gate.py`).
 
 ## Testing
 
@@ -415,7 +433,14 @@ See `config/config.yaml` for all options. Key settings:
 | `unidentified_faces.min_quality_score` | Min face quality to save | 0.3 |
 | `unidentified_faces.learning_min_quality` | Min face quality for "Learning" (enroll) | 0.45 |
 | `unidentified_faces.min_face_size` | Min detected face size for capture (pixels, min side) | 64 |
+| `unidentified_faces.enrol_min_coverage` | "Recommended": other tracks' suggestions ≥ `enrol_coverage_similarity` alike | 5 |
+| `unidentified_faces.enrol_min_margin` | "Risky" below this lead of the closest person over the runner-up | 0.10 |
+| `unidentified_faces.enrol_min_quality` | "Recommended" also needs this face quality | 0.50 |
 | `unidentified_faces.retention_days` | Days to keep before cleanup | 30 |
+| `age.enabled` | Apparent-age veto on naming (MiVOLO) | false |
+| `age.model` | MiVOLO model (.onnx CPU / .engine TensorRT) | models/mivolo_v2/mivolo_d1_384.onnx |
+| `age.max_ratio` | Veto when track and person age differ more than this factor | 2.5 |
+| `age.min_samples` | Track samples before the age may veto | 3 |
 | `vlm.enabled` | Enable VLM integration | false |
 | `vlm.url` | OpenAI-compatible server base URL | http://localhost:8080 |
 | `vlm.model` | Model name passed in API requests | qwen3-vl |

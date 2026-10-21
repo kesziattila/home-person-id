@@ -40,6 +40,20 @@ def test_excluding_zones_drops_detections_centered_in_zone():
     assert result.frame_shape == FRAME_SHAPE
 
 
+def test_contained_zone_drops_coat_but_keeps_person_in_front_of_it():
+    """Living room 2026-10-19: the jacket on the hook was a person track for minutes, but
+    Judit and Virag undress right there on arrival (center rule would drop them).
+    Coat box (0.89, 0.07, 0.94, 0.45); people there reach the floor (y2 ~0.85)."""
+    zones = [ExclusionZone(x1=0.875, y1=0.0, x2=1.0, y2=0.62, mode="contained")]
+    coat = (1780.0, 70.0, 1880.0, 450.0)
+    person = (1760.0, 100.0, 1900.0, 850.0)      # center (0.915, 0.475) — inside the zone
+    doorway = (1700.0, 120.0, 1840.0, 520.0)    # person in the hallway door, starts left of it
+
+    result = _result(coat, person, doorway).excluding_zones(zones)
+
+    assert [d.bbox for d in result.detections] == [person, doorway]
+
+
 @pytest.mark.parametrize("zones", [None, []])
 def test_excluding_zones_without_zones_keeps_everything(zones):
     original = _result((0.0, 0.0, 10.0, 10.0))

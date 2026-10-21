@@ -3,11 +3,15 @@ import { formatDateTime } from '../utils/formatters.js';
 export default {
     template: `
         <div v-if="visible" @click.self="close" class="modal active fixed inset-0 bg-black bg-opacity-75 items-center justify-center z-50 p-4">
-            <div class="bg-gray-800 rounded-lg p-6 max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div class="bg-gray-800 rounded-lg p-6 max-w-4xl w-full max-h-[90vh] overflow-y-auto">
                 <div class="flex justify-between items-start mb-4">
                     <div>
                         <h3 class="text-xl font-bold">{{ name }}</h3>
                         <p class="text-gray-400 text-sm">Created: {{ createdDate }}</p>
+                        <p v-if="apparentAge != null" class="text-gray-400 text-sm"
+                           title="MiVOLO median over the newest gallery images; the age veto refuses tracks of a clearly different age">
+                            Apparent age: ~{{ apparentAge }} y (from {{ apparentAgeImages }} image{{ apparentAgeImages === 1 ? '' : 's' }})
+                        </p>
                     </div>
                     <button @click="close" class="text-gray-400 hover:text-white text-2xl">&times;</button>
                 </div>
@@ -27,8 +31,12 @@ export default {
                         </div>
                         <div class="flex flex-wrap gap-3">
                             <div v-for="img in images" :key="img.id" class="relative group">
-                                <img v-if="img.has_image" :src="'/api/v1/faces/image/' + img.id" class="face-image" @click="$emit('preview-image', '/api/v1/faces/image/' + img.id)">
-                                <div v-else class="face-placeholder text-xs">No file</div>
+                                <img v-if="img.has_image" :src="'/api/v1/faces/image/' + img.id" class="face-image face-image-lg" @click="$emit('preview-image', '/api/v1/faces/image/' + img.id)">
+                                <div v-else class="face-placeholder face-image-lg text-xs">No file</div>
+                                <span class="absolute top-1 left-1 bg-black bg-opacity-70 text-xs text-gray-200 px-1 rounded"
+                                      title="Face image id (face_embeddings.id)">#{{ img.id }}</span>
+                                <span v-if="img.apparent_age != null" class="absolute bottom-1 left-1 bg-black bg-opacity-70 text-xs text-gray-200 px-1 rounded"
+                                      title="Apparent age of this image (MiVOLO)">~{{ img.apparent_age }} y</span>
                                 <div class="absolute -top-2 -right-2 opacity-0 group-hover:opacity-100 transition-opacity">
                                     <button @click.stop="deleteImage(img.id)" class="bg-red-600 hover:bg-red-700 text-white rounded-full w-6 h-6 text-xs">&times;</button>
                                 </div>
@@ -75,6 +83,8 @@ export default {
             error: null,
             name: '',
             createdDate: '',
+            apparentAge: null,
+            apparentAgeImages: 0,
             images: [],
             showAddImages: false,
             filesToUpload: [],
@@ -98,6 +108,8 @@ export default {
         resetState() {
             this.name = '';
             this.createdDate = '';
+            this.apparentAge = null;
+            this.apparentAgeImages = 0;
             this.images = [];
             this.showAddImages = false;
             this.filesToUpload = [];
@@ -113,6 +125,8 @@ export default {
                 const detail = await response.json();
                 this.name = detail.name;
                 this.createdDate = formatDateTime(detail.created_at);
+                this.apparentAge = detail.apparent_age ?? null;
+                this.apparentAgeImages = detail.apparent_age_images || 0;
                 this.images = detail.images || [];
             } catch (e) {
                 this.error = e.message;

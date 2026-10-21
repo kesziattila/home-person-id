@@ -18,7 +18,7 @@ import numpy as np
 
 from src.config import CameraTopologyConfig, ReIDConfig, SnapshotConfig, VLMConfig, ZonesConfig
 from src.database.repository import Repository
-from src.tracking.attribution import RECENTLY_LOST_SEC, isolated_track_ids
+from src.tracking.attribution import RECENTLY_LOST_SEC, appearance_settled, isolated_track_ids
 from src.events.mqtt_publisher import MQTTPublisher
 from src.recognition.id_method import IdMethod
 from src.recognition.identity_linker import IdentityLinker
@@ -406,17 +406,15 @@ class GlobalTrackManager:
                 person = self.repository.get_person_by_name(gallery_match.person_name)
                 if person:
                     state = self.identity_linker.get_track_state(global_track_id)
-                    if state:
-                        state.confirm_identity(
-                            person.id, gallery_match.score, IdMethod.REID_GALLERY
-                        )
+                    if state and state.confirm_identity(
+                        person.id, gallery_match.score, IdMethod.REID_GALLERY
+                    ):
                         # Update database and in-memory track
                         self.repository.update_track(
                             global_track_id, person_id=person.id
                         )
-
-                    # Resolve person location from all active tracks
-                    self._resolve_person_location(person.id, camera_id=camera_id)
+                        # Resolve person location from all active tracks
+                        self._resolve_person_location(person.id, camera_id=camera_id)
 
                 logger.info(
                     f"Re-ID gallery: new track {global_track_id} on {camera_id} "
@@ -487,6 +485,7 @@ class GlobalTrackManager:
                         local_track.last_crop,
                         local_track.bbox,
                         isolated=local_track.track_id in isolated,
+                        appearance_settled=appearance_settled(local_track, time.time()),
                         precomputed_reid=(local_track.last_reid_embedding, local_track.last_reid_quality)
                         if local_track.last_reid_embedding is not None else None,
                         camera_id=camera_id,
@@ -629,6 +628,7 @@ class GlobalTrackManager:
                 local_track.last_crop,
                 local_track.bbox,
                 isolated=isolated,
+                appearance_settled=appearance_settled(local_track, time.time()),
                 precomputed_reid=(local_track.last_reid_embedding, local_track.last_reid_quality)
                 if local_track.last_reid_embedding is not None else None,
                 camera_id=camera_id,

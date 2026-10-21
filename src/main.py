@@ -18,6 +18,8 @@ from src.config import load_config
 from src.database.repository import Repository
 from src.detection.motion_detector import MotionDetectorManager
 from src.detection.person_detector import PersonDetector, create_person_detector, detect_for_tracking
+from src.recognition.age_estimator import AgeEstimator
+from src.recognition.age_gate import AgeGate
 from src.recognition.face_score_logger import FaceScoreLogger
 from src.recognition.identity_linker import IdentityLinker
 from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
@@ -154,6 +156,10 @@ class PersonIDSystem:
         face_score_logger = (
             FaceScoreLogger(self.config.metrics) if self.config.metrics.face_scores_enabled else None
         )
+        age_gate = (
+            AgeGate(self.config.age, AgeEstimator(self.config.age.model), self.config.metrics)
+            if self.config.age.enabled else None
+        )
         self.identity_linker = IdentityLinker(
             self.config.face_recognition,
             self.config.reid,
@@ -161,6 +167,7 @@ class PersonIDSystem:
             unidentified_face_manager=self.unidentified_face_manager,
             snapshot_config=self.config,
             face_score_logger=face_score_logger,
+            age_gate=age_gate,
         )
 
         # Initialize debug overlay (optional)
@@ -210,6 +217,7 @@ class PersonIDSystem:
             use_nvjpeg=self.config.detection.use_nvjpeg,
             zone_manager=self.zone_manager,
             timeline_min_stay_sec=self.config.api.timeline_min_stay_sec,
+            age_config=self.config.age,
         )
 
     def _setup_logging(self):
@@ -341,6 +349,11 @@ class PersonIDSystem:
             reid = self.identity_linker.reid_extractor
             if reid and hasattr(reid, "shutdown"):
                 reid.shutdown()
+        except Exception:
+            pass
+        try:
+            if self.identity_linker.age_gate is not None:
+                self.identity_linker.age_gate.estimator.shutdown()
         except Exception:
             pass
 

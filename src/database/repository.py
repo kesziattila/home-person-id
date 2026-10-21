@@ -208,6 +208,31 @@ class Repository:
                 result.append((emb.person_id, emb.id, arr))
             return result
 
+    def get_face_gallery_images(
+        self, person_id: Optional[int] = None,
+    ) -> list[tuple[int, int, str, Optional[float], Optional[str]]]:
+        """(embedding_id, person_id, source_image, apparent_age, age_model) of the face
+        gallery images of active persons (or of one person), oldest first."""
+        with self.get_session() as session:
+            query = (
+                session.query(FaceEmbedding.id, FaceEmbedding.person_id, FaceEmbedding.source_image,
+                              FaceEmbedding.apparent_age, FaceEmbedding.age_model)
+                .join(Person)
+                .filter(Person.is_active == True, FaceEmbedding.source_image.isnot(None))
+            )
+            if person_id is not None:
+                query = query.filter(FaceEmbedding.person_id == person_id)
+            return [tuple(row) for row in query.order_by(FaceEmbedding.id).all()]
+
+    def set_face_apparent_age(self, embedding_id: int, age: Optional[float], model: str) -> None:
+        """Store the apparent age of a gallery image (None = no face found) and its model."""
+        with self.get_session() as session:
+            emb = session.query(FaceEmbedding).filter(FaceEmbedding.id == embedding_id).first()
+            if emb is not None:
+                emb.apparent_age = age
+                emb.age_model = model
+                session.commit()
+
     def get_face_embedding(self, embedding_id: int) -> Optional[FaceEmbedding]:
         """Get face embedding by ID."""
         with self.get_session() as session:

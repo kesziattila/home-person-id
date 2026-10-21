@@ -107,14 +107,14 @@ class DetectionResult:
     frame_shape: tuple[int, int, int]  # (height, width, channels)
 
     def excluding_zones(self, zones: Optional[list]) -> "DetectionResult":
-        """Drop detections whose center lies in any exclusion zone (normalized 0-1 coords)."""
+        """Drop detections an exclusion zone excludes (`ExclusionZone.excludes`, normalized 0-1)."""
         if not zones:
             return self
         h, w = self.frame_shape[:2]
         kept = [
             d for d in self.detections
             if not any(
-                z.x1 <= d.center[0] / w <= z.x2 and z.y1 <= d.center[1] / h <= z.y2
+                z.excludes(d.bbox[0] / w, d.bbox[1] / h, d.bbox[2] / w, d.bbox[3] / h)
                 for z in zones
             )
         ]

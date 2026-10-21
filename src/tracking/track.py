@@ -50,6 +50,9 @@ class LocalTrack:
     last_crop: Optional[np.ndarray] = None
     last_reid_embedding: Optional[np.ndarray] = None
     last_reid_quality: float = 0.0
+    # Re-ID appearance EMA and when it last changed (attribution.update_appearance)
+    appearance: Optional[np.ndarray] = None
+    appearance_changed_at: float = 0.0
 
     @property
     def is_confirmed(self) -> bool:

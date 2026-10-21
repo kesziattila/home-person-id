@@ -15,6 +15,21 @@ class ExclusionZone:
     y1: float
     x2: float
     y2: float
+    # "center": drop a detection whose center is inside (TV, mirror);
+    # "contained": only one whose WHOLE box is inside — an object people stand in front of
+    # (a coat on a hook: a person's box reaches past the zone, the coat's does not)
+    mode: str = "center"
+
+    def __post_init__(self):
+        if self.mode not in ("center", "contained"):
+            raise ValueError(f"exclusion zone mode must be 'center' or 'contained', got {self.mode!r}")
+
+    def excludes(self, x1: float, y1: float, x2: float, y2: float) -> bool:
+        """Whether a detection box (normalized 0-1) is excluded by this zone."""
+        if self.mode == "contained":
+            return self.x1 <= x1 and self.y1 <= y1 and x2 <= self.x2 and y2 <= self.y2
+        cx, cy = (x1 + x2) / 2, (y1 + y2) / 2
+        return self.x1 <= cx <= self.x2 and self.y1 <= cy <= self.y2
 
 
 @dataclass
@@ -202,6 +217,11 @@ class FaceRecognitionConfig:
     # Minimum lead of the best person over the best OTHER person (top1 - top2)
     # required to accept a match. 0 = threshold only.
     min_margin: float = 0.0
+    # A single attempt this strong (top1 >= strong_threshold, margin >= strong_min_margin)
+    # names the track at once instead of FACE_CONSECUTIVE_MATCHES accepted attempts.
+    # 0 = off (always wait for the streak).
+    strong_threshold: float = 0.0
+    strong_min_margin: float = 0.15
     min_face_size: int = 80
     # Minimum face size for multi-face detection (used to filter Re-ID crops).
     # Lower than min_face_size because we only need to detect presence, not quality.
@@ -261,6 +281,23 @@ class UnidentifiedFacesConfig:
     retention_days: int = 30
     # Queue size for background processing
     queue_size: int = 100
+    # Enrolment value of a suggestion (UI "Recommended +N" / "Risky"). 2026-10-19 offline on
+    # 150 labelled candidates: coverage predicted the real gain of enrolling far better than
+    # quality (Spearman 0.71 vs 0.14). Coverage = current suggestions of OTHER tracks at
+    # least this similar (cosine) — the recurring situation the face stands for
+    enrol_coverage_similarity: float = 0.5
+    # "Recommended" from this coverage (and the closest person leading by enrol_min_margin):
+    # 92 / 150 marked, 91 % helped, 89 % of the total gain (quality >= 0.45: 18 %).
+    # Calibrated on 20 crops per track; the live list holds one per track — re-check
+    enrol_min_coverage: int = 5
+    # Below this lead of the closest person over the runner-up the suggestion is "Risky"
+    # (the one seriously harmful candidate: Judit face 0.17 vs Virag 0.20)
+    enrol_min_margin: float = 0.10
+    # "Recommended" also needs this face quality: blurred/grainy faces around the 0.45
+    # learning threshold still helped a little offline, but degraded embeddings resemble
+    # each other (a junk crop named 10 Ati faces Virag) and a stranger's blurred face could
+    # match them — a gallery image should be a good picture too (2026-10-19, #1399 at 0.45)
+    enrol_min_quality: float = 0.50
 
 
 @dataclass
@@ -393,6 +430,34 @@ class MetricsConfig:
     audit_crop_max_height: int = 640
     # Images are large (~0.3-1 MB per sample): keep them shorter than other metrics
     audit_retention_days: int = 7
+    # Age samples, person gallery ages and age vetoes (<path>/age/, age.enabled only)
+    age_log_enabled: bool = True
+
+
+@dataclass
+class AgeConfig:
+    """Apparent-age veto on naming (src/recognition/age_gate.py, MiVOLO).
+
+    Each person's age is estimated from their face gallery images; a track's age is
+    the median of a few face+body samples. A track is never named as a person whose
+    gallery age differs from the track age by more than max_ratio (either way) — no
+    hand-made age classes, it follows whoever is in the gallery.
+    """
+
+    enabled: bool = False
+    # MiVOLO v2 d1_384: .onnx (ONNX Runtime, CPU) or .engine (TensorRT FP16 on the Jetson)
+    model: str = "models/mivolo_v2/mivolo_d1_384.onnx"
+    # 2026-10-19 on 27 hand-labelled live tracks: x2.5 after 3 samples vetoed the true
+    # person 0 / 428 times and the child's name on all 17 adult tracks (x2.0: 4 % wrong)
+    max_ratio: float = 2.5
+    # Samples before a track's age may veto (single samples vary: child 4-45 y)
+    min_samples: int = 3
+    # Samples kept per track (later ones are not needed for a median)
+    max_samples: int = 7
+    # Seconds between samples of one track (~25 ms each on the Jetson)
+    sample_interval_sec: float = 1.0
+    # Gallery images per person used for the person's age (median)
+    gallery_images_per_person: int = 10
 
 
 @dataclass
@@ -416,6 +481,7 @@ class Config:
     logging: LoggingConfig = field(default_factory=LoggingConfig)
     vlm: VLMConfig = field(default_factory=VLMConfig)
     metrics: MetricsConfig = field(default_factory=MetricsConfig)
+    age: AgeConfig = field(default_factory=AgeConfig)
 
     def get_camera(self, camera_id: str) -> Optional[CameraConfig]:
         """Get camera configuration by ID."""
@@ -489,6 +555,7 @@ def load_config(config_path: str | Path) -> Config:
     logging_config = LoggingConfig(**data.get("logging", {}))
     vlm = VLMConfig(**data.get("vlm", {}))
     metrics = MetricsConfig(**data.get("metrics", {}))
+    age = AgeConfig(**data.get("age", {}))
 
     return Config(
         cameras=cameras,
@@ -508,4 +575,5 @@ def load_config(config_path: str | Path) -> Config:
         logging=logging_config,
         vlm=vlm,
         metrics=metrics,
+        age=age,
     )

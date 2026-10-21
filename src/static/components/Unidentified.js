@@ -1,4 +1,4 @@
-import { formatRelativeTime } from '../utils/formatters.js';
+import { enrolBadge, formatMatchScores, formatRelativeTime } from '../utils/formatters.js';
 
 export default {
     template: `
@@ -22,8 +22,8 @@ export default {
                         <option value="0.55">55%+</option>
                     </select>
                     <label class="flex items-center gap-2 text-sm cursor-pointer">
-                        <input type="checkbox" v-model="learningOnly" @change="loadFaces" class="rounded">
-                        <span>Learning only</span>
+                        <input type="checkbox" v-model="recommendedOnly" @change="loadFaces" class="rounded">
+                        <span>Recommended only</span>
                     </label>
                     <button @click="loadFaces" class="bg-blue-600 hover:bg-blue-700 px-4 py-2 rounded text-sm">
                         Refresh
@@ -49,11 +49,9 @@ export default {
                              @click="previewFace(face.id)"
                              onerror="this.src='https://via.placeholder.com/200?text=No+Image'">
                         
-                        <div v-if="isGoodForLearning(face)" class="absolute top-2 left-2 bg-green-600 text-xs px-2 py-1 rounded flex items-center gap-1">
-                            <span>✓</span> Learning
-                        </div>
-                        <div v-else class="absolute top-2 left-2 bg-gray-600 text-xs px-2 py-1 rounded opacity-75">
-                            Review
+                        <div :class="enrolBadge(face).cls" :title="enrolBadge(face).title"
+                             class="absolute top-2 left-2 text-xs px-2 py-1 rounded">
+                            {{ enrolBadge(face).text }}
                         </div>
 
                         <div :class="getQualityColor(face)" class="absolute top-2 right-2 text-xs px-2 py-1 rounded">
@@ -66,7 +64,9 @@ export default {
                             <span class="text-gray-500 font-mono">#{{ face.id }}</span>
                         </div>
                         <div class="text-xs text-gray-500 mb-2">{{ formatRelativeTime(face.created_at) }}</div>
-                        <div class="text-sm mb-3" v-html="getMatchInfo(face)"></div>
+                        <div class="text-sm mb-1" v-html="getMatchInfo(face)"></div>
+                        <div v-if="face.match_scores && face.match_scores.length" class="text-xs mb-3"
+                             v-html="formatMatchScores(face.match_scores)"></div>
                         <div class="flex gap-2">
                             <button v-if="face.best_match_person_id"
                                     @click="quickAssign(face.id, face.best_match_person_id)"
@@ -98,7 +98,7 @@ export default {
             error: null,
             cameraFilter: '',
             qualityFilter: '0',
-            learningOnly: false,
+            recommendedOnly: false,
             refreshInterval: null,
         };
     },
@@ -108,8 +108,8 @@ export default {
             if (this.qualityFilter > 0) {
                 faces = faces.filter(f => (f.quality_score || 0) >= this.qualityFilter);
             }
-            if (this.learningOnly) {
-                faces = faces.filter(f => this.isGoodForLearning(f));
+            if (this.recommendedOnly) {
+                faces = faces.filter(f => f.enrol_label === 'recommended');
             }
             return faces;
         },
@@ -117,7 +117,7 @@ export default {
             const total = Object.values(this.cameraSummary).reduce((a, b) => a + b, 0);
             const cameraCount = Object.keys(this.cameraSummary).length;
             let text = `Total: ${total} faces across ${cameraCount} camera(s)`;
-            if (this.qualityFilter > 0 || this.learningOnly) {
+            if (this.qualityFilter > 0 || this.recommendedOnly) {
                 text += ` (showing ${this.filteredFaces.length} filtered)`;
             }
             return text;
@@ -145,6 +145,8 @@ export default {
         }
     },
     methods: {
+        formatMatchScores,
+        enrolBadge,
         formatRelativeTime,
         async loadFaces() {
             this.loading = true;
@@ -166,11 +168,6 @@ export default {
             } finally {
                 this.loading = false;
             }
-        },
-        isGoodForLearning(face) {
-            // Decided server-side from the face quality model score
-            // (unidentified_faces.learning_min_quality)
-            return face.learnable;
         },
         getQualityColor(face) {
             if (face.learnable) return 'bg-green-600';

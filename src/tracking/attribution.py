@@ -17,6 +17,13 @@ Every identity path needs the same answer, so it lives here and nowhere else:
   like the person's face-confirmed appearance (`PersonAppearance`): a track
   ByteTrack moved onto someone else, or a box covering two people, does not feed
   the Re-ID gallery.
+- A box's appearance must be SETTLED for a single strong face to name it
+  (`appearance_settled`): ByteTrack may move a track onto a person who stepped
+  in front of / out from behind its owner, and that person's one good face would
+  name the track the owner keeps after the switch back (2026-10-19 17:02: Judit's
+  track briefly on Ati, one strong Ati face, then "Ati" walked upstairs). A Re-ID
+  sample below APPEARANCE_CHANGE_SIM of the track's appearance EMA marks a change;
+  for APPEARANCE_SETTLE_SEC after it only the two-attempt streak can name.
 - Identity exclusivity: a person is held by at most one LIVE track per camera.
   A gallery match proposing a held person is rejected; a FACE confirmation wins
   and the other track loses the name (fresher, stronger evidence: ByteTrack moved
@@ -37,6 +44,32 @@ import numpy as np
 # Location evidence: a track the tracker dropped this long ago still counts as a
 # person on the camera (brief ByteTrack losses of a seated person last 1-3 s)
 RECENTLY_LOST_SEC = 5.0
+
+# Appearance change of one track (Re-ID sample vs the track's EMA, alpha APPEARANCE_EMA_ALPHA).
+# Offline 2026-10-19: same-person samples p1 0.79 (28 labelled tracks, 19719 samples), the switch
+# 0.49; settle 5 s blocked 0/240 labelled strong faces
+APPEARANCE_CHANGE_SIM = 0.6
+APPEARANCE_SETTLE_SEC = 5.0
+APPEARANCE_EMA_ALPHA = 0.2
+
+
+def update_appearance(track, embedding: np.ndarray, now: float) -> None:
+    """Fold a Re-ID sample into the track's appearance EMA; note when it changed (~0.01 ms).
+
+    `track` has `appearance` (Optional[np.ndarray]) and `appearance_changed_at` (float).
+    """
+    e = embedding / (np.linalg.norm(embedding) + 1e-9)
+    if track.appearance is None:
+        track.appearance = e
+        return
+    if float(e @ track.appearance) / (np.linalg.norm(track.appearance) + 1e-9) < APPEARANCE_CHANGE_SIM:
+        track.appearance_changed_at = now
+    track.appearance = (1 - APPEARANCE_EMA_ALPHA) * track.appearance + APPEARANCE_EMA_ALPHA * e
+
+
+def appearance_settled(track, now: float) -> bool:
+    """No appearance change in the last APPEARANCE_SETTLE_SEC (a single strong face may name it)."""
+    return now - track.appearance_changed_at >= APPEARANCE_SETTLE_SEC
 
 
 class _Boxed(Protocol):

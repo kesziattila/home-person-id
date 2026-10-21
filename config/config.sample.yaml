@@ -35,11 +35,19 @@ cameras:
     # Exclusion zones: rectangles where detections are ignored
     # Useful for: TVs showing people, mirrors, windows with reflections
     # Coordinates are normalized 0-1 (x1, y1 = top-left, x2, y2 = bottom-right)
+    # mode: "center" (default) drops a detection whose center is inside;
+    # "contained" only one whose whole box is inside — for an object people stand
+    # in front of (coat on a hook: a person's box reaches past the zone)
     exclusion_zones:
       - x1: 0.92
         y1: 0.0
         x2: 1.0
         y2: 0.6
+      - x1: 0.875
+        y1: 0.0
+        x2: 1.0
+        y2: 0.62
+        mode: contained
 
 # =============================================================================
 # CAMERA TOPOLOGY (Legacy - consider using zones instead)
@@ -323,6 +331,14 @@ face_recognition:
   # tools/analyze_face_scores.py on data from the metrics section below.
   min_margin: 0.0
 
+  # A single attempt this strong (top1 >= strong_threshold and lead over the
+  # runner-up >= strong_min_margin) names the track at once; weaker accepted
+  # attempts still need two in a row. Helps short passes (door, stairs) where
+  # only one good face is seen. 0 = off. Replay with
+  # tools/analyze_face_scores.py --strong-threshold/--strong-margin.
+  strong_threshold: 0.0
+  strong_min_margin: 0.15
+
   # Minimum face size (pixels) for detection
   # Smaller = detect faces further away, but less accurate
   min_face_size: 80
@@ -421,6 +437,18 @@ unidentified_faces:
 
   # Queue size for background processing
   queue_size: 100
+  # Enrolment value of a suggestion (UI "Recommended +N" / "Risky"; the quality badge stays).
+  # Coverage = current suggestions of OTHER tracks at least this similar (cosine): the face
+  # stands for a situation where recognition keeps failing (predicted the real gain of
+  # enrolling far better than quality, 2026-10-19)
+  enrol_coverage_similarity: 0.5
+  # "Recommended" from this coverage, if the closest person leads the runner-up by enrol_min_margin
+  enrol_min_coverage: 5
+  # Below this lead over the runner-up person the suggestion is "Risky"
+  enrol_min_margin: 0.10
+  # "Recommended" also needs this face quality: a gallery image should be a good picture, not
+  # only a useful one (degraded embeddings resemble each other and strangers' blurred faces)
+  enrol_min_quality: 0.50
 
 # =============================================================================
 # MQTT (Home Assistant Integration)
@@ -503,6 +531,33 @@ metrics:
   audit_crop_max_height: 640
   # Image retention (~0.3-1 MB per sample)
   audit_retention_days: 7
+  # Age samples, person gallery ages and age vetoes to <path>/age/ (age.enabled only)
+  age_log_enabled: true
+
+# =============================================================================
+# APPARENT AGE VETO (MiVOLO)
+# =============================================================================
+# A track is never named as a person whose apparent age clearly differs from the
+# track's: each person's age comes from their face gallery images, a track's from a
+# few face+body samples (works from behind / under a hat). Only a veto — age never
+# names anyone. Separates children from adults where faces and clothes confuse
+# family members. Model export/conversion: tools/convert_mivolo_to_onnx.py, docs/JETSON.md
+
+age:
+  enabled: false
+  # .onnx = ONNX Runtime on CPU (~0.5 s/sample), .engine = TensorRT FP16 (~25 ms on the Jetson)
+  model: "models/mivolo_v2/mivolo_d1_384.onnx"
+  # Veto when track age and person age differ by more than this factor (either way)
+  max_ratio: 2.5
+  # Samples before a track's age may veto, and samples kept per track
+  min_samples: 3
+  max_samples: 7
+  # Seconds between samples of one track (isolated tracks only)
+  sample_interval_sec: 1.0
+  # Newest gallery images per person used for the person's age (median). Every gallery image is
+  # estimated once (shown in the UI) and stored in face_embeddings (apparent_age, age_model);
+  # re-estimated only when model changes
+  gallery_images_per_person: 10
 
 # =============================================================================
 # DATABASE

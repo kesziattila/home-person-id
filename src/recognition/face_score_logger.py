@@ -49,12 +49,16 @@ class FaceScoreLogger:
         num_faces: int = 1,
         ambiguous: bool = False,
         embedding_norm: Optional[float] = None,
+        strong: bool = False,
+        appearance_settled: bool = True,
         now: Optional[float] = None,
     ) -> bool:
         """Record one attempt. Returns False if skipped by the per-track rate limit.
 
         num_faces = recognizable faces in the head region; ambiguous = none or several
-        of them central, so the scored face may be someone else's (never accepted).
+        of them central, so the scored face may be someone else's (never accepted);
+        strong = accepted and alone enough to name the track (face_recognition.strong_threshold);
+        appearance_settled = False: the box just changed appearance, strong was not allowed.
         """
         now = time.time() if now is None else now
         with self._lock:
@@ -72,6 +76,8 @@ class FaceScoreLogger:
             "top1": round(top1, 4),
             "top2": round(top2, 4),
             "accepted": accepted,
+            "strong": strong,
+            "settled": appearance_settled,
             "face_h": round(float(face_height), 1),
             "face_w": round(float(face_width), 1),
             "det_conf": round(float(det_confidence), 3),

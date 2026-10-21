@@ -288,6 +288,27 @@ It could be converted with `trtexec` like the other models, but the CPU keeps it
 away from the GPU the live pipeline is bound by. Check `FaceQualityAssessor.score`
 in the Performance Report.
 
+### Age Model (MiVOLO, `age.enabled`)
+
+MiVOLO v2 (d1_384, face+body, ~29M parameters, Apache-2.0) is exported to ONNX once
+on a desktop with `tools/convert_mivolo_to_onnx.py` (instructions inside: the weights
+come as safetensors from the Hugging Face repo, the model code is read from the
+MiVOLO GitHub sources and timm 0.8.13.dev0 is installed into a scratch directory, not
+the project venv). The export replaces VOLO's `F.fold` (ONNX `Col2Im`, opset 18 only)
+with an identical grouped `conv_transpose2d`. Then on the Jetson:
+
+```bash
+/usr/src/tensorrt/bin/trtexec --onnx=models/mivolo_v2/mivolo_d1_384.onnx \
+  --saveEngine=models/mivolo_v2/mivolo_d1_384_fp16.engine --fp16 --memPoolSize=workspace:1024
+```
+
+2026-10-19 on the Orin under live load: 24.6 ms GPU, 32 ms per sample with copies;
+FP16 vs FP32 ages within 0.11 years. Set `age.model` to the `.engine`. Samples are
+taken at most every `age.sample_interval_sec` per track and `age.max_samples` per
+track, so the average cost is small; check `AgeEstimator.estimate` in the
+Performance Report. Each gallery image is estimated once (~50 ms) and stored in
+`face_embeddings` with the model file name; a new `.engine`/`.onnx` name re-estimates once.
+
 ## Hardware Acceleration (nvJPEG)
 
 ### Install nvjpeg for hardware-accelerated JPEG encoding

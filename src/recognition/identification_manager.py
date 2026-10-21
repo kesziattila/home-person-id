@@ -23,6 +23,7 @@ from src.recognition.reid_extractor import ReIDExtractor, is_grayscale_image
 from src.recognition.reid_gallery import ReIDGalleryManager, DebugImageSaver
 from src.recognition.tensorrt_face import align_face
 from src.tracking.attribution import owner_face
+from src.utils.embedding_utils import cosine_similarity_batch
 from src.utils.image_utils import crop_bbox, crop_face_region, crop_with_margin
 from src.utils.profiler import profiler
 
@@ -69,7 +70,39 @@ class FaceMatchScores:
         return self.best_entry is not None and self.top1 >= threshold and self.margin >= min_margin
 
 
-# Face confirmation: the same person must be accepted this many attempts in a row
+def score_against_gallery(
+    embedding: np.ndarray,
+    gallery: list[FaceGalleryEntry],
+    similarity: Callable[[np.ndarray, np.ndarray], np.ndarray] = cosine_similarity_batch,
+) -> FaceMatchScores:
+    """Score a face embedding against gallery entries, per person (~0.1 ms for ~100 entries).
+
+    The one scoring rule: live recognition (`IdentificationManager.score_face`, with the
+    recognizer's batch comparison) and the review UI (unidentified face suggestions, API)
+    both use it.
+    """
+    if not gallery:
+        return FaceMatchScores()
+    similarities = similarity(embedding, np.array([entry.embedding for entry in gallery]))
+    best_idx = int(np.argmax(similarities))
+    best_entry = gallery[best_idx]
+
+    per_person: dict[int, float] = {}
+    for entry, sim in zip(gallery, similarities):
+        if sim > per_person.get(entry.person_id, -1.0):
+            per_person[entry.person_id] = float(sim)
+    others = [s for pid, s in per_person.items() if pid != best_entry.person_id]
+
+    return FaceMatchScores(
+        best_entry=best_entry,
+        top1=float(similarities[best_idx]),
+        top2=max(others, default=0.0),
+        per_person=per_person,
+    )
+
+
+# Face confirmation: the same person must be accepted this many attempts in a row,
+# unless one attempt is strong (face_recognition.strong_threshold / strong_min_margin)
 FACE_CONSECUTIVE_MATCHES = 2
 
 
@@ -84,7 +117,8 @@ class FaceAttempt:
     num_faces: int  # faces of at least min_face_size in the region
     ambiguous: bool  # no single face owns the box: logged only, never used
     accepted: bool  # this attempt passes the match policy
-    confirmed: bool  # accepted FACE_CONSECUTIVE_MATCHES times in a row for the same person
+    confirmed: bool  # accepted FACE_CONSECUTIVE_MATCHES times in a row for the same person, or strong
+    strong: bool = False  # this attempt alone confirms (strong_threshold / strong_min_margin)
 
 
 @dataclass
@@ -200,6 +234,8 @@ class IdentificationManager:
         # Configuration shortcuts
         self.face_threshold = config.face_recognition.similarity_threshold
         self.face_min_margin = config.face_recognition.min_margin
+        self.face_strong_threshold = config.face_recognition.strong_threshold
+        self.face_strong_min_margin = config.face_recognition.strong_min_margin
         self.face_check_interval = config.face_recognition.detection_interval
         self.reid_confirm_interval = config.face_recognition.reid_confirmation_interval
         self.reid_embedding_interval = 30
@@ -263,28 +299,9 @@ class IdentificationManager:
 
     def score_face(self, embedding: np.ndarray) -> FaceMatchScores:
         """Score a face embedding against the gallery, per person (~0.1ms for ~100 entries)."""
-        gallery = self.face_gallery
-        if not gallery or self.face_recognizer is None:
+        if self.face_recognizer is None:
             return FaceMatchScores()
-
-        similarities = self.face_recognizer.compare_embeddings_batch(
-            embedding, np.array([entry.embedding for entry in gallery])
-        )
-        best_idx = int(np.argmax(similarities))
-        best_entry = gallery[best_idx]
-
-        per_person: dict[int, float] = {}
-        for entry, sim in zip(gallery, similarities):
-            if sim > per_person.get(entry.person_id, -1.0):
-                per_person[entry.person_id] = float(sim)
-        others = [s for pid, s in per_person.items() if pid != best_entry.person_id]
-
-        return FaceMatchScores(
-            best_entry=best_entry,
-            top1=float(similarities[best_idx]),
-            top2=max(others, default=0.0),
-            per_person=per_person,
-        )
+        return score_against_gallery(embedding, self.face_gallery, self.face_recognizer.compare_embeddings_batch)
 
     @property
     def gallery_size(self) -> int:
@@ -477,6 +494,7 @@ class IdentificationManager:
         bbox: tuple[float, float, float, float],
         track_id: str,
         camera_id: Optional[str] = None,
+        allow_strong: bool = True,
     ) -> Optional[FaceAttempt]:
         """One face recognition attempt for a person box — the only face path (~15-25ms on Jetson TRT).
 
@@ -488,6 +506,9 @@ class IdentificationManager:
         unaccepted, unambiguous face as an unidentified-face candidate. Ambiguous
         attempts are logged only. Closest-match display info goes to the track's
         TrackIdentity. The caller decides what a confirmed attempt means.
+
+        allow_strong=False (the box's appearance just changed, attribution.appearance_settled):
+        a single strong face does not confirm, only the FACE_CONSECUTIVE_MATCHES streak.
 
         Returns:
             FaceAttempt, or None when no usable face was found
@@ -518,6 +539,9 @@ class IdentificationManager:
             scores = self.score_face(embedding)
         best = scores.best_entry
         accepted = not ambiguous and scores.accepts(self.face_threshold, self.face_min_margin)
+        # allow_strong=False: the box's appearance just changed (attribution.appearance_settled)
+        strong = (accepted and allow_strong and self.face_strong_threshold > 0
+                  and scores.accepts(self.face_strong_threshold, self.face_strong_min_margin))
 
         confirmed = False
         if accepted:
@@ -526,7 +550,7 @@ class IdentificationManager:
             else:
                 identity.candidate_person_id = best.person_id
                 identity.consecutive_matches = 1
-            confirmed = identity.consecutive_matches >= FACE_CONSECUTIVE_MATCHES
+            confirmed = strong or identity.consecutive_matches >= FACE_CONSECUTIVE_MATCHES
             if confirmed:
                 identity.candidate_person_id = None
                 identity.consecutive_matches = 0
@@ -536,6 +560,7 @@ class IdentificationManager:
         attempt = FaceAttempt(
             face=face, embedding=embedding, scores=scores, region=region,
             num_faces=len(faces), ambiguous=ambiguous, accepted=accepted, confirmed=confirmed,
+            strong=strong,
         )
         if self._face_score_logger and best:
             self._face_score_logger.log(
@@ -546,6 +571,8 @@ class IdentificationManager:
                 top1=scores.top1,
                 top2=scores.top2,
                 accepted=accepted,
+                strong=strong,
+                appearance_settled=allow_strong,
                 face_height=face.height,
                 face_width=face.width,
                 det_confidence=face.confidence,

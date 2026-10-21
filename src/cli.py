@@ -526,7 +526,7 @@ def preview(ctx, camera, show_zones, scale, reid, save_snapshots):
                     x1, y1 = int(zone.x1 * frame_w), int(zone.y1 * frame_h)
                     x2, y2 = int(zone.x2 * frame_w), int(zone.y2 * frame_h)
                     cv2.rectangle(display, (x1, y1), (x2, y2), (0, 0, 255), 2)
-                    cv2.putText(display, "EXCLUDE", (x1, y1 - 5),
+                    cv2.putText(display, "EXCLUDE" if zone.mode == "center" else "EXCLUDE (contained)", (x1, y1 - 5),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
 
             # Draw polygon zones

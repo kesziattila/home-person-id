@@ -15,8 +15,9 @@ from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
-from src.config import FaceRecognitionConfig
+from src.config import AgeConfig, FaceRecognitionConfig
 from src.database.repository import Repository
+from src.recognition.age_gate import GalleryImage, age_model_tag, person_ages_from_gallery
 from src.utils.image_utils import crop_with_margin
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,8 @@ class FaceImageResponse(BaseModel):
     source_image: Optional[str] = None
     has_image: bool
     created_at: datetime
+    # Apparent age of this image by the current age.model (None: not estimated yet / no face)
+    apparent_age: Optional[float] = None
 
 
 class PersonDetailResponse(BaseModel):
@@ -37,6 +40,9 @@ class PersonDetailResponse(BaseModel):
     created_at: datetime
     face_count: int
     images: List[FaceImageResponse]
+    # The age the age veto uses: median over the newest gallery images (age_gate.person_ages_from_gallery)
+    apparent_age: Optional[float] = None
+    apparent_age_images: int = 0
 
 
 class PersonCreateRequest(BaseModel):
@@ -59,6 +65,7 @@ def create_persons_router(
     repository: Repository,
     face_config: FaceRecognitionConfig,
     faces_dir: Optional[str] = None,
+    age_config: Optional[AgeConfig] = None,
 ) -> APIRouter:
     """Create persons router with repository dependency.
 
@@ -66,6 +73,7 @@ def create_persons_router(
         repository: Database repository instance
         face_config: Face recognition configuration
         faces_dir: Optional override for faces directory (for testing)
+        age_config: Apparent-age settings (which stored estimates count, see age_gate.py)
 
     Returns:
         Configured APIRouter
@@ -116,6 +124,13 @@ def create_persons_router(
         if not person:
             raise HTTPException(status_code=404, detail="Person not found")
 
+        age_tag = age_model_tag(age_config.model) if age_config else None
+        person_age = None
+        if age_tag:
+            gallery = [GalleryImage(*row) for row in repository.get_face_gallery_images(person_id)]
+            person_age = person_ages_from_gallery(
+                gallery, age_tag, age_config.gallery_images_per_person).get(person_id)
+
         # Get face embeddings with source images
         from src.database.models import FaceEmbedding
         with repository.get_session() as session:
@@ -138,6 +153,8 @@ def create_persons_router(
                     source_image=emb.source_image,
                     has_image=has_image,
                     created_at=emb.created_at,
+                    apparent_age=(round(emb.apparent_age, 1) if emb.apparent_age is not None
+                                  and age_tag and emb.age_model == age_tag else None),
                 ))
 
             return PersonDetailResponse(
@@ -147,6 +164,8 @@ def create_persons_router(
                 created_at=person.created_at,
                 face_count=len(embeddings),
                 images=images,
+                apparent_age=round(person_age[0], 1) if person_age else None,
+                apparent_age_images=person_age[1] if person_age else 0,
             )
 
     @router.get("/faces/image/{image_id}")

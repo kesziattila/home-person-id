@@ -27,3 +27,13 @@ def test_frame_returns_jpeg_of_latest_buffered_frame():
 
 def test_frame_unknown_camera_is_404():
     assert _client(PreviewBuffer()).get("/api/v1/frame/nope").status_code == 404
+
+
+def test_ui_files_are_always_revalidated():
+    """A phone kept stale components/*.js across reloads (2026-10-19): UI files get no-cache
+    (revalidated via ETag), API responses are left alone."""
+    client = _client(PreviewBuffer())
+    for path in ("/", "/static/app.js", "/static/components/Unidentified.js"):
+        response = client.get(path)
+        assert response.status_code == 200 and response.headers["cache-control"] == "no-cache", path
+    assert "cache-control" not in client.get("/api/v1/cameras").headers
