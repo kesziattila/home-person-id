@@ -521,6 +521,14 @@ class IdentityLinker:
 
     # ==================== Gallery Recheck ====================
 
+    def recheck_interval(self, track_age: float) -> float:
+        """Seconds between gallery rechecks of an unidentified track of this age (seconds)."""
+        cfg = self.reid_config
+        if cfg.gallery_recheck_age_factor <= 0:
+            return cfg.gallery_recheck_interval
+        return min(cfg.gallery_recheck_interval,
+                   max(cfg.gallery_recheck_min_interval, cfg.gallery_recheck_age_factor * track_age))
+
     def _try_gallery_identification(
         self,
         state: TrackIdentityState,
@@ -530,7 +538,9 @@ class IdentityLinker:
     ) -> bool:
         """Try to identify an unidentified (isolated) track via the shared Re-ID gallery.
 
-        Time-gated by reid_config.gallery_recheck_interval.
+        Time-gated by recheck_interval(): frequent while the track is young (a track
+        that missed the new-track match at birth otherwise needed min_consecutive_matches
+        x 10 s, longer than a door passage — 2026-10-21 Virag/Judit stayed "hallway").
 
         Args:
             state: Track identity state
@@ -542,7 +552,7 @@ class IdentityLinker:
             True if identification succeeded
         """
         current_time = time.time()
-        if current_time - state.last_gallery_check < self.reid_config.gallery_recheck_interval:
+        if current_time - state.last_gallery_check < self.recheck_interval(current_time - state.first_seen):
             return False
 
         state.last_gallery_check = current_time

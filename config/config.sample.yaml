@@ -288,6 +288,11 @@ reid:
   # Periodically checks unidentified tracks against the shared Re-ID gallery,
   # so identification on one camera propagates to others even without zone overlap.
   gallery_recheck_interval: 10.0
+  # Young tracks are rechecked more often (a door passage lasts 5-20 s):
+  # interval = clip(age_factor * track age, min_interval, gallery_recheck_interval);
+  # ~1 ms per recheck. age_factor 0 = fixed gallery_recheck_interval
+  gallery_recheck_age_factor: 0.25
+  gallery_recheck_min_interval: 0.5
 
   # Minimum seconds between shared Re-ID gallery updates of one identified track.
   # Each update runs a grayscale check and a face detector (multi-face check, ~15ms

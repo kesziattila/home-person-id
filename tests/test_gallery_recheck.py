@@ -224,3 +224,34 @@ class TestGalleryRecheck:
         assert result.person_id == 20
         assert result.method == "reid_gallery"
         assert state.identified_by == "reid_gallery"
+
+
+def test_recheck_interval_grows_with_track_age():
+    """Young tracks are rechecked often, old ones at gallery_recheck_interval (offline 2026-10-21)."""
+    linker, _, _ = _make_identity_linker(gallery_recheck_interval=10.0)
+    linker.reid_config.gallery_recheck_age_factor = 0.25
+    linker.reid_config.gallery_recheck_min_interval = 0.5
+    assert linker.recheck_interval(0.0) == 0.5
+    assert linker.recheck_interval(8.0) == 2.0
+    assert linker.recheck_interval(120.0) == 10.0
+    linker.reid_config.gallery_recheck_age_factor = 0.0
+    assert linker.recheck_interval(0.0) == 10.0
+
+
+def test_young_track_reaches_three_consecutive_matches_within_seconds():
+    """A door passage (~5 s) can collect min_consecutive_matches=3 gallery matches."""
+    linker, repo, mock_gallery = _make_identity_linker(gallery_recheck_interval=10.0,
+                                                       min_consecutive_matches=3)
+    match_result = MagicMock(matched=True, person_name="Virag", score=0.74)
+    mock_gallery.match_new_track.return_value = match_result
+    person = MagicMock(id=3); person.name = "Virag"
+    repo.get_person_by_name.return_value = person
+    state = linker.register_track("global_1")
+    crop = np.zeros((100, 50, 3), dtype=np.uint8)
+    t0 = state.first_seen
+    named = False
+    for age in (0.0, 0.6, 1.2, 1.8):
+        with patch("src.recognition.identity_linker.time.time", return_value=t0 + age):
+            named = linker._try_gallery_identification(state, crop, "hallway") or named
+    assert named and state.person_id == 3
+
