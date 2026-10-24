@@ -1,4 +1,5 @@
 import time
+from datetime import datetime, timezone
 import logging
 import tracemalloc
 from dataclasses import dataclass, field
@@ -353,6 +354,38 @@ class Profiler:
         self.last_log_time = time.time()
         self._lock = threading.Lock()
         self.enabled = False
+        # On-disk timing stream (attach_jsonl): own accumulators, flushed every _sink_interval
+        self._sink = None
+        self._sink_interval = 60.0
+        self._sink_stats: Dict[str, ModuleStats] = {}
+        self._sink_since = time.time()
+
+    def attach_jsonl(self, writer, interval_sec: float = 60.0) -> None:
+        """Also write the timings to `writer` (DailyJsonlWriter) every `interval_sec`.
+
+        Independent of `enabled` (the stdout report), so measured times of every module
+        are at hand offline (scripts/remote/fetch_metrics.sh -> metrics/perf/).
+        """
+        self._sink, self._sink_interval, self._sink_since = writer, interval_sec, time.time()
+
+    def flush_jsonl(self, extra_info: Optional[Dict[str, Any]] = None) -> bool:
+        """Write one record of the timings since the last one, if `interval_sec` elapsed (~0.1 ms).
+
+        Record: {"interval_s", "modules": {name: {"calls", "avg_ms", "max_ms", "total_s"}}, **extra}
+        """
+        now = time.time()
+        if self._sink is None or now - self._sink_since < self._sink_interval:
+            return False
+        with self._lock:
+            modules = {
+                s.name: {"calls": s.call_count, "avg_ms": round(s.total_time / s.call_count * 1000, 2),
+                         "max_ms": round(s.max_time * 1000, 2), "total_s": round(s.total_time, 3)}
+                for s in self._sink_stats.values() if s.call_count
+            }
+            self._sink_stats.clear()
+            interval, self._sink_since = now - self._sink_since, now
+        return self._sink.write({"interval_s": round(interval, 1), "modules": modules, **(extra_info or {})},
+                                datetime.now(timezone.utc))
 
     def start_measure(self) -> float:
         return time.perf_counter()
@@ -367,6 +400,12 @@ class Profiler:
             s.call_count += 1
             if elapsed > s.max_time:
                 s.max_time = elapsed
+            if self._sink is not None:
+                k = self._sink_stats.get(module_name) or self._sink_stats.setdefault(
+                    module_name, ModuleStats(name=module_name))
+                k.total_time += elapsed
+                k.call_count += 1
+                k.max_time = max(k.max_time, elapsed)
 
     def measure(self, module_name: str):
         """Context manager for measuring time."""

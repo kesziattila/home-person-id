@@ -44,12 +44,23 @@ def test_teleport_needs_disjoint_zones():
 
 def test_face_votes_against_label():
     samples = [_sample(1, "cam", ("g1", "Ati", [0, 0, 0.2, 0.5]))]
-    faces = [{"track_id": "g1", "top1_person_id": 3, "num_faces": 1, "_names": {1: "Ati", 3: "Virag"}}] * 4
+    faces = [{"track_id": "g1", "top1_person_id": 3, "top1": 0.45, "num_faces": 1,
+              "_names": {1: "Ati", 3: "Virag"}}] * 4
     (finding,) = find(samples, faces)
     assert finding["kind"] == "face_disagrees" and finding["faces_vote"] == "Virag 4/4"
 
 
+def test_weak_face_votes_do_not_contradict_the_label():
+    """Live 2026-10-23 11:20-11:44: Judit at the desk (label correct), Virag on her lap at
+    the end; 23 of 38 top-1 votes said Ati, all at 0.12-0.36 -> health watch false alarm."""
+    samples = [_sample(1, "cam", ("g1", "Judit", [0, 0, 0.2, 0.5]))]
+    names = {1: "Ati", 2: "Judit"}
+    faces = ([{"track_id": "g1", "top1_person_id": 1, "top1": 0.25, "num_faces": 1, "_names": names}] * 23
+             + [{"track_id": "g1", "top1_person_id": 2, "top1": 0.36, "num_faces": 1, "_names": names}])
+    assert find(samples, faces) == []
+
+
 def test_consistent_outcome_has_no_findings():
     samples = [_sample(1, "cam", ("g1", "Ati", [0, 0, 0.2, 0.5]), ("g2", "Virag", [0.5, 0, 0.7, 0.5]))]
-    faces = [{"track_id": "g1", "top1_person_id": 1, "num_faces": 1, "_names": {1: "Ati"}}] * 5
+    faces = [{"track_id": "g1", "top1_person_id": 1, "top1": 0.45, "num_faces": 1, "_names": {1: "Ati"}}] * 5
     assert find(samples, faces) == []

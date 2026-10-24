@@ -11,7 +11,7 @@ Backend selection:
 """
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 import cv2
@@ -33,6 +33,8 @@ class Detection:
     bbox: tuple[float, float, float, float]  # (x1, y1, x2, y2)
     confidence: float
     class_id: int = PERSON_CLASS_ID
+    # Pose models only: (17, 3) COCO keypoints in frame pixels (x, y, confidence); None for box-only models
+    keypoints: Optional[np.ndarray] = field(default=None, compare=False, repr=False)
 
     @property
     def center(self) -> tuple[float, float]:
@@ -259,6 +261,8 @@ class PersonDetector:
             all_bboxes = boxes.xyxy.cpu().numpy()
             all_confs = boxes.conf.cpu().numpy()
             all_classes = boxes.cls.cpu().numpy().astype(int)
+            kps = getattr(result, "keypoints", None)
+            all_kps = kps.data.cpu().numpy() if kps is not None and kps.data is not None else None
 
             for i in range(len(boxes)):
                 if all_classes[i] == PERSON_CLASS_ID:
@@ -268,11 +272,14 @@ class PersonDetector:
                             bbox=(bbox[0], bbox[1], bbox[2], bbox[3]),
                             confidence=float(all_confs[i]),
                             class_id=int(all_classes[i]),
+                            keypoints=all_kps[i].astype(np.float32) if all_kps is not None else None,
                         )
                     )
 
+        # Same class-agnostic NMS as the TensorRT path: end-to-end YOLO26 ignores `iou=` (offline
+        # redetect 2026-10-22: without it 311 vs 7 frames with 3 "persons", 24 vs 7 duplicate births)
         return DetectionResult(
-            detections=detections,
+            detections=suppress_overlapping(detections, self.nms_iou_threshold),
             frame_shape=frame.shape,
         )
 
@@ -305,6 +312,10 @@ def suppress_overlapping(detections: list[Detection], iou_threshold: float) -> l
     return [detections[i] for i in keep]
 
 
+# NMS-baked YOLO pose output row: box (4) + confidence + class + 17 keypoints x (x, y, visibility)
+POSE_OUTPUT_COLUMNS = 6 + 17 * 3
+
+
 class TensorRTDetector:
     """Person detector using TensorRT directly (no PyTorch dependency).
 
@@ -312,7 +323,8 @@ class TensorRTDetector:
     Ultralytics/PyTorch, reducing memory usage and startup time.
 
     Requires YOLO model exported with nms=True for baked-in NMS.
-    Output format: (N, 6) = [x1, y1, x2, y2, confidence, class_id]
+    Output format: (N, 6) = [x1, y1, x2, y2, confidence, class_id]; a pose engine's
+    (N, 6 + 17*3) rows also carry the 17 keypoints (`Detection.keypoints`, live since 2026-10-22)
 
     Only supports .engine or .trt model files.
     """
@@ -416,7 +428,7 @@ class _TensorRTPersonDetectorImpl:
                     _, _, shape = inner_self._buffers[name]
                     inner_self._output_shape = shape
 
-                    if len(shape) >= 2 and shape[-1] != 6:
+                    if len(shape) >= 2 and shape[-1] not in (6, POSE_OUTPUT_COLUMNS):
                         raise RuntimeError(
                             f"TensorRT engine has raw output format {shape}, "
                             f"but NMS-baked format (N, 6) is required.\n"
@@ -474,7 +486,7 @@ class _TensorRTPersonDetectorImpl:
         orig_h, orig_w = orig_shape
 
         for det in output:
-            x1, y1, x2, y2, conf, class_id = det
+            x1, y1, x2, y2, conf, class_id = det[:6]
 
             if conf < self.confidence_threshold:
                 continue
@@ -487,12 +499,18 @@ class _TensorRTPersonDetectorImpl:
             y1 = np.clip((y1 - self._pad_h) / self._scale, 0, orig_h)
             x2 = np.clip((x2 - self._pad_w) / self._scale, 0, orig_w)
             y2 = np.clip((y2 - self._pad_h) / self._scale, 0, orig_h)
+            keypoints = None
+            if len(det) == POSE_OUTPUT_COLUMNS:
+                keypoints = det[6:].reshape(-1, 3).astype(np.float32)
+                keypoints[:, 0] = (keypoints[:, 0] - self._pad_w) / self._scale
+                keypoints[:, 1] = (keypoints[:, 1] - self._pad_h) / self._scale
 
             detections.append(
                 Detection(
                     bbox=(float(x1), float(y1), float(x2), float(y2)),
                     confidence=float(conf),
                     class_id=PERSON_CLASS_ID,
+                    keypoints=keypoints,
                 )
             )
 

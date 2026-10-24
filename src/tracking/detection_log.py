@@ -8,11 +8,12 @@ re-run the real tracker offline with any configuration and compare outcomes
 
 One JSONL record per update call, empty frames included (they age tracks):
     {"ts", "session", "camera_id", "shape": [h, w], "dets": [[x1, y1, x2, y2, conf], ...],
-     "reid": {"<det index>": ["<float16 base64>", quality]}}   # reid optional
+     "reid": {"<det index>": ["<float16 base64>", quality]},   # reid optional
+     "kps": [[x, y, conf] * 17 per det, ...]}                  # pose detector only, parallel to dets
 
 `session` = process start; trackers restart empty with every session, so the
 replay resets its trackers at session boundaries. ~0.1 KB per frame without
-Re-ID, ~1.5 KB per high-confidence detection with it.
+Re-ID, ~1.5 KB per high-confidence detection with it, ~0.3 KB per detection for keypoints.
 
 Frame capture (time-limited, for detector tuning): while the trigger file
 `detections/capture_until` holds a future epoch time (scripts/remote/capture_frames.sh),
@@ -52,6 +53,9 @@ def tracker_input(detections: DetectionResult,
         "dets": [[*(round(float(v), 2) for v in d.bbox), round(float(d.confidence), 4)]
                  for d in detections.detections],
     }
+    if any(d.keypoints is not None for d in detections.detections):
+        fields["kps"] = [[round(float(v), 1 if j % 3 < 2 else 2) for j, v in enumerate(d.keypoints.ravel())]
+                         if d.keypoints is not None else None for d in detections.detections]
     if reid_embeddings:
         fields["reid"] = {
             str(i): [base64.b64encode(np.asarray(emb, dtype=np.float16).tobytes()).decode(), round(float(q), 3)]
@@ -173,22 +177,26 @@ def load(path: Path, since: Optional[str] = None, until: Optional[str] = None,
     for f in files:
         if since and f.stem < since[:10] or until and f.stem > until[:10]:
             continue
-        for line in f.read_text().splitlines():
-            try:
-                record = json.loads(line)
-            except json.JSONDecodeError:
-                continue  # partially written last line
-            if since and record["ts"] < since or until and record["ts"] >= until:
-                continue
-            if camera is None or record["camera_id"] == camera:
-                yield record
+        with open(f) as lines:              # streamed: a day's log is ~300 MB
+            for line in lines:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # partially written last line
+                if since and record["ts"] < since or until and record["ts"] >= until:
+                    continue
+                if camera is None or record["camera_id"] == camera:
+                    yield record
 
 
 def to_detection_result(record: dict) -> DetectionResult:
     """Rebuild the DetectionResult the tracker received."""
     h, w = record["shape"]
+    kps = record.get("kps") or [None] * len(record["dets"])
     return DetectionResult(
-        detections=[Detection(bbox=tuple(d[:4]), confidence=d[4]) for d in record["dets"]],
+        detections=[Detection(bbox=tuple(d[:4]), confidence=d[4],
+                              keypoints=np.asarray(k, dtype=np.float32).reshape(-1, 3) if k else None)
+                    for d, k in zip(record["dets"], kps)],
         frame_shape=(h, w, 3),
     )
 

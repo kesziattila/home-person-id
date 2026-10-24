@@ -28,6 +28,13 @@ Usage:
 import argparse
 import dataclasses
 import itertools
+import os
+
+# one BLAS/OpenMP thread per worker process (set before numpy loads): --jobs is the parallelism
+for _var in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS"):
+    os.environ.setdefault(_var, "1")
+
+from concurrent.futures import ProcessPoolExecutor  # noqa: E402
 from collections import defaultdict
 from pathlib import Path
 from typing import Optional
@@ -40,6 +47,8 @@ from src.tracking.byte_tracker import ByteTracker
 from tools.analyze_track_events import load_events, summarize
 
 APPEARANCE_BREAK_SIM = 0.45
+# 12 workers each holding a day of records exhausted the dev machine (2026-10-24)
+MAX_JOBS = 4
 APPEARANCE_WINDOW = 10
 
 
@@ -106,13 +115,22 @@ def replay(records: list[dict], config: TrackingConfig, breaks: Optional[list] =
     return {camera: {**s, **summary.get(camera, {})} for camera, s in stats.items()}
 
 
+def _replay_camera(metrics: Path, since: Optional[str], until: Optional[str], camera: str,
+                   config: TrackingConfig) -> tuple[dict, list]:
+    """One (variant, camera) replay in a worker process (~6-7 s per logged hour of all cameras)."""
+    breaks: list = []
+    records = list(detection_log.load(metrics / "detections", since, until, camera))
+    return replay(records, config, breaks), breaks
+
+
 def _row(label: str, r: dict) -> str:
     births = r.get("births", {})
     return (f"  {label:<34} births={r.get('births_total', 0):>4} "
             f"new={births.get('new', 0):>4} assoc_fail={births.get('assoc_fail', 0):>4} "
             f"dup={births.get('duplicate', 0):>4}  confirmed={r.get('confirmed_tracks', '-'):>4} "
             f"tracked_dets={r.get('tracked_dets', '-'):>5}  "
-            f"appearance_breaks={r.get('appearance_breaks', '-')}/{r.get('appearance_samples', '-')}")
+            f"appearance_breaks={r.get('appearance_breaks', '-')}/{r.get('appearance_samples', '-')}  "
+            f"unswaps={r.get('unswaps', 0)}")
 
 
 def main():
@@ -126,31 +144,45 @@ def main():
     p.add_argument("--sweep", action="append", default=[], help="key=v1,v2,... (cartesian product)")
     p.add_argument("--track-events", action="store_true", help="compare with the live track_events log")
     p.add_argument("--show-breaks", action="store_true", help="list appearance breaks (likely ID switches)")
+    p.add_argument("--jobs", type=int, default=MAX_JOBS,
+                   help=f"parallel processes (max {MAX_JOBS}), one per (variant, camera): cameras replay "
+                        "independently; each holds one camera's records (~1-2 GB for a day)")
     args = p.parse_args()
 
     base = TrackingConfig()
     if args.config:
         from src.config import load_config
         base = load_config(str(args.config)).tracking
-    records = list(detection_log.load(args.metrics / "detections", args.since, args.until, args.camera))
-    if not records:
+    # stream once for the window summary; the workers load their own camera's records
+    n_frames, first, last, cameras = 0, None, None, set()
+    for record in detection_log.load(args.metrics / "detections", args.since, args.until, args.camera):
+        n_frames += 1
+        first, last = first or record["ts"], record["ts"]
+        cameras.add(record["camera_id"])
+    if not n_frames:
         raise SystemExit("no detection log records in the window")
-    print(f"{len(records)} frames {records[0]['ts']} .. {records[-1]['ts']}  base: {dataclasses.asdict(base)}")
+    print(f"{n_frames} frames {first} .. {last}  base: {dataclasses.asdict(base)}")
 
     live: Optional[dict] = None
     if args.track_events:
         live_events = [e for e in load_events(args.metrics / "track_events", None, args.camera)
-                       if records[0]["ts"] <= e["ts"] <= records[-1]["ts"]]
+                       if first <= e["ts"] <= last]
         live = summarize(live_events)
 
-    results = {}
-    for overrides in variants(args.set, args.sweep):
-        label = ",".join(f"{k}={v}" for k, v in overrides.items()) or "base"
-        breaks: list = []
-        results[label] = replay(records, dataclasses.replace(base, **overrides), breaks)
-        if args.show_breaks:
-            for ts, camera, track_id, sim, n in breaks:
-                print(f"  break [{label}] {ts} {camera} local track {track_id}: sim {sim} to its last {n} samples")
+    cameras = sorted(cameras)
+    tasks = [(",".join(f"{k}={v}" for k, v in o.items()) or "base", o, cam)
+             for o in variants(args.set, args.sweep) for cam in cameras]
+    results: dict[str, dict] = {label: {} for label, _, _ in tasks}
+    with ProcessPoolExecutor(max_workers=min(max(1, args.jobs), MAX_JOBS)) as pool:
+        futures = [(label, pool.submit(_replay_camera, args.metrics, args.since, args.until, cam,
+                                       dataclasses.replace(base, **o)))
+                   for label, o, cam in tasks]
+        for label, future in futures:
+            stats, breaks = future.result()
+            results[label].update(stats)
+            if args.show_breaks:
+                for ts, camera, track_id, sim, n in breaks:
+                    print(f"  break [{label}] {ts} {camera} local track {track_id}: sim {sim} to its last {n} samples")
 
     for camera in sorted({c for r in results.values() for c in r}):
         print(f"{camera}:")

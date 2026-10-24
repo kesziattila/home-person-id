@@ -99,6 +99,11 @@ zones:
   #   max_handover_sec: 5.0
   #   # Estimated location when person disappears from this zone
   #   exit_destination: "outside"
+  #   # Entry handover (default 0 = off): an unnamed track that walks INTO this zone gets the name of
+  #   # the one person whose track on the same camera was lost <= this many seconds before it appeared
+  #   # (e.g. stairs: the tracker restarts at the stair foot, Re-ID from behind is too weak)
+  #   entry_handover_sec: 5.0
+  #   entry_handover_cameras: [living_room]   # only these cameras (empty/omitted = all of the zone)
   []
 
 # =============================================================================
@@ -222,6 +227,31 @@ tracking:
   # Useful for removing people who left but weren't detected leaving.
   stationary_timeout: 60.0
 
+  # Post-overlap un-swap. When one person walks in front of another, ByteTrack
+  # can hand the two boxes over crosswise (IoU has no information while they
+  # overlap). Each track keeps a "clean" Re-ID appearance from frames where its
+  # box overlaps no other box; when two tracks separate after overlapping more
+  # than unswap_overlap (intersection / smaller box), each collects
+  # unswap_samples isolated Re-ID samples, and if they match the OTHER track's
+  # pre-overlap appearance better by more than unswap_margin (mean cosine), the
+  # two tracks swap ids back (names stay with the right person). 0 disables.
+  unswap_margin: 0.15
+  unswap_samples: 3
+  unswap_overlap: 0.15
+
+  # OC-SORT components (Cao et al. 2023) on top of ByteTrack's two stages.
+  # velocity_weight (OCM): weight of the motion-direction agreement in the first
+  #   association (direction over velocity_delta_t frames); 0 disables.
+  # recover_last_observation (OCR): a box left unmatched is tried against each
+  #   unmatched track's LAST OBSERVED box (the Kalman prediction drifts while hidden).
+  # reupdate_after_occlusion (ORU): after missed frames the Kalman filter is re-run
+  #   along a straight path to the new box, so it does not keep a drifted velocity.
+  # Use the three together: OCR alone turned a takeover into a swap (replay 2026-10-24).
+  velocity_weight: 0.2
+  velocity_delta_t: 3
+  recover_last_observation: true
+  reupdate_after_occlusion: true
+
 # =============================================================================
 # CROSS-CAMERA RE-IDENTIFICATION
 # =============================================================================
@@ -308,6 +338,9 @@ reid:
   # same-person samples median 0.66, a track that jumped to another person
   # 0.37-0.49. Higher = cleaner gallery, fewer samples.
   anchor_similarity: 0.55
+  # Feed the gallery (and the appearance anchors) only from boxes whose pose skeleton stands:
+  # a sitting/lying crop is mostly sofa, and different people match each other there
+  gallery_needs_standing: true
 
   # Log track_recovered events to the database.
   # These fire frequently when ByteTrack briefly loses a detection — disable to reduce noise.
@@ -538,6 +571,16 @@ metrics:
   audit_retention_days: 7
   # Age samples, person gallery ages and age vetoes to <path>/age/ (age.enabled only)
   age_log_enabled: true
+  # Measured times (calls, avg/max ms per profiled module, FPS, loop time) to
+  # <path>/perf/, one record per perf_interval_sec seconds
+  perf_log_enabled: true
+  perf_interval_sec: 60.0
+  # One record per ended track: seconds to first name / first face, method, name changes,
+  # revocations (<path>/naming/, tools/analyze_naming.py)
+  naming_log_enabled: true
+  # One record per Re-ID gallery sample a track buffers: the box's overlap with live / recently
+  # lost neighbours at that moment (<path>/reid_feed/; why a cross-person sample got in)
+  reid_feed_log_enabled: true
 
 # =============================================================================
 # APPARENT AGE VETO (MiVOLO)
@@ -554,15 +597,23 @@ age:
   model: "models/mivolo_v2/mivolo_d1_384.onnx"
   # Veto when track age and person age differ by more than this factor (either way)
   max_ratio: 2.5
-  # Samples before a track's age may veto, and samples kept per track
+  # Samples before a track's age may veto, and samples kept per track (the newest, rolling)
   min_samples: 3
   max_samples: 7
-  # Seconds between samples of one track (isolated tracks only)
+  # Seconds between samples of one track (body: isolated tracks only; the box's own face: any track)
   sample_interval_sec: 1.0
+  # Seconds between samples once max_samples are held (the window follows a ByteTrack switch)
+  refresh_interval_sec: 5.0
   # Newest gallery images per person used for the person's age (median). Every gallery image is
   # estimated once (shown in the UI) and stored in face_embeddings (apparent_age, age_model);
   # re-estimated only when model changes
   gallery_images_per_person: 10
+  # Age samples only while the box's pose skeleton stands (unknown counts as standing): MiVOLO
+  # misjudges sitting/lying people, face and body alike
+  needs_standing: true
+  # Veto face-confirmed names too (false: only gallery/handover names, which rest on appearance;
+  # a face already tells the child from the adults)
+  veto_face: false
 
 # =============================================================================
 # DATABASE

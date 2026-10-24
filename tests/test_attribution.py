@@ -15,7 +15,7 @@ Expected now:
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 
@@ -23,7 +23,7 @@ from src.config import CameraTopologyConfig, FaceRecognitionConfig, ReIDConfig
 from src.database.repository import Repository
 from src.recognition.identity_linker import IdentityLinker
 from src.recognition.reid_gallery import MatchResult
-from src.tracking.attribution import isolated_track_ids, overlap_of_smaller
+from src.tracking.attribution import isolated_track_ids, overlap_of_smaller, posture
 from src.tracking.global_tracker import GlobalTrackManager
 from src.tracking.track import GlobalTrack, LocalTrack, TrackState
 from tests.test_cross_camera_zone_propagation import (
@@ -80,6 +80,17 @@ def _process(gtm, tracks, new_ids):
                              new_track_ids=new_ids, lost_track_ids=[])
 
 
+def _named_after_streak(gtm, linker, track):
+    """A new track's birth frame + 2 young-track rechecks (reid.min_consecutive_matches=3)."""
+    t0 = 1_000_000.0
+    with patch("src.recognition.identity_linker.time.time", return_value=t0):
+        _process(gtm, [track], [track.track_id])
+    linker.get_track_state(gtm._local_to_global[("ground_floor", track.track_id)]).first_seen = t0
+    for age in (0.6, 1.2):
+        with patch("src.recognition.identity_linker.time.time", return_value=t0 + age):
+            _process(gtm, [track], [])
+
+
 def _person(gtm, linker, local_id):
     return linker.get_track_state(gtm._local_to_global[("ground_floor", local_id)]).person_id
 
@@ -98,8 +109,9 @@ def test_new_track_overlapping_another_gets_no_appearance_identity():
 
 
 def test_isolated_new_track_still_gets_gallery_identity():
+    """Named after reid.min_consecutive_matches rechecks (test_birth_gallery_streak.py)."""
     gtm, linker = _manager()
-    _process(gtm, [_track(77, (400, 150, 520, 330))], [77])
+    _named_after_streak(gtm, linker, _track(77, (400, 150, 520, 330)))
     assert _person(gtm, linker, 77) is not None
 
 
@@ -130,7 +142,7 @@ def test_new_track_where_a_person_was_just_lost_stays_matchable():
                              new_track_ids=[], lost_track_ids=[72])
     linker.reid_gallery_manager.match_new_track.reset_mock()
 
-    _process(gtm, [_track(80, (105, 100, 305, 260))], [80])
+    _named_after_streak(gtm, linker, _track(80, (105, 100, 305, 260)))
 
     linker.reid_gallery_manager.match_new_track.assert_called()
     assert _person(gtm, linker, 80) is not None
@@ -228,3 +240,11 @@ def test_byte_tracker_keeps_track_appearance():
     track = tracker.get_track(1)
     assert np.allclose(track.appearance / np.linalg.norm(track.appearance), emb)
     assert track.appearance_changed_at == 0.0
+
+
+def test_posture_from_the_skeleton():
+    from tests.test_age_gate import _skeleton
+    assert [posture(_skeleton(p)) for p in ("standing", "sitting", "lying")] == ["standing", "sitting", "lying"]
+    assert posture(None) is None
+    no_knees = _skeleton("standing"); no_knees[[13, 14], 2] = 0.1
+    assert posture(no_knees) is None

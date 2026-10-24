@@ -69,6 +69,11 @@ class ZoneConfig:
     cameras: dict[str, ZonePolygon]  # camera_id -> polygon
     max_handover_sec: float = 5.0
     exit_destination: Optional[str] = None  # Estimated location when person leaves this zone
+    # Entry handover: an unnamed track walking INTO this zone gets the name of the one person whose
+    # track on the same camera was lost <= entry_handover_sec before it appeared (0 = off; stairs:
+    # TUNING_LOG 2026-10-21). entry_handover_cameras limits it to these cameras (empty = all of the zone)
+    entry_handover_sec: float = 0.0
+    entry_handover_cameras: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -155,6 +160,24 @@ class TrackingConfig:
     duplicate_ioa: float = 0.6
     # Seconds before removing stationary track (0 = no timeout, keep forever)
     stationary_timeout: float = 60.0
+    # Post-overlap un-swap (ByteTracker._check_swaps): when two tracks separate after
+    # overlapping (> unswap_overlap, intersection / smaller box), each collects
+    # unswap_samples Re-ID samples while isolated; if they match the OTHER track's
+    # pre-overlap appearance better by > unswap_margin (mean cosine), the two swap ids.
+    # 0 disables.
+    unswap_margin: float = 0.15
+    unswap_samples: int = 3
+    unswap_overlap: float = 0.15
+    # OC-SORT (Cao et al. 2023) on top of ByteTrack's two stages; replay 10-23..10-24 in TUNING_LOG
+    # (all three together: -21 % tracks, swaps 3 -> 2, both un-swapped; OCR alone adds a swap).
+    # OCM: weight of the motion-direction agreement (direction over velocity_delta_t frames) in
+    # the first association; 0 disables
+    velocity_weight: float = 0.2
+    velocity_delta_t: int = 3
+    # OCR: a box left unmatched is tried against each unmatched track's last observed box
+    recover_last_observation: bool = True
+    # ORU: after missed frames, re-run the Kalman filter along a straight path to the new box
+    reupdate_after_occlusion: bool = True
 
 
 @dataclass
@@ -207,6 +230,12 @@ class ReIDConfig:
     # person's face-confirmed appearance (agreed by face on two different tracks):
     # cosine >= this (src/tracking/attribution.PersonAppearance)
     anchor_similarity: float = 0.55
+    # Feed the gallery (and the face-confirmed appearance anchors) only from boxes whose pose
+    # skeleton stands (attribution.posture; box-only detectors are not gated). Offline 2026-10-23
+    # (captures 10-18..23, 2564 face-labelled boxes, gallery >= 1 h earlier, sitting queries,
+    # 0.70): all postures 46 % right / 12 % wrong names, standing only 28 % / 0.7 % — on the sofa
+    # the crop is mostly sofa, and Ati and Judit in white tops matched each other at 0.73-0.76
+    gallery_needs_standing: bool = True
     # Log track_recovered events to the database.
     # These fire frequently when ByteTrack briefly loses a detection.
     # Disable to reduce event noise.
@@ -438,6 +467,16 @@ class MetricsConfig:
     audit_retention_days: int = 7
     # Age samples, person gallery ages and age vetoes (<path>/age/, age.enabled only)
     age_log_enabled: bool = True
+    # Measured times of every profiled module (profiler.measure) to <path>/perf/,
+    # one record per perf_interval_sec (~3 KB; ~4 MB/day at 60 s)
+    perf_log_enabled: bool = True
+    perf_interval_sec: float = 60.0
+    # One record per ended track: seconds from track start to first name / first face, method,
+    # name changes, revocations (<path>/naming/, tools/analyze_naming.py)
+    naming_log_enabled: bool = True
+    # One record per Re-ID gallery sample a track buffers: the box's overlap with live / recently
+    # lost neighbours at that moment (<path>/reid_feed/; why a cross-person sample got in)
+    reid_feed_log_enabled: bool = True
 
 
 @dataclass
@@ -458,12 +497,25 @@ class AgeConfig:
     max_ratio: float = 2.5
     # Samples before a track's age may veto (single samples vary: child 4-45 y)
     min_samples: int = 3
-    # Samples kept per track (later ones are not needed for a median)
+    # Samples kept per track: the newest ones (rolling), so the age follows whoever the box
+    # holds now (2026-10-23: a ByteTrack switch left Judit's 7 samples on Virag's box)
     max_samples: int = 7
-    # Seconds between samples of one track (~25 ms each on the Jetson)
+    # Seconds between samples of one track (~55 ms each on the Jetson)
     sample_interval_sec: float = 1.0
+    # Seconds between samples once max_samples are held (keeps the window fresh, cheaply)
+    refresh_interval_sec: float = 5.0
     # Gallery images per person used for the person's age (median)
     gallery_images_per_person: int = 10
+    # Sample only while the box's skeleton stands (attribution.posture; unknown posture counts
+    # as standing): MiVOLO misjudges sitting/lying people, face and body alike (offline
+    # 2026-10-23: x2.5 misses 35 % of sitting/lying face samples vs 3 % standing; live 18:02
+    # Judit half-lying on the sofa: 126 body-only samples 7-28 y, face name revoked)
+    needs_standing: bool = True
+    # Veto face-confirmed names too. Off: a face already tells the child from the adults; of the
+    # 23 face vetoes 10-20..10-23 ~14 were wrong (stale samples, sitting/lying) and the 6 right
+    # ones were another person's face on the box (attribution: skeleton_face, FACE_BOX_MARGIN)
+    # or a merged box. Gallery/handover names (appearance) stay vetoed
+    veto_face: bool = False
 
 
 @dataclass
@@ -542,6 +594,8 @@ def load_config(config_path: str | Path) -> Config:
                 cameras=cameras_dict,
                 max_handover_sec=zone_data.get("max_handover_sec", 5.0),
                 exit_destination=zone_data.get("exit_destination"),
+                entry_handover_sec=float(zone_data.get("entry_handover_sec", 0.0)),
+                entry_handover_cameras=list(zone_data.get("entry_handover_cameras", [])),
             )
         )
     zones_config = ZonesConfig(zones=zone_configs)

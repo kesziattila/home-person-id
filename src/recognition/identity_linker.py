@@ -12,6 +12,7 @@ Uses IdentificationManager for core face recognition and Re-ID logic.
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
@@ -25,7 +26,8 @@ from src.recognition.face_recognizer import FaceRecognizer
 from src.recognition.id_method import IdMethod
 from src.recognition.identification_manager import IdentificationManager
 from src.recognition.reid_extractor import ReIDExtractor
-from src.tracking.attribution import PersonAppearance
+from src.tracking.attribution import ANCHOR_SAMPLE_MAX_AGE_SEC, Overlap, PersonAppearance, posture
+from src.utils.jsonl_writer import DailyJsonlWriter
 from src.utils.profiler import profiler
 
 if TYPE_CHECKING:
@@ -34,6 +36,9 @@ if TYPE_CHECKING:
     from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 
 logger = logging.getLogger(__name__)
+
+# An owned face crop this recent may give the track an age sample (attribution.skeleton_face)
+AGE_FACE_FRESH_SEC = 2.0
 
 
 @dataclass
@@ -70,9 +75,13 @@ class TrackIdentityState:
     # Face embedding if captured
     face_embedding: Optional[np.ndarray] = None
 
-    # Latest Re-ID sample; a face confirmation reports it to the person's
-    # face-confirmed appearance (attribution.PersonAppearance, shared by all tracks)
+    # Latest Re-ID sample of the ISOLATED box (time.time() in last_appearance_at); a face
+    # confirmation reports it, if fresh, to the person's face-confirmed appearance
+    # (attribution.PersonAppearance, shared by all tracks)
     last_appearance: Optional[np.ndarray] = None
+    last_appearance_at: float = 0.0
+    # The box's overlap with other boxes this frame (attribution.track_overlaps), logged with gallery samples
+    last_overlap: Optional[Overlap] = None
     appearances: Optional[PersonAppearance] = None
 
     # Consecutive match tracking for the Re-ID gallery recheck path
@@ -85,6 +94,13 @@ class TrackIdentityState:
     last_face_check: float = 0.0
     last_gallery_check: float = 0.0
     identified_at: Optional[float] = None
+    # Naming latency metric (metrics/naming/, written when the track state ends)
+    first_named_at: Optional[float] = None
+    first_named_by: IdMethod = IdMethod.NONE
+    first_face_at: Optional[float] = None
+    named_persons: list[int] = field(default_factory=list)   # each person the track was named, in order
+    revocations: int = 0
+    first_camera_id: Optional[str] = None
 
     # Last processing time (idle-based eviction in cleanup_old_tracks)
     last_seen_time: float = field(default_factory=time.time)
@@ -109,7 +125,8 @@ class TrackIdentityState:
 
         A weaker method cannot overwrite a stronger one (IdMethod.strength):
         Re-ID cannot overwrite face, face can correct Re-ID or handover.
-        A person the track's apparent age rules out (AgeGate.veto) is refused.
+        A person the track's apparent age rules out (AgeGate.veto) is refused, for
+        appearance-based methods (face only with age.veto_face, AgeGate.vetoes).
 
         Returns:
             True if the track now carries this identity
@@ -120,14 +137,21 @@ class TrackIdentityState:
                 f"already identified by {self.identified_by}"
             )
             return False
-        if self.age_gate is not None and self.age_gate.veto(
+        if self.age_gate is not None and self.age_gate.vetoes(method) and self.age_gate.veto(
                 person_id, self.age_samples, self.global_track_id, str(method), camera_id=self.camera_id):
             return False
         self.person_id = person_id
         self.identification_confidence = confidence
         self.identified_by = method
         self.identified_at = time.time()
-        if method == IdMethod.FACE and self.appearances is not None:
+        if self.first_named_at is None:
+            self.first_named_at, self.first_named_by = self.identified_at, method
+        if method == IdMethod.FACE and self.first_face_at is None:
+            self.first_face_at = self.identified_at
+        if self.named_persons[-1:] != [person_id]:
+            self.named_persons.append(person_id)
+        if method == IdMethod.FACE and self.appearances is not None \
+                and time.time() - self.last_appearance_at <= ANCHOR_SAMPLE_MAX_AGE_SEC:
             self.appearances.face_confirmed(person_id, self.global_track_id, self.last_appearance)
         logger.info(
             f"Track {self.global_track_id} identified as person {person_id} "
@@ -159,6 +183,8 @@ class IdentityLinker:
         snapshot_config: Optional[Config] = None, # Using full config for easier access if needed
         face_score_logger: Optional["FaceScoreLogger"] = None,
         age_gate: Optional["AgeGate"] = None,
+        naming_log: Optional[DailyJsonlWriter] = None,
+        reid_feed_log: Optional[DailyJsonlWriter] = None,
     ):
         """Initialize identity linker.
 
@@ -173,6 +199,8 @@ class IdentityLinker:
             snapshot_config: Optional snapshot configuration
             face_score_logger: Optional per-attempt face score log (offline tuning)
             age_gate: Optional apparent-age veto (age.enabled); samples isolated tracks
+            naming_log: Optional per-track naming latency log (metrics/naming/, tools/analyze_naming.py)
+            reid_feed_log: Optional log of every buffered gallery sample with the box's overlap (metrics/reid_feed/)
         """
         self.face_config = face_config
         self.reid_config = reid_config
@@ -180,6 +208,8 @@ class IdentityLinker:
         self._unidentified_face_manager = unidentified_face_manager
         self._face_score_logger = face_score_logger
         self._age_gate = age_gate
+        self._naming_log = naming_log
+        self._reid_feed_log = reid_feed_log
         self._person_ages_refreshed_at = 0.0
         self.snapshot_config = snapshot_config.snapshots if snapshot_config else None
 
@@ -332,6 +362,8 @@ class IdentityLinker:
         camera_id: Optional[str] = None,
         persons_present: frozenset[int] = frozenset(),
         appearance_settled: bool = True,
+        keypoints: Optional[np.ndarray] = None,
+        overlap: Optional[Overlap] = None,
     ) -> IdentificationResult:
         """Process a track for identification.
 
@@ -352,6 +384,9 @@ class IdentityLinker:
                 proposing one of them is rejected (one person, one live track per camera)
             appearance_settled: The box's appearance did not just change (attribution.py);
                 otherwise a single strong face may not name it, only the streak
+            keypoints: Pose keypoints of the box's detection (attribution.skeleton_face)
+            overlap: The box's overlap with other boxes (attribution.track_overlaps), logged
+                with each gallery sample (metrics/reid_feed/)
 
         Returns:
             IdentificationResult with identification status
@@ -360,11 +395,16 @@ class IdentityLinker:
         current_time = time.time()
 
         state.last_seen_time = current_time
+        state.last_overlap = overlap
         if camera_id is not None:
             state.camera_id = camera_id
+            state.first_camera_id = state.first_camera_id or camera_id
 
-        if precomputed_reid is not None:
-            state.last_appearance = precomputed_reid[0]
+        # Appearance evidence: an isolated box (an overlapped one shows two people), standing
+        # when reid.gallery_needs_standing (a sitting/lying crop is mostly furniture)
+        feeds_appearance = isolated and self._standing_for_gallery(keypoints)
+        if precomputed_reid is not None and feeds_appearance:
+            state.last_appearance, state.last_appearance_at = precomputed_reid[0], current_time
 
         # Face until face-confirmed; an appearance-based label is re-checked less
         # often, so face can still correct or upgrade it (IdMethod.strength)
@@ -373,17 +413,25 @@ class IdentityLinker:
                         else self.face_config.detection_interval)
             if force_face_check or current_time - state.last_face_check > interval / 2.0:
                 state.last_face_check = current_time
-                self._try_face_identification(state, frame, bbox, person_crop, isolated, camera_id,
-                                              allow_strong=appearance_settled)
+                self._try_face_identification(state, frame, bbox, person_crop, feeds_appearance, camera_id,
+                                              allow_strong=appearance_settled, keypoints=keypoints)
+
+        # Age: the box's own face on any track, the body only when isolated
+        self._sample_age(state, person_crop, camera_id, isolated, keypoints)
 
         # Appearance evidence only for isolated tracks (attribution.py)
         if isolated:
-            self._sample_age(state, person_crop, camera_id)
-            self._update_reid_gallery(state, person_crop, precomputed_reid, camera_id)
+            if feeds_appearance:
+                self._update_reid_gallery(state, person_crop, precomputed_reid, camera_id)
             if not state.is_identified:
-                self._try_gallery_identification(state, person_crop, camera_id, persons_present)
+                self._try_gallery_identification(state, person_crop, camera_id, persons_present, precomputed_reid)
 
         return self.get_identity(global_track_id)
+
+    def _standing_for_gallery(self, keypoints: Optional[np.ndarray]) -> bool:
+        """Whether the box's appearance may feed the gallery: standing skeleton (attribution.posture)
+        when reid.gallery_needs_standing; a box-only detector (no keypoints) is not gated."""
+        return not self.reid_config.gallery_needs_standing or keypoints is None or posture(keypoints) == "standing"
 
     def revoke_identity(self, global_track_id: str, camera_id: Optional[str], reason: str) -> None:
         """Unname a track whose identity was contradicted (attribution.py: exclusivity)."""
@@ -400,6 +448,7 @@ class IdentityLinker:
             extra_data={"method": str(state.identified_by), "reason": reason},
         )
         state.person_id = None
+        state.revocations += 1
         state.identification_confidence = 0.0
         state.identified_by = IdMethod.NONE
         state.identified_at = None
@@ -417,9 +466,10 @@ class IdentityLinker:
         frame: np.ndarray,
         bbox: tuple[float, float, float, float],
         person_crop: np.ndarray,
-        isolated: bool,
+        feeds_appearance: bool,
         camera_id: Optional[str] = None,
         allow_strong: bool = True,
+        keypoints: Optional[np.ndarray] = None,
     ) -> bool:
         """Production face step: `IdentificationManager.attempt_face` + DB persistence.
 
@@ -427,7 +477,7 @@ class IdentityLinker:
             True if the track just became face-identified
         """
         attempt = self._id_manager.attempt_face(frame, bbox, state.global_track_id, camera_id,
-                                                allow_strong=allow_strong)
+                                                allow_strong=allow_strong, keypoints=keypoints)
         if attempt is None or attempt.ambiguous:
             return False
         state.face_embedding = attempt.embedding
@@ -476,10 +526,10 @@ class IdentityLinker:
                 }
             )
 
-        if self.reid_gallery_manager and isolated:
-            self.reid_gallery_manager.update_track_embedding(
-                self.gallery_track_key(state.global_track_id), person_crop, best.person_name
-            )
+        if self.reid_gallery_manager and feeds_appearance:   # isolated (+ standing) box
+            if self.reid_gallery_manager.update_track_embedding(
+                    self.gallery_track_key(state.global_track_id), person_crop, best.person_name):
+                self._log_reid_feed(state, "face_confirmed")
         return True
 
     def _update_reid_gallery(
@@ -510,14 +560,14 @@ class IdentityLinker:
                 embedding, quality = reid_extractor.extract(crop, return_quality=True)
 
         # Only the named person's face-confirmed appearance (attribution.PersonAppearance)
-        state.last_appearance = embedding
+        state.last_appearance, state.last_appearance_at = embedding, time.time()
         if not self._appearances.consistent(state.person_id, embedding):
             return
         if quality >= self.reid_config.min_visibility:
-            self.reid_gallery_manager.update_track_embedding(
-                self.gallery_track_key(state.global_track_id), crop, person_name,
-                embedding=embedding, quality=quality,
-            )
+            if self.reid_gallery_manager.update_track_embedding(
+                    self.gallery_track_key(state.global_track_id), crop, person_name,
+                    embedding=embedding, quality=quality):
+                self._log_reid_feed(state, "appearance")
 
     # ==================== Gallery Recheck ====================
 
@@ -535,6 +585,7 @@ class IdentityLinker:
         person_crop: np.ndarray,
         camera_id: Optional[str] = None,
         persons_present: frozenset[int] = frozenset(),
+        precomputed_reid: Optional[tuple[np.ndarray, float]] = None,
     ) -> bool:
         """Try to identify an unidentified (isolated) track via the shared Re-ID gallery.
 
@@ -547,6 +598,7 @@ class IdentityLinker:
             person_crop: Person crop image
             camera_id: Camera ID for event logging
             persons_present: Persons held by other live tracks on this camera
+            precomputed_reid: This frame's Re-ID of the crop (else extracted here, ~30 ms)
 
         Returns:
             True if identification succeeded
@@ -561,7 +613,7 @@ class IdentityLinker:
             return False
 
         with profiler.measure("ReIDGallery.recheck"):
-            match_result = self.reid_gallery_manager.match_new_track(person_crop)
+            match_result = self.reid_gallery_manager.match_new_track(person_crop, *(precomputed_reid or (None, None)))
 
         if not match_result.matched:
             # A miss breaks the consecutive-match streak
@@ -647,28 +699,42 @@ class IdentityLinker:
 
     # ==================== Apparent Age ====================
 
-    def _sample_age(self, state: TrackIdentityState, person_crop: np.ndarray, camera_id: Optional[str]) -> None:
-        """Add an age sample to an isolated track (age.sample_interval_sec apart, up to age.max_samples).
+    def _sample_age(self, state: TrackIdentityState, person_crop: np.ndarray, camera_id: Optional[str],
+                    isolated: bool = True, keypoints: Optional[np.ndarray] = None) -> None:
+        """Add an age sample to a track; the newest age.max_samples are kept (rolling).
 
-        Uses the track's latest owned face while fresh, else the body alone. Once the
-        samples rule out the track's current name, the name is revoked (the veto also
-        blocks naming it so again). ~25 ms per sample on the Jetson (TensorRT FP16).
+        Uses the track's latest owned face while fresh (attribution.skeleton_face: valid on
+        an overlapped box too), plus the body only when the box is isolated (an overlapped
+        box shows two people); no face and not isolated -> no sample. With age.needs_standing
+        a sitting/lying skeleton (attribution.posture) gives no sample at all.
+        age.sample_interval_sec apart, age.refresh_interval_sec once the window is full, so
+        the age follows a ByteTrack switch (live 2026-10-23: Judit's 7 samples froze Virag's
+        box at 32 y and refused 138 accepted Virag faces). Once the samples rule out the
+        track's current name, the name is revoked (the veto also blocks naming it so again).
+        ~55 ms per sample on the Jetson (TensorRT FP16).
         """
         gate = self._age_gate
-        if gate is None or len(state.age_samples) >= gate.config.max_samples:
+        if gate is None:
             return
         now = time.time()
-        if now - state.last_age_sample < gate.config.sample_interval_sec:
+        full = len(state.age_samples) >= gate.config.max_samples
+        interval = gate.config.refresh_interval_sec if full else gate.config.sample_interval_sec
+        if now - state.last_age_sample < interval:
+            return
+        pose = posture(keypoints)
+        if gate.config.needs_standing and pose in ("sitting", "lying"):
+            return
+        use_face = now - state.last_face_crop_time <= AGE_FACE_FRESH_SEC
+        if not use_face and not isolated:
             return
         state.last_age_sample = now
         self.refresh_person_ages(now)
-        fresh = now - state.last_face_crop_time <= 2 * gate.config.sample_interval_sec
-        age = gate.sample(state.global_track_id, camera_id,
-                          state.last_face_crop if fresh else None, person_crop)
+        age = gate.sample(state.global_track_id, camera_id, state.last_face_crop if use_face else None,
+                          person_crop if isolated else None, posture=pose)
         if age is None:
             return
-        state.age_samples.append(age)
-        if state.is_identified:
+        state.age_samples = (state.age_samples + [age])[-gate.config.max_samples:]
+        if state.is_identified and gate.vetoes(state.identified_by):
             veto = gate.veto(state.person_id, state.age_samples, state.global_track_id,
                              str(state.identified_by), action="revoked", camera_id=camera_id)
             if veto:
@@ -752,9 +818,42 @@ class IdentityLinker:
         if to_remove:
             logger.debug(f"Cleaned up {len(to_remove)} old track states")
 
+    def _log_naming(self, state: TrackIdentityState) -> None:
+        """One record per ended track: how long it took to name it, by what, and how stable the name was (~10µs)."""
+        since = lambda t: round(t - state.first_seen, 2) if t is not None else None
+        self._naming_log.write({
+            "track": state.global_track_id,
+            "camera": state.first_camera_id,
+            "last_camera": state.camera_id,
+            "duration_sec": round(state.last_seen_time - state.first_seen, 2),
+            "named_after_sec": since(state.first_named_at),
+            "first_method": str(state.first_named_by) if state.first_named_at is not None else None,
+            "face_after_sec": since(state.first_face_at),
+            "final_person_id": state.person_id,
+            "final_method": str(state.identified_by) if state.person_id is not None else None,
+            "persons": state.named_persons,
+            "revocations": state.revocations,
+        }, datetime.fromtimestamp(state.first_seen, tz=timezone.utc))
+
+    def _log_reid_feed(self, state: TrackIdentityState, path: str) -> None:
+        """One record per buffered gallery sample: whose track, and how much other boxes (live or
+        recently lost) covered it at that moment (~10µs). Joins reid_embeddings by track and time."""
+        if self._reid_feed_log is None:
+            return
+        self._reid_feed_log.write({
+            "track": state.global_track_id,
+            "camera": state.camera_id,
+            "person_id": state.person_id,
+            "method": str(state.identified_by),
+            "path": path,
+            "overlap": state.last_overlap.as_dict() if state.last_overlap is not None else None,
+        }, datetime.now(timezone.utc))
+
     def _forget(self, global_track_id: str) -> None:
         """Drop all per-track identity state (linker, core manager, face score log)."""
-        self._track_states.pop(global_track_id, None)
+        state = self._track_states.pop(global_track_id, None)
+        if state is not None and self._naming_log is not None:
+            self._log_naming(state)
         self._id_manager.on_track_removed(global_track_id)
         if self._face_score_logger:
             self._face_score_logger.forget_track(global_track_id)

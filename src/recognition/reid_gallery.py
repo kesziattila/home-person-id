@@ -149,11 +149,13 @@ class GalleryEntry:
                 old_entry.delete_crop_file()
             self.entries = self.entries[-self.max_embeddings:]
 
-    def match(self, query_embedding: np.ndarray) -> tuple[float, Optional[np.ndarray], Optional[int]]:
+    def match(self, query_embedding: np.ndarray,
+              load_crop: bool = True) -> tuple[float, Optional[np.ndarray], Optional[int]]:
         """Match a query embedding against all gallery embeddings.
 
         Returns:
-            Tuple of (max_similarity_score, best_matching_crop loaded from disk, db_id)
+            Tuple of (max_similarity_score, best_matching_crop loaded from disk unless
+            load_crop=False (a disk read per call), db_id)
         """
         if not self.entries:
             return 0.0, None, None
@@ -167,7 +169,7 @@ class GalleryEntry:
                 best_entry = entry
 
         # Load crop from disk only for the best match
-        best_crop = best_entry.load_crop() if best_entry else None
+        best_crop = best_entry.load_crop() if best_entry and load_crop else None
         db_id = best_entry.db_id if best_entry else None
         return max_score, best_crop, db_id
 
@@ -484,11 +486,17 @@ class ReIDGalleryManager:
         if data:
             data.cleanup()
 
-    def match_new_track(self, crop: np.ndarray) -> MatchResult:
+    def match_new_track(self, crop: np.ndarray, embedding: Optional[np.ndarray] = None,
+                        quality: Optional[float] = None) -> MatchResult:
         """Try to match a crop against the gallery (only for isolated tracks, see attribution.py).
+
+        ~0.2 ms with a pre-computed `embedding`/`quality` (the frame's batch Re-ID,
+        person_detector.detect_for_tracking); ~30 ms on the Jetson when it extracts here.
+        Only the winning gallery crop is read from disk, and only for a match.
 
         Args:
             crop: Person crop image
+            embedding, quality: Pre-computed Re-ID of this crop, if the caller has it
 
         Returns:
             MatchResult with match information
@@ -499,8 +507,8 @@ class ReIDGalleryManager:
         if not self._gallery:
             return result
 
-        # Extract embedding
-        embedding, quality = self.reid_extractor.extract(crop, return_quality=True)
+        if embedding is None or quality is None:
+            embedding, quality = self.reid_extractor.extract(crop, return_quality=True)
         if quality < 0.3:
             return result
 
@@ -510,7 +518,7 @@ class ReIDGalleryManager:
         best_crop = None
 
         for person_name, entry in self._gallery.items():
-            score, match_crop, db_id = entry.match(embedding)
+            score, _, db_id = entry.match(embedding, load_crop=False)
             logger.debug(
                 f"  gallery '{person_name}': score={score:.3f}, "
                 f"embeddings={len(entry.entries)}"
@@ -518,7 +526,6 @@ class ReIDGalleryManager:
             if score > best_score:
                 best_score = score
                 best_name = person_name
-                best_crop = match_crop
                 result.db_id = db_id
 
         result.best_score = best_score
@@ -531,6 +538,7 @@ class ReIDGalleryManager:
         )
 
         if best_name and best_score > self.similarity_threshold:
+            _, best_crop, _ = self._gallery[best_name].match(embedding)
             result.person_name = best_name
             result.matched = True
             result.gallery_crop = best_crop  # This is now the actual best matching crop
@@ -566,7 +574,7 @@ class ReIDGalleryManager:
 
         best_score = 0.0
         for entry in self._gallery.values():
-            score, _, _ = entry.match(embedding)
+            score, _, _ = entry.match(embedding, load_crop=False)
             if score > best_score:
                 best_score = score
 

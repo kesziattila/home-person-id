@@ -11,7 +11,8 @@ and the face score log — and looks for conclusions that cannot all be true:
   via the zone config)
 - label_flip:       one global track carried different names over its life
 - face_disagrees:   a named track whose own face attempts favour another person
-  (top1 person != label in most attempts, even below the accept threshold)
+  (top1 person != label in most attempts, even below the accept threshold;
+  only attempts with top1 >= MIN_VOTE_SCORE vote)
 - absent_person:    a name assigned while that person is known to be away
   (--absent Judit)
 
@@ -34,6 +35,11 @@ from tools.audit_sheet import load_samples
 
 SIMULTANEOUS_SEC = 2.0
 MIN_FACE_ATTEMPTS = 4
+# face_disagrees: weaker top-1 scores are noise (back of the head, headphones, a child
+# on the lap). 2026-10-23 sweep over 10-17..10-23: 0.35 drops all 7 findings judged
+# noise (59694, 60435, 61327/61339/61344, 63273, 63774) and keeps the 3 judged wrong
+# labels (59006, 60192, 63419); 0.40 loses 60192. Family impostor max is ~0.37.
+MIN_VOTE_SCORE = 0.35
 
 
 def _t(ts: str) -> float:
@@ -110,6 +116,8 @@ def find(samples: list[dict], face_attempts: list[dict], zone_manager=None,
     person_names = {}
     for a in face_attempts:
         if a.get("ambiguous", a.get("num_faces", 1) > 1) or a.get("top1_person_id") is None:
+            continue
+        if (a.get("top1") or 0.0) < MIN_VOTE_SCORE:
             continue
         votes[a["track_id"]][int(a["top1_person_id"])] += 1
         person_names.update(a.get("_names", {}))

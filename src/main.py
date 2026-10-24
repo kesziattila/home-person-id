@@ -127,6 +127,9 @@ class PersonIDSystem:
             if self.config.metrics.track_events_enabled else None
         )
         metrics = self.config.metrics
+        if metrics.perf_log_enabled:
+            profiler.attach_jsonl(DailyJsonlWriter(Path(metrics.path) / "perf", metrics.retention_days),
+                                  metrics.perf_interval_sec)
         detections_dir = Path(metrics.path) / "detections"
         self._detection_log = (
             DetectionLog(detections_dir, metrics.detection_log_retention_days,
@@ -168,6 +171,10 @@ class PersonIDSystem:
             snapshot_config=self.config,
             face_score_logger=face_score_logger,
             age_gate=age_gate,
+            naming_log=(DailyJsonlWriter(Path(self.config.metrics.path) / "naming", self.config.metrics.retention_days)
+                        if self.config.metrics.naming_log_enabled else None),
+            reid_feed_log=(DailyJsonlWriter(Path(self.config.metrics.path) / "reid_feed", self.config.metrics.retention_days)
+                           if self.config.metrics.reid_feed_log_enabled else None),
         )
 
         # Initialize debug overlay (optional)
@@ -523,6 +530,9 @@ class PersonIDSystem:
                     }
                     
                     profiler.log_stats(extra_info=extra_stats)
+                    profiler.flush_jsonl({"fps": round(fps, 2), "loop_ms": round(loop_time * 1000, 1),
+                                          "inference_queue": self._inference_queue.qsize(),
+                                          "result_queue": self._result_queue.qsize()})
                     
                     if frames_processed == 0:
                         logger.warning("No frames received in the last 10s! Check camera connections.")

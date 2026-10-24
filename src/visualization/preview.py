@@ -120,8 +120,11 @@ class Visualizer:
                 # though get_track_label_and_color takes it as an argument anyway.
                 label, color = track_renderer.get_track_label_and_color(
                     str(local_id), identity, camera_id, bbox, frame_w, frame_h,
-                    stationary_time=stationary_time
+                    stationary_time=stationary_time, uncertain=getattr(track, 'uncertain', False)
                 )
                 track_renderer.draw_track(draw_img, bbox, label, color)
+                keypoints = getattr(track, 'last_keypoints', None)
+                if keypoints is not None and getattr(track, 'time_since_update', 0) == 0:
+                    track_renderer.draw_skeleton(draw_img, keypoints, color)
 
         return draw_img

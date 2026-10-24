@@ -22,7 +22,7 @@ from src.recognition.id_method import IdMethod
 from src.recognition.reid_extractor import ReIDExtractor, is_grayscale_image
 from src.recognition.reid_gallery import ReIDGalleryManager, DebugImageSaver
 from src.recognition.tensorrt_face import align_face
-from src.tracking.attribution import owner_face
+from src.tracking.attribution import owner_face, skeleton_face
 from src.utils.embedding_utils import cosine_similarity_batch
 from src.utils.image_utils import crop_bbox, crop_face_region, crop_with_margin
 from src.utils.profiler import profiler
@@ -495,13 +495,15 @@ class IdentificationManager:
         track_id: str,
         camera_id: Optional[str] = None,
         allow_strong: bool = True,
+        keypoints: Optional[np.ndarray] = None,
     ) -> Optional[FaceAttempt]:
         """One face recognition attempt for a person box — the only face path (~15-25ms on Jetson TRT).
 
         Shared by preview (`try_face_recognition`) and production
         (`IdentityLinker._try_face_identification`), so both see the same
         evidence: detect in the head region (upper half of the box), take the face
-        the box owns (attribution.owner_face), score it per person, count the
+        the box owns (attribution.skeleton_face from the box's pose `keypoints`, else
+        attribution.owner_face), score it per person, count the
         confirmation streak, log the attempt (FaceScoreLogger) and keep an
         unaccepted, unambiguous face as an unidentified-face candidate. Ambiguous
         attempts are logged only. Closest-match display info goes to the track's
@@ -527,7 +529,9 @@ class IdentificationManager:
         if not faces:
             return None
 
-        face, ambiguous = owner_face(faces, region.shape[1])
+        origin = (max(0, int(bbox[0])), max(0, int(bbox[1])))   # crop_face_region's top-left
+        owned = skeleton_face(faces, keypoints, origin)
+        face, ambiguous = owned if owned is not None else owner_face(faces, region.shape[1])
         embedding = face.embedding
         if embedding is None:
             with profiler.measure("FaceRecognizer.extract"):
@@ -617,6 +621,7 @@ class IdentificationManager:
         local_track_id: int,
         isolated: bool,
         camera_id: Optional[str] = None,
+        keypoints: Optional[np.ndarray] = None,
     ) -> bool:
         """Preview face recognition on a track (`attempt_face` + identity update).
 
@@ -635,7 +640,7 @@ class IdentificationManager:
         if identity.is_face_identified:
             return False
 
-        attempt = self.attempt_face(frame, bbox, track_id, camera_id)
+        attempt = self.attempt_face(frame, bbox, track_id, camera_id, keypoints=keypoints)
         if attempt is None or not attempt.confirmed:
             return False
 

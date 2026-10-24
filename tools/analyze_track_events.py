@@ -61,7 +61,7 @@ def classify_birth(event: dict) -> tuple[str, Optional[dict]]:
 
 def summarize(events: list[dict]) -> dict:
     per_camera: dict[str, dict] = defaultdict(lambda: {
-        "births": Counter(), "revives": Counter(), "dup_skips": 0, "assoc_fail_ious": [],
+        "births": Counter(), "revives": Counter(), "dup_skips": 0, "unswaps": 0, "assoc_fail_ious": [],
     })
     for e in events:
         cam = per_camera[e["camera_id"]]
@@ -74,6 +74,8 @@ def summarize(events: list[dict]) -> dict:
             cam["revives"][f"stage{e['stage']}"] += 1
         elif e["kind"] == "dup_skip":
             cam["dup_skips"] += 1
+        elif e["kind"] == "unswap":
+            cam["unswaps"] += 1         # one event per track of the pair
 
     report = {}
     for camera, c in sorted(per_camera.items()):
@@ -83,6 +85,7 @@ def summarize(events: list[dict]) -> dict:
             "births_total": sum(c["births"].values()),
             "revives": dict(c["revives"]),
             "dup_skips": c["dup_skips"],
+            "unswaps": c["unswaps"] // 2,
             # assoc_fail births a lower match_thresh would have matched (IoU >= t)
             "assoc_fail_recovered_by_match_thresh": {
                 str(t): sum(i >= t for i in ious) for t in MATCH_THRESH_CANDIDATES

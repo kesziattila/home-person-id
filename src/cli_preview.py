@@ -249,6 +249,7 @@ class CameraProcessor:
                 if self.id_manager.try_face_recognition(
                     track_key, frame, local_track.bbox, local_track.track_id,
                     local_track.track_id in isolated, camera_id=self.camera_id,
+                    keypoints=local_track.last_keypoints,
                 ):
                     identity = self.id_manager.get_identity(track_key)
                     if log_callback:

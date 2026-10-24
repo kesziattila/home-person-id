@@ -50,9 +50,19 @@ class LocalTrack:
     last_crop: Optional[np.ndarray] = None
     last_reid_embedding: Optional[np.ndarray] = None
     last_reid_quality: float = 0.0
+    # The embedding came with the last matched detection (a low-confidence one gets none,
+    # person_detector.detect_for_tracking): only then does it describe last_crop
+    last_reid_fresh: bool = False
+    # Pose detector keypoints of the last matched detection ((17, 3) frame px, Detection.keypoints)
+    last_keypoints: Optional[np.ndarray] = None
     # Re-ID appearance EMA and when it last changed (attribution.update_appearance)
     appearance: Optional[np.ndarray] = None
     appearance_changed_at: float = 0.0
+    # Re-ID EMA of samples taken while the box overlapped no other live box (ByteTracker un-swap)
+    clean_appearance: Optional[np.ndarray] = None
+    # Who this box is is open: it overlaps a track that lost its box (merged / hidden), so ByteTrack
+    # may hand them over crosswise; cleared after isolated Re-ID samples (ByteTracker._check_swaps)
+    uncertain: bool = False
 
     @property
     def is_confirmed(self) -> bool:

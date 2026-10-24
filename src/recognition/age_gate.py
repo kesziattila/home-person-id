@@ -10,10 +10,13 @@ Generic, no hand-made age classes:
   each image is estimated once and stored with the model name in `face_embeddings`
   (`apparent_age`, `age_model`), re-estimated only when `age.model` changes —
   `person_ages_from_gallery` is the one rule, used by the veto and the API/UI
-- track age = median of `min_samples`..`max_samples` samples of the track (face + body)
+- track age = median of the track's newest `min_samples`..`max_samples` samples (rolling:
+  follows a ByteTrack switch); the box's own face on any track, the body only when isolated
 - veto when the two differ by more than `max_ratio` either way (6.8 y vs 33.6 y = x4.9)
 Only a veto: age never names anyone. Applied in `TrackIdentityState.confirm_identity`
-(every naming path) and to an existing name once enough samples contradict it.
+and to an existing name once enough samples contradict it — for names resting on appearance
+(gallery, handover; `AgeGate.vetoes`). Face confirmations only with `age.veto_face`: a face
+already tells the child from the adults, and its age vetoes were mostly wrong (2026-10-23).
 
 Tuning log: `<metrics.path>/age/YYYY-MM-DD.jsonl` — `person_ages` (at refresh), `sample`
 (every track sample), `veto` (first veto per track and person, `action` blocked/revoked).
@@ -30,6 +33,7 @@ import cv2
 import numpy as np
 
 from src.config import AgeConfig, MetricsConfig
+from src.recognition.id_method import IdMethod
 from src.recognition.age_estimator import AgeEstimator
 from src.utils.jsonl_writer import DailyJsonlWriter
 
@@ -164,15 +168,16 @@ class AgeGate:
         track_id: str,
         camera_id: Optional[str],
         face: Optional[np.ndarray],
-        body: np.ndarray,
+        body: Optional[np.ndarray],
+        posture: Optional[str] = None,
     ) -> Optional[float]:
-        """One age sample of a track (face may be None: body only). Logged."""
+        """One age sample of a track (face None: body only; body None: face only). Logged."""
         age = self.estimator.estimate(face, body)
         if age is not None:
             self._log({"type": "sample", "camera_id": camera_id, "track_id": track_id,
                        "age": round(age, 1), "face": face is not None and face.size > 0,
                        "face_px": int(min(face.shape[:2])) if face is not None and face.size else 0,
-                       "body_h": int(body.shape[0])})
+                       "body_h": int(body.shape[0]) if body is not None else 0, "posture": posture})
         return age
 
     def track_age(self, samples: list[float]) -> Optional[float]:
@@ -180,6 +185,11 @@ class AgeGate:
         if len(samples) < max(1, self.config.min_samples):
             return None
         return float(np.median(samples))
+
+    def vetoes(self, method: IdMethod) -> bool:
+        """Whether names given by `method` are subject to the age veto: appearance-based ones
+        (gallery, handover) always, face confirmations only with age.veto_face."""
+        return method.is_appearance or self.config.veto_face
 
     def veto(
         self,

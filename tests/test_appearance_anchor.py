@@ -22,6 +22,7 @@ Live cases on 2026-10-17 (living_room):
   failed offline validation: 6 of 7 checkable trips were the same person changing.)
 """
 
+import time
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -30,6 +31,7 @@ from src.config import FaceRecognitionConfig, ReIDConfig
 from src.recognition.id_method import IdMethod
 from src.recognition.identity_linker import IdentityLinker
 from src.tracking.attribution import PersonAppearance
+from src.tracking.track import LocalTrack
 from tests.test_cross_camera_zone_propagation import _make_global_track_manager, _register_active_track
 
 # Orthonormal directions: Ati's look, his pose/light variation, someone else, new clothes
@@ -63,8 +65,7 @@ def _linker():
 
 def _face_name(linker, gid, appearance):
     state = linker.register_track(gid)
-    linker.process_track(gid, FRAME, CROP, (0, 0, 50, 90), isolated=False,
-                         precomputed_reid=(appearance.copy(), 0.9))
+    state.last_appearance, state.last_appearance_at = appearance.copy(), time.time()  # isolated sample
     state.confirm_identity(ATI_ID, 0.7, IdMethod.FACE)
     return state
 
@@ -176,6 +177,28 @@ def test_face_confirmation_takes_the_name_from_the_other_live_track():
     assert revoked[0]["track_id"] == "g7"
 
 
+def test_face_at_track_creation_takes_the_name_from_the_other_live_track():
+    """Live 2026-10-23 06:01:27 UTC (living_room): Virag climbed onto the sofa next to Ati,
+    ByteTrack moved Ati's face-named g63330 onto her, and Ati's new box (g63337) was
+    face-confirmed in its FIRST frame. Creation skipped exclusivity, so both were "Ati" for
+    6 min and g63330 fed 20 of Virag's crops into Ati's gallery (Virag had no anchors yet).
+    """
+    manager = _make_global_track_manager()
+    moved = _register_active_track(manager, "living_room", 7, "g7", bbox=(600, 380, 870, 715),
+                                   person_id=1, identified_by="face", confidence=0.59)
+
+    def face_at_birth(global_track_id, *args, **kwargs):
+        manager.identity_linker.get_track_state(global_track_id).confirm_identity(1, 0.70, IdMethod.FACE)
+
+    manager.identity_linker.process_track = face_at_birth
+    new = LocalTrack(track_id=17, camera_id="living_room", bbox=(840, 340, 1190, 580),
+                     last_crop=np.zeros((240, 350, 3), np.uint8))
+    gid = manager._create_global_track("living_room", new, np.zeros((1080, 1920, 3), np.uint8))
+
+    assert manager._person_id(gid) == 1
+    assert moved.person_id is None
+
+
 def test_a_reid_name_does_not_take_a_face_name():
     manager = _make_global_track_manager()
     held = _register_active_track(manager, "living_room", 7, "g7", bbox=(600, 380, 870, 715),
@@ -186,3 +209,68 @@ def test_a_reid_name_does_not_take_a_face_name():
     manager._enforce_face_exclusivity("living_room", "g17")
 
     assert held.person_id == 1
+
+
+# Live 2026-10-22 15:04-15:13 UTC (living_room): Judit face-named twice while sitting next to Ati
+# (boxes overlapping 0.47 / 0.31) -> anchors partly Ati; ByteTrack then moved her track onto Ati,
+# whose crops (0.56-0.62 to those anchors, 0.60-0.78 to his own) replaced her whole gallery.
+JUDIT_ID = 2
+
+
+def test_face_confirmation_on_overlapped_box_makes_no_anchor():
+    linker, _, _ = _linker()
+    for gid in ("t_judit_a", "t_judit_b"):
+        state = linker.register_track(gid)
+        linker.process_track(gid, FRAME, CROP, (0, 0, 50, 90), isolated=False,
+                             precomputed_reid=(_at(0.6, base=OTHER_DIR, away=ATI), 0.9))
+        state.confirm_identity(JUDIT_ID, 0.52, IdMethod.FACE)
+    assert linker._appearances.similarity(JUDIT_ID, OTHER_DIR) is None
+
+
+def test_stale_isolated_sample_makes_no_anchor():
+    linker, _, _ = _linker()
+    for gid in ("a", "b"):
+        state = linker.register_track(gid)
+        state.last_appearance, state.last_appearance_at = ATI.copy(), time.time() - 60
+        state.confirm_identity(ATI_ID, 0.7, IdMethod.FACE)
+    assert linker._appearances.similarity(ATI_ID, ATI) is None
+
+
+def test_sample_closer_to_another_persons_anchors_is_rejected():
+    appearances = PersonAppearance(0.55)
+    judit_like_ati = _at(0.75, base=ATI, away=OTHER_DIR)  # Judit's anchors polluted towards Ati
+    appearances.face_confirmed(JUDIT_ID, "j1", judit_like_ati)
+    appearances.face_confirmed(JUDIT_ID, "j2", judit_like_ati)
+    appearances.face_confirmed(ATI_ID, "a1", ATI)
+    appearances.face_confirmed(ATI_ID, "a2", _at(0.9))
+    ati_crop = _at(0.8)
+    assert appearances.similarity(JUDIT_ID, ati_crop) >= 0.55   # passed the old gate
+    assert not appearances.consistent(JUDIT_ID, ati_crop)
+    assert appearances.consistent(ATI_ID, ati_crop)
+
+
+def test_sitting_box_does_not_feed_the_gallery_or_the_anchors():
+    """Live 2026-10-23 18:02 / 19:37 (ground floor sofa): Judit and Ati in white tops leaning
+    back on the same sofa matched each other's gallery at 0.73-0.76; a sitting crop is mostly
+    sofa. Offline (captures 10-18..23, gallery >= 1 h earlier, sitting queries): all postures
+    12 % wrong gallery names, standing-only gallery 0.7 %. Sitting/lying -> no gallery sample
+    and no anchor sample; standing feeds; without keypoints (box-only detector) not gated."""
+    from tests.test_age_gate import _skeleton
+    linker, _, gallery = _linker()
+    _face_name(linker, "t1", ATI)
+    state = _face_name(linker, "t2", _at(0.92))
+
+    def feed(kps):
+        n = gallery.update_track_embedding.call_count
+        before = state.last_appearance_at
+        linker.process_track("t2", FRAME, CROP, (0, 0, 50, 90), isolated=True, keypoints=kps,
+                             precomputed_reid=(_at(0.9), 0.9), camera_id="ground_floor")
+        return gallery.update_track_embedding.call_count - n, state.last_appearance_at != before
+
+    assert feed(_skeleton("sitting")) == (0, False)
+    assert feed(_skeleton("lying")) == (0, False)
+    assert feed(_skeleton("standing")) == (1, True)
+    assert feed(None) == (1, True)
+
+    linker.reid_config.gallery_needs_standing = False
+    assert feed(_skeleton("sitting")) == (1, True)

@@ -18,16 +18,30 @@ import numpy as np
 
 from src.config import CameraTopologyConfig, ReIDConfig, SnapshotConfig, VLMConfig, ZonesConfig
 from src.database.repository import Repository
-from src.tracking.attribution import RECENTLY_LOST_SEC, appearance_settled, isolated_track_ids
+from src.tracking.attribution import RECENTLY_LOST_SEC, Overlap, appearance_settled, track_overlaps
 from src.events.mqtt_publisher import MQTTPublisher
 from src.recognition.id_method import IdMethod
 from src.recognition.identity_linker import IdentityLinker
-from src.recognition.reid_gallery import MatchResult
 from src.tracking.track import GlobalTrack, LocalTrack, TrackState
 from src.tracking.zone_manager import ZoneManager
 from src.utils.profiler import profiler
 
 logger = logging.getLogger(__name__)
+
+# Entry handover: a source track may still be seen this long after the receiver appeared
+# (ByteTrack can start the new track a frame or two before it drops the old one)
+ENTRY_HANDOVER_LATE_SEC = 0.5
+# ... and must walk into the zone this soon after it appeared: climbs enter 0–4 s after birth; later,
+# ByteTrack may have switched to someone else (live 2026-10-22 07:00 UTC: entered after 90 s, on Virag)
+ENTRY_HANDOVER_MAX_ENTRY_SEC = 10.0
+
+
+def _fresh_reid(local_track: LocalTrack) -> Optional[tuple[np.ndarray, float]]:
+    """The track's Re-ID (embedding, quality) if it came with this frame's detection, else None:
+    a stale one would be paired with a fresh crop (gallery samples, gallery rechecks)."""
+    if local_track.time_since_update == 0 and local_track.last_reid_fresh:
+        return local_track.last_reid_embedding, local_track.last_reid_quality
+    return None
 
 
 @dataclass
@@ -117,6 +131,8 @@ class GlobalTrackManager:
 
         # Store last known bbox for each local track (for zone propagation)
         self._last_bboxes: dict[tuple[str, int], tuple[float, float, float, float]] = {}
+        # (camera_id, local_track_id) of tracks whose identity is open (LocalTrack.uncertain)
+        self._uncertain: set[tuple[str, int]] = set()
 
         # Index of recently-lost track IDs for O(1) lookup in Re-ID matching
         # Avoids O(N) iteration over all tracks
@@ -377,8 +393,12 @@ class GlobalTrackManager:
         self._cleanup_lost_tracks(current_time)
 
         # Appearance (Re-ID) evidence is only attributable to isolated tracks
-        isolated = isolated_track_ids(local_tracks, self.reid_config.max_overlap,
-                                      self._lost_neighbours(camera_id, local_tracks))
+        overlaps = track_overlaps(local_tracks, self._lost_neighbours(camera_id, local_tracks))
+        # ... and only once ByteTrack knows whose box it is (not right after a merge, ByteTracker._check_swaps)
+        uncertain = {t.track_id for t in local_tracks if t.uncertain}
+        isolated = {tid for tid, o in overlaps.items()
+                    if o.isolated(self.reid_config.max_overlap) and tid not in uncertain}
+        self._uncertain = {k for k in self._uncertain if k[0] != camera_id} | {(camera_id, t) for t in uncertain}
 
         # Process new local tracks
         for local_track_id in new_track_ids:
@@ -386,50 +406,17 @@ class GlobalTrackManager:
             if local_track is None:
                 continue
 
-            # Try gallery match for immediate identity assignment
-            gallery_match = None
-            if local_track.track_id in isolated:
-                with profiler.measure("GlobalTracker.gallery_match"):
-                    gallery_match = self._try_gallery_match(camera_id, local_track)
-
-            if gallery_match and gallery_match.person_name:
-                # Gallery match — create new track with immediate identity
-                global_track_id = self._create_global_track(
-                    camera_id,
-                    local_track,
-                    frame,
-                    isolated=local_track.track_id in isolated,
-                )
-                result.new_global_tracks.append(global_track_id)
-
-                # Assign identity from gallery match
-                person = self.repository.get_person_by_name(gallery_match.person_name)
-                if person:
-                    state = self.identity_linker.get_track_state(global_track_id)
-                    if state and state.confirm_identity(
-                        person.id, gallery_match.score, IdMethod.REID_GALLERY
-                    ):
-                        # Update database and in-memory track
-                        self.repository.update_track(
-                            global_track_id, person_id=person.id
-                        )
-                        # Resolve person location from all active tracks
-                        self._resolve_person_location(person.id, camera_id=camera_id)
-
-                logger.info(
-                    f"Re-ID gallery: new track {global_track_id} on {camera_id} "
-                    f"identified as {gallery_match.person_name} (sim={gallery_match.score:.2f})"
-                )
-
-            else:
-                # No match — create fresh unidentified track
-                global_track_id = self._create_global_track(
-                    camera_id,
-                    local_track,
-                    frame,
-                    isolated=local_track.track_id in isolated,
-                )
-                result.new_global_tracks.append(global_track_id)
+            # Born unnamed: the gallery recheck (IdentityLinker._try_gallery_identification)
+            # already runs on the birth frame and names it after reid.min_consecutive_matches
+            # (live 2026-10-23: a one-shot birth match named a child's legs Ati)
+            global_track_id = self._create_global_track(
+                camera_id,
+                local_track,
+                frame,
+                isolated=local_track.track_id in isolated,
+                overlap=overlaps.get(local_track.track_id),
+            )
+            result.new_global_tracks.append(global_track_id)
 
         # Process active local tracks (update Re-ID, face recognition)
         for local_track in local_tracks:
@@ -485,11 +472,12 @@ class GlobalTrackManager:
                         local_track.last_crop,
                         local_track.bbox,
                         isolated=local_track.track_id in isolated,
+                        overlap=overlaps.get(local_track.track_id),
                         appearance_settled=appearance_settled(local_track, time.time()),
-                        precomputed_reid=(local_track.last_reid_embedding, local_track.last_reid_quality)
-                        if local_track.last_reid_embedding is not None else None,
+                        precomputed_reid=_fresh_reid(local_track),
                         camera_id=camera_id,
                         persons_present=self.persons_tracked_on_camera(camera_id, exclude=global_track_id),
+                        keypoints=local_track.last_keypoints,
                     )
 
                 # Identity changed (named or corrected): exclusivity, then both persons' zones
@@ -590,6 +578,7 @@ class GlobalTrackManager:
         local_track: LocalTrack,
         frame: np.ndarray,
         isolated: bool = True,
+        overlap: Optional[Overlap] = None,
     ) -> str:
         """Create a new global track.
 
@@ -598,6 +587,7 @@ class GlobalTrackManager:
             local_track: Local track from ByteTrack
             frame: Current frame
             isolated: Box overlaps no other track (attribution.py)
+            overlap: How much other boxes cover it (attribution.track_overlaps; logged with gallery samples)
 
         Returns:
             New global track ID
@@ -628,12 +618,16 @@ class GlobalTrackManager:
                 local_track.last_crop,
                 local_track.bbox,
                 isolated=isolated,
+                overlap=overlap,
                 appearance_settled=appearance_settled(local_track, time.time()),
-                precomputed_reid=(local_track.last_reid_embedding, local_track.last_reid_quality)
-                if local_track.last_reid_embedding is not None else None,
+                precomputed_reid=_fresh_reid(local_track),
                 camera_id=camera_id,
                 persons_present=self.persons_tracked_on_camera(camera_id, exclude=global_track_id),
+                keypoints=local_track.last_keypoints,
             )
+            # A face in the first frame wins too (live 2026-10-23: two "Ati"s for 6 min)
+            if self._person_id(global_track_id) is not None:
+                self._enforce_face_exclusivity(camera_id, global_track_id)
 
         # Save to database
         snapshot_path = None
@@ -773,42 +767,6 @@ class GlobalTrackManager:
         )
         logger.debug(f"Track {global_track_id} GRACE→LOST (ByteTrack removed local track)")
 
-    def _try_gallery_match(
-        self,
-        camera_id: str,
-        local_track: LocalTrack,
-    ) -> Optional[MatchResult]:
-        """Try to match an isolated new track against the shared Re-ID gallery.
-
-        Returns:
-            The gallery match if accepted, else None
-        """
-        if local_track.last_crop is None:
-            return None
-
-        if not self.identity_linker.reid_gallery_manager:
-            return None
-
-        with profiler.measure("ReIDGallery.match"):
-            match_result = self.identity_linker.reid_gallery_manager.match_new_track(
-                local_track.last_crop
-            )
-
-        if not match_result.matched:
-            return None
-
-        # One person, one live track per camera (duplicate-person guard)
-        person = self.repository.get_person_by_name(match_result.person_name)
-        if person and person.id in self.persons_tracked_on_camera(camera_id):
-            logger.info(
-                f"Gallery match rejected for new track on {camera_id}: "
-                f"{match_result.person_name} (sim={match_result.score:.2f}) is already "
-                f"active on this camera (duplicate-person guard)"
-            )
-            return None
-
-        return match_result
-
     def _cleanup_lost_tracks(self, current_time: float):
         """Handle state transitions for GRACE and LOST tracks.
 
@@ -903,6 +861,8 @@ class GlobalTrackManager:
             bbox = self._last_bboxes.get((camera_id, local_track_id))
             if bbox is None:
                 continue
+            if (camera_id, local_track_id) in self._uncertain:
+                continue    # whose box this is is open: no zone change, handover or propagation from it
 
             frame_dims = self._frame_dimensions.get(camera_id)
             if frame_dims is None:
@@ -922,6 +882,7 @@ class GlobalTrackManager:
                         )
                     except Exception as e:
                         logger.debug(f"Failed to persist zone for {global_track_id}: {e}")
+                    self._try_zone_entry_handover(camera_id, global_track_id, zone_name)
                     # Resolve person location from all active tracks
                     self._resolve_person_location(self._person_id(global_track_id), camera_id=camera_id)
 
@@ -1009,6 +970,78 @@ class GlobalTrackManager:
                         f"Zone identity propagation: zone='{zone_name}' "
                         f"{src_track} -> {rcv_track} (person_id={src_state.person_id})"
                     )
+
+    def _try_zone_entry_handover(self, camera_id: str, global_track_id: str, zone_name: str) -> None:
+        """Entry handover: an unnamed track walking INTO a zone takes the name of the one person
+        lost on the same camera just before it appeared (zone `entry_handover_sec`, `_cameras`).
+
+        Stairs (TUNING_LOG 2026-10-21): every climb on living_room is a fresh ByteTrack track born
+        at the stair foot 0–4 s after the named track vanished; Re-ID from behind stays < 0.70, so
+        "upstairs" was never credited. Offline 10-17..21 (5 s): 7 names, none contradicted.
+        Sources = tracks on this camera last seen in [birth - entry_handover_sec, birth +
+        ENTRY_HANDOVER_LATE_SEC], not live now, that did not end in this zone (they went through
+        it). Fires only if the track entered the zone <= ENTRY_HANDOVER_MAX_ENTRY_SEC after birth,
+        all sources hold the same named person, and no live track holds that person on this camera
+        (identity exclusivity) or on another camera outside this zone (the person is elsewhere;
+        live 2026-10-22: Judit in the work room while Virag climbed on Judit's successor track).
+        `confirm_identity` (age veto) still applies. Called on a zone change, so a track born
+        inside the zone never fires.
+        """
+        zone = self.zone_manager.get_zone_config(zone_name) if self.zone_manager else None
+        if zone is None or zone.entry_handover_sec <= 0:
+            return
+        if zone.entry_handover_cameras and camera_id not in zone.entry_handover_cameras:
+            return
+        track = self._tracks.get(global_track_id)
+        state = self.identity_linker.get_track_state(global_track_id)
+        if track is None or state is None or state.is_identified:
+            return
+
+        born = track.first_seen
+        if (track.last_seen - born).total_seconds() > ENTRY_HANDOVER_MAX_ENTRY_SEC:
+            return
+        sources = [
+            tid for tid, t in self._tracks.items()
+            if tid != global_track_id and t.current_camera_id == camera_id
+            and t.state not in (TrackState.NEW, TrackState.TRACKED)
+            and t.first_seen < born
+            and -zone.entry_handover_sec <= (t.last_seen - born).total_seconds() <= ENTRY_HANDOVER_LATE_SEC
+            and self._track_zones.get(tid) != zone_name
+        ]
+        persons = {self._person_id(tid) for tid in sources}
+        if len(persons) != 1 or None in persons:
+            return
+        person_id = persons.pop()
+        if self._person_held_outside_zone(person_id, camera_id, zone_name, exclude=global_track_id):
+            return
+
+        src = max(sources, key=lambda tid: self._tracks[tid].last_seen)
+        self.identity_linker.transfer_identity(src, global_track_id)
+        if self._person_id(global_track_id) != person_id:  # refused (age veto)
+            return
+        gap = (born - self._tracks[src].last_seen).total_seconds()
+        self.repository.update_track(global_track_id, person_id=person_id)
+        self.repository.create_event(
+            camera_id=camera_id,
+            event_type="zone_entry_handover",
+            track_id=global_track_id,
+            person_id=person_id,
+            extra_data={"zone": zone_name, "from_track": src, "gap_sec": round(gap, 1)},
+        )
+        logger.info(
+            f"Zone entry handover: zone='{zone_name}' on {camera_id} {src} -> {global_track_id} "
+            f"(person_id={person_id}, gap={gap:.1f}s)"
+        )
+
+    def _person_held_outside_zone(self, person_id: int, camera_id: str, zone_name: str, exclude: str) -> bool:
+        """A live track holds the person on this camera, or on another camera outside `zone_name`
+        (overlapping cameras seeing them in the same zone don't count)."""
+        return any(
+            tid != exclude and t.state in (TrackState.NEW, TrackState.TRACKED)
+            and self._person_id(tid) == person_id
+            and (t.current_camera_id == camera_id or self._track_zones.get(tid) != zone_name)
+            for tid, t in self._tracks.items()
+        )
 
     def _enforce_face_exclusivity(self, camera_id: str, global_track_id: str) -> None:
         """A face just named this track: other live tracks on the camera lose that name.

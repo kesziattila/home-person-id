@@ -32,6 +32,8 @@ comes only after these are measured and exhausted.
 | `reid.max_overlap` | config `reid` | 0.15 | isolation for appearance evidence |
 | `age.max_ratio` | config `age` | 2.5 | age veto |
 | `enrol_min_coverage` | config (default) | 5 | Recommended suggestions |
+| `reid.similarity_threshold` | config `reid` | 0.70 | 0.56 would admit Judit-like 0.57–0.59 matches |
+| `reid.gallery_recheck_*` (interval / age_factor / min_interval) + `min_consecutive_matches` | config `reid` | 10 s / 0.25 / 0.5 s, N=3 (age schedule pending deploy) | N=2 adds 7 contradicted names (offline 10-21) |
 
 ## Entry template
 
@@ -749,3 +751,543 @@ comes only after these are measured and exhausted.
 - Enrolments since the last check (by the user): #1581 (emb 120), #1625 (emb 121).
 - Decision: keep 0.48 / 0.20. Watch the headphones-Judit → Virag score; if it reaches ≥ 0.45 enrol a
   headphones Judit face rather than raising the threshold.
+
+## 2026-10-21 — door exits stay "hallway"; offline: Re-ID recheck schedule
+- Morning 04:44–04:48 UTC: Judit and Virag ended "hallway (estimated)". The zones were right (Judit's
+  first exit, global_60471, ended in the door zone → outside); the LAST tracks through the door were
+  unnamed: Judit global_60490 (3 ambiguous faces, Re-ID 0.71–0.85 but no recheck streak), Virag
+  global_60475 (gallery recheck 0.74, "1/3 — waiting", lived 21 s) then 60478–60480 (Re-ID 0.55–0.63).
+  Cause: a track missing the new-track match at birth needed 3 rechecks x 10 s ≥ 20 s.
+  Entrance camera has no zone (named tracks there write nothing) — minor, not changed.
+- Offline (`recheck_dump.py` + `recheck_sim.py` + `recheck_eval.py`, scratchpad): ByteTrack replay of
+  10-17..10-21 (3594 tracks, 3593 mapped to global ids), causal gallery = newest 10 reid_embeddings per
+  person stored before t, isolation and exclusivity as live, stop at face naming. Extra names vs the live
+  fixed 10 s / N=3, judged by face_match → live label → face vote (≥0.38, m 0.10) → MiVOLO age:
+
+  | schedule | N | extra names | contradicted | unjudged | recheck median | checks / track-min |
+  |---|---|---|---|---|---|---|
+  | fixed 10 s (live) | 3 | 0 | 0 | 0 | 60 s | 4.4 |
+  | fixed 5 / 3 / 2 / 1 s | 3 | 28 / 61 / 119 / 179 | 4 / 5 / 7 / 9 | 0 / 4 / 16 / 25 | 26 / 20 / 12 / 9 s | 6.3 / 8.7 / 12.5 / 17.2 |
+  | age 0.5·a [1..10] | 3 | 45 | 1 | 8 | 15 s | 5.7 |
+  | age 0.5·a [1..10] | 2 | 141 | 7 | 23 | 5 s | 5.6 |
+  | **age 0.25·a [0.5..10]** | 3 | **139** | **1** | 25 | **5 s** | 7.4 |
+
+  The one contradiction (global_59715 → Judit, face-named Ati) is the 10-19 17:02 ByteTrack switch
+  where the face itself was on the wrong box. Fixed short intervals add face-contradicted names (same-frame
+  correlated samples); the age schedule checks densely only while the track is young. Cost ~1 ms per
+  recheck (`ReIDGallery.recheck` 0.96–1.28 ms, loop 44 ms). This morning: 60475 → Virag at 2.4 s,
+  60490 → Judit at 3.1 s (its loss in the door zone → outside); Virag's door track 60480 stays unnamed (Re-ID < 0.70).
+- Change (code, not deployed yet): `reid.gallery_recheck_age_factor` 0.25, `gallery_recheck_min_interval`
+  0.5 s, cap `gallery_recheck_interval` 10 s (`IdentityLinker.recheck_interval`).
+- Also: profiler timings now go to `metrics/perf/` (one record / 60 s) so HW cost is at hand offline.
+
+- Change (config, 10:01 local, backup 20261021T080146Z): entrance camera = whole frame in zone "outside"
+  (0 face_match in 382 entrance tracks 10-17..10-21; Re-ID named 15, none contradicted). The top-left
+  strip is the family driveway, not a public sidewalk — no exclusion. Side effect: hallway door zone and
+  entrance now share "outside", so zone propagation can name an entrance track from a named hallway exit
+  (each camera exactly one person). Watch: a person inside at the open door + another outside.
+- Offline (`door_dump.py`, `door_eval.py`, scratchpad): when would zone propagation through the shared
+  "outside" zone have fired 10-17..10-21 (hallway exactly one person with the foot in the door polygon,
+  entrance exactly one person, same 2 s check, one named / one not)? Only 11 simultaneous pairs, 3 fires:
+  10-18 12:37 and 12:38 Ati (named) at the door inside → Virag's entrance tracks (face vote Virag
+  0.43–0.49): WRONG; 13:05 Virag (face 0.65) at the door → entrance track 58649 (no evidence, probably
+  her own exit). Both wrong ones are adult → child: the age veto (live since 10-19, 3 samples at 1 s;
+  the first track had existed 7 s) should refuse or revoke them — not verifiable on 10-18 (no age log).
+  Narrower door polygon (beyond the threshold, y ≤ 0.85): 0 fires, but it loses 53 of 70 hallway track
+  ends in the door zone (exits end at foot y 0.87–1.0) → breaks "lost at the door = outside". Decision:
+  keep; watch entrance propagations in the reviews. Note: entrance faces do score (Virag 0.49/m0.34
+  on 10-18), so with 0.48 the face path may name an entrance track now and then.
+- Follow-up (user: the entrance Re-ID could carry the exit instead of the door-zone loss): `door_cover.py`.
+  70 hallway track ends in the current door zone; 56 were unnamed (no location effect either way). Of the
+  14 named: 1 ends beyond the threshold (narrow zone keeps it); 13 end on the floor part (narrow zone loses
+  them) and only 3 of those got their entrance track named for the same person within 20 s (live label or
+  simulated age-schedule Re-ID), 10 entrance tracks stayed unnamed (median entrance life 3 s; outdoor
+  clothes/light vs indoor gallery). Narrow zone today: 10 of 13 named exits would stay "hallway".
+  Not rejected: revisit when entrance Re-ID coverage is higher (re-run door_cover.py after a few days of
+  the age schedule + 0.48 face on the entrance camera).
+
+## 2026-10-21 15:56–16:03 UTC — dusk arrival stuck in "hallway" (Ati + Virag)
+- Hallway: both face-named at the door (Virag 0.55/0.52, Ati 0.62/0.64); later hallway tracks Re-ID-named
+  at once (0.78–0.87). Indoors nothing was named until 16:02 (Ati face on living_room/ground_floor), so
+  both stayed "hallway" for ~6 min. Zone propagation can't help: two people per camera.
+- Cause = light, not Re-ID knobs. living_room crops 15:56–15:59 were IR (HSV saturation 0.0) → Re-ID
+  skipped by design (`mean_saturation < 15`), faces 0.18–0.23. ground_floor 15:58 crop under a warm lamp
+  (sat 179, BGR 46/95/151) → Virag 0.54–0.62, Ati 0.56–0.65 (< 0.70). ~16:02 room light on: living_room
+  colour (sat ~24), ground_floor neutral (sat 40–54) → Re-ID names at 0.71–0.82 within seconds.
+- Gallery FIFO (10/person; one hallway flush replaced Virag's whole gallery at 15:57:12) was ruled out
+  offline (`scratchpad/arrival_gallery.py`): newest 30 or ≤3 per track gives the same 0.53–0.60 on the
+  15:58 ground_floor tracks; same-outfit (striped sweater) indoor tracks match only once the light is on.
+- Open: colour normalisation before Re-ID (needs captured colour frames of a lamp-lit evening →
+  `capture_frames.sh` at arrival time), hallway→room handover on the door transition (new concept;
+  measure offline first).
+- 16:19 UTC: `capture_frames.sh start 20` for the colour-normalisation test (lamp-lit evening, indoors).
+- Offline door handover (`scratchpad/door_handover.py`, live DB 10-16..10-21): a named hallway track ends in
+  "hallway" → name the single living_room/ground_floor track born within W s (skip if > 1 birth or another
+  hallway end). 110 such ends. W=5 s: 46 fires; judged 18 ok (12 live name, 6 weak face/age) vs 5 wrong
+  (1 live, 3 simulated Re-ID, 1 age — incl. today 15:57:49 Virag → adult living_room track), 23 unjudgeable.
+  Larger W: fewer fires, same wrong share. ~20–25 % wrong among judged → not usable as a plain time rule
+  (cf. 10-20 "only unaccounted person", rejected). Next idea only if needed: require the indoor birth at the
+  hallway door on the room camera (birth-box position from the detection-log replay).
+- Colour normalisation test (`scratchpad/color_norm_test.py`, local PyTorch OSNet, DB gallery newest 10).
+  The 16:31–16:40 capture had almost no lamp-lit phase (room light on at 16:32; the one yellow ground_floor
+  frame was the IR→colour switch), so: the one real warm crop (15:58 t126, LAB a/b shift +18/+36) plus a
+  synthetic cast (that shift applied to the captured crops). Real crop Virag: raw 0.635 → gray-world 0.666
+  → LAB a/b mean reset 0.733 (runner-up 0.49). Synthetic, 159 crops ≥ 0.70 raw: warm 0.637 median
+  (3 % ≥ 0.70) → LAB reset 0.693 (44 %), gray-world 0.599 (worse). Cost on neutral crops: LAB reset
+  0.677 → 0.665 median (474 crops ≥ 0.60), top-1 unchanged; on weak warm crops top-1 drops to 79 %.
+  Decision: not deployed. Only worth it as a conditional step (strong cast only), and one real sample is
+  too thin; IR (the living_room part of the miss) is untouched by it. Revisit with more lamp-lit crops.
+- Rerun on capture 17:02–17:23 UTC (main light on throughout, no IR/lamp phase). Judit 192 / Virag 170
+  crops: same picture — synthetic cast: LAB reset 0.625 → 0.677 (Judit), 0.571 → 0.639 (Virag); gray-world
+  worse; neutral cost ≤ 0.01. 8 real crops with a mild a/b shift (10–14, colour of clothes/wall, not lamp):
+  LAB reset LOWERS the own score in all 8 (−0.003…−0.06). The 15:58 crop (shift ~40) vs the newer gallery:
+  raw 0.496 → LAB 0.592. So a conditional step would need a high cast gate (> ~25) and there is still one
+  real sample above it. Still not deployed; needs a deliberate lamp-only capture.
+
+## 2026-10-21 18:01–18:02 UTC — Ati upstairs, system says living room
+- Named living_room track (global_61211, Re-ID 0.78) walked to x≈0.87 and was lost 18:01:56 in zone
+  living_room; a NEW track started at the stair foot 18:01:58–18:02:00 and climbed (foot y 0.37 → 0.15,
+  stairway zone) — unnamed: Re-ID 0.56–0.67 (back view, box 15–40 % of frame height), never 3 × ≥ 0.70.
+  Second climber 10 s later. Ati's location = lost named track → estimated living_room. Propagation
+  blocked (3 people on living_room).
+- Offline tracker sweep (`scratchpad/stairs_sweep.py`, living_room 00:00–18:10, match_thresh
+  0.3/0.2/0.1/0.05/0.01 × track_buffer 60/120): the 18:02:09 climb track is born at 18:01:58 in every
+  variant — IoU-only association can't bridge the 2–4 s gap with a 0.2-frame-width jump. 9 climbs today,
+  3 always born on the stairs; knobs change only one unrelated climb (17:59:46). Rejected.
+- Re-ID knob for this case: scores 0.57/0.61/0.67/0.60/0.60/0.57/0.56/0.63 → even 0.65 never gives 3 in a
+  row; would need ~0.56 (unsafe, Ati/Virag back views 0.6–0.7). Existing knobs exhausted → next would be
+  a stair handover rule (named track lost near the stair foot + unnamed climb within N s), measured offline.
+- Offline stair handover (`scratchpad/stairs_handover.py`, living_room 10-17..10-21, live DB labels with
+  revoked names dropped). 26 climbs (foot up into the upper stairway); ALL are tracks born at the stair foot
+  and only 2 had a live name → "upstairs" exits are almost never credited to a named person.
+  Rule: source = tracks lost ≤ N s before the climb's birth (not those that ended at the top themselves);
+  fire iff one source person and it is named. N=5 s, any distance: 7 fires — 2 confirmed by the climb's own
+  live name, 3 consistent by MiVOLO age (adult/child only), 2 unverifiable (embedding cos 0.80 / 0.65);
+  none contradicted. 11 climbs had only unnamed sources, 5 no source, 3 ambiguous. N=8 s, D ≤ 0.3: one
+  age-contradicted fire. Tonight's 20:01:58 Ati climb would be credited; the 20:02:10 one not (its source
+  61218 was Re-ID "Virag", revoked by the age veto at 20:02:01 — an adult). Sample small (7 fires / 5 days).
+- 18:43 UTC deployed (live experiment, uncommitted): per-zone `entry_handover_sec` / `entry_handover_cameras`
+  (`GlobalTrackManager._try_zone_entry_handover`, event `zone_entry_handover`); live: stairway, 5 s,
+  living_room only. Review every `zone_entry_handover` in the next morning checks before committing.
+
+### 2026-10-22 — Stair entry handover, first live review (10-21 18:44 → 10-22 12:16 UTC)
+- 8 climbs on living_room (replay). 3 named by the existing paths (Judit, Ati face, Virag) → upstairs OK.
+  4 abstained correctly (source unnamed ×2, Virag + unnamed child, Ati far left + unnamed).
+- 1 `zone_entry_handover` fired, **WRONG**: 07:00:20 global_61580 (Judit, polka-dot top) lost → global_61581 born
+  1.9 s later on Judit, but Virag (yellow shirt) stood behind her; ByteTrack switched to Virag inside 61581,
+  who climbed 90 s after the birth. Judit was live on ground_floor (global_61579, work_room) at that moment →
+  her zone flipped stairway/work_room. Face on 61581 said Virag (0.33–0.43, below threshold); the age veto
+  missed it (median 30 from the early Judit samples).
+- `entry_handover_sec` can't fix it (gap 1.9 s). Proposed: skip when the person has a live track on another
+  camera outside this zone, and/or cap birth→zone entry (offline climbs enter within 0–4 s).
+- 2026-10-22 12:33 UTC: deployed both guards (live elsewhere outside the zone; entry <= 10 s after birth), 14 handover tests.
+
+### 2026-10-22 — Morning check / Identity review (03:00–06:15 UTC)
+- **Entrance camera down** since 2026-10-21 17:03 UTC ("Failed to open stream"): no entrance/driveway
+  tracks to review. Door exits seen only on hallway: Judit's exits named; door zone flapped hallway↔outside
+  6× at 05:11–05:17 while she stood dressing at the door (re-measure planned 10-24). Judit `outside` since
+  07:45 (no Judit audit sample after that), Virag at home (living_room) — plausible.
+- Audit (1054 samples, per-track 2): Judit 66/66 correct (5 two-person boxes), Virag 17/17, Ati 55/56.
+  Wrong: global_61560 06:12:24 living_room "Ati" reid_gallery 0.71 on Judit (face Virag 0.33), named at birth
+  with no reid_match event — path unknown (current log rotated).
+- reid_match 22 (all gallery_recheck), 19 within 5 s of birth; all correct on the sheets.
+- Face: 0 wrong. Virag 6 face-confirmed tracks, 12/27 attempts ≥ 0.48/0.20 (many at 0.48–0.50).
+  Headphone Judit → Virag max 0.42 (61327/61339/61344) < 0.45 → no Judit enrolment suggestion yet.
+- Perf: ReIDGallery.recheck 5.1 calls/min, 34 ms avg (0.3 % load); loop_ms 41.7 (10-21: 41.3);
+  FPS 16.5 on 3 cameras (baseline 20.3–20.5 on 4) → per camera unchanged.
+
+### 2026-10-22 — Ati stuck as "Judit" + Judit's Re-ID gallery filled with Ati (15:04–15:13 UTC)
+- 15:04:07 global_62685 face-named Judit (0.52, correct) while sitting next to Ati (box overlap 0.31);
+  15:08 Judit stood up, ByteTrack moved 62685 onto Ati. Face is never retried on a face-named track → stuck.
+- 15:12:44–15:13:17 the track fed 12 Ati crops into Judit's gallery (ids 6075–6086 = her whole 10-slot gallery).
+  Cause (anchor replay from 12:33 restart): two of Judit's 4 PersonAppearance anchors came from face
+  confirmations on OVERLAPPING boxes (62680 ov 0.47, 62685 ov 0.31: Judit + part of Ati); Ati's crops
+  scored 0.56–0.62 to them (gate 0.55), while 0.60–0.78 to Ati's own anchors — no cross-person check.
+- Gate variants replayed 10-22 03:00–15:16 (known wrong names 62685/61560/61581 = 177 samples):
+  current 81/177 wrong fed, 2909 others; A (anchor only from isolated samples) 4/177, 3080;
+  B (closer to own anchors than to any other person's, margin 0) 0/177, 2335; **A+B 0/177, 2850**.
+- Face re-check on face-named tracks (audit crops 10-21..22, owner face, 0.48/0.20): same person 152,
+  other person 17 = 62685 → Ati 5/5 (from 15:08:08, right after the switch) + 12 on Ati+Virag reading
+  boxes → Virag, all blocked by the age veto (track 31–33 y vs Virag 7.3). Re-ID drift since naming does
+  not separate them (0.55–0.60 vs 0.49–0.60), so no appearance-change guard.
+- 2026-10-22 15:57 UTC: deployed A+B (anchors from isolated fresh samples; cross-person check in PersonAppearance.consistent), 13 anchor tests.
+- Face re-check on face-named tracks: NOT implemented (user: prevent, don't correct afterwards).
+
+### 2026-10-22 — The 15:08 UTC switch (Judit stands up past Ati), tracker knobs
+- Replay reproduces it as a double swap: 15:07:59 one box covers Judit standing up in front of Ati →
+  Ati's track follows Judit out of frame; Judit's track lost 1 s, revived 15:08:03 on Ati's seat
+  (high-conf det, IoU 0.36 to its last box > match_thresh 0.3).
+- Sweep on the window: only match_thresh 0.5 stops the revival (Ati gets a new track); none stops swap 1
+  (match_thresh 0.35/0.4, track_buffer 15/30, track_thresh 0.6, duplicate_ioa 0.4: unchanged).
+- Cost of match_thresh, 10-22 03:00–15:15 all cameras (living_room): 0.3 → 0.4 → 0.5 confirmed tracks
+  767 → 1017 → 1306, births 1256 → 1908 → 3025, appearance breaks 300 → 278 → 245. Rejected: +70 %
+  fragmentation (more unnamed fresh tracks) for −18 % switch proxy. Existing knobs exhausted for this case.
+
+### 2026-10-22 — Appearance-aware association offline (the 15:08 switch + 03:00–15:15)
+- Blend (botsort_cases.py: (1-w)·IoU + w·cos ≥ match_thresh), w 0.2/0.4/0.6: no change on the case.
+- Swap 1 is not separable by appearance: while Judit stood up in front of Ati, Ati's track EMA drifted
+  onto her (0.94 to her standing box at 15:08:03). Swap 2 (revival on Ati's seat): det 0.67 to Judit's EMA.
+- Gate (pair rejected if cos(det, track EMA from isolated samples) < G), all matches, living_room:
+  G 0.65 confirmed 767 → 946, dup births 255 → 465, breaks 300 → 265; 0.7 → 1107; 0.75 → 1433 (also
+  stops swap 1 on the case). Too much fragmentation/duplicates. (Breaks partly drop by construction.)
+- Gate only on REVIVALS of lost tracks: G 0.65 stops swap 2; living_room confirmed 767 → 808 (+5 %),
+  births 1256 → 1317, dup 255 → 277, ground_floor 570 → 589, hallway 99 → 100. Not validated yet:
+  whether the ~blocked revivals were real switches needs frames (capture) — candidate, not deployed.
+- User: numbers not convincing → step back. Frozen per-track references (EMA only from boxes overlapping
+  no live/recently-lost box) also fail: after the crossing seated Ati was 0.95 to "Judit's" reference —
+  her reference had been built from merged single boxes covering both. Box appearance during close
+  interaction is unusable; next concept should not depend on it.
+
+### 2026-10-22 — Place-anchor concept, offline (anchor_measure*.py, 10-17..22, living_room + ground_floor)
+- Anchor = confirmed box still 10 s (center x / foot y ± 0.03, size ± 25 %), not standing (h/w ≤ 2.0 px),
+  no box nested in it (overlap ≥ 0.5); name stays on the place while occupied (IoU ≥ 0.4), released after 5 s empty.
+- "switch" events (owner track left the place while another track occupies it), 6 days: living_room 63,
+  ground_floor 93; all known cases present (10-17 12:08, 10-17 16:10 same ids as live, 10-22 15:08).
+- Visual check (audit frames before/after): 10-22 living_room 24 → 14 real switches prevented (mostly
+  Ati seated, Virag comes next to him, ByteTrack moves Ati's track onto her), 1 wrong (standing Judit at the
+  stair foot → fixed by the h/w filter), 8 neutral/unclear; ground_floor 14 → 7 right, 0 wrong, 5 unclear
+  (two people lying in one box); 10-18 living_room: Ati/Virag next to each other right, Judit+Virag huddled
+  in one box ambiguous (still present with the nest filter: 06:15–06:25).
+- Live 17:42 UTC ground_floor, Ati seated side-on: one box, bottom flips 0.54 ↔ 0.62 (legs in/out), conf
+  0.57–0.82, 8 % frames without detection → foot-y stillness (± 0.03) never holds; needs a robust place test.
+
+### 2026-10-22 — YOLO26m det vs pose vs seg (Jetson TensorRT FP16, 640, live app running)
+- trtexec 300 iterations, GPU compute median / p90: live engine 13.6 / 14.7 ms; yolo26m (fresh export)
+  13.5 / 14.4; **yolo26m-pose 14.6 / 15.4 (+1 ms)**; yolo26m-seg 19.4 / 20.5 (+6 ms, plus mask decode).
+- Quality, PyTorch CPU on captured ground_floor frames 17:49:30–17:51:00 UTC (Ati seated, Virag next to him,
+  503 consecutive frames): person-count flicker det 61 / pose 21 / seg 56; frames losing the followed person
+  52 / 29 / 36; box-height jump p90 0.051 / 0.031 / 0.040. Pose separates Virag next to Ati where det merges.
+- Engines/ONNX in Jetson ~/hpid_bench (not in the project); models local/models_eval/. Not deployed.
+- Redetect + ByteTrack replay, ground_floor 17:48–18:04 UTC (4583 records, 3225 frames), PyTorch CPU:
+  live TRT log: births 32, dup 7, confirmed 26; yolo26m.pt: 49 / 24 / 40 (3-person frames 311 vs live 7 —
+  the PyTorch export behaves unlike the live engine); yolo26m-pose.pt: 37 / 12 / 32. Anchor "switch"
+  events live 0, det.pt 2, pose.pt 1. Pose beats the same-backend det clearly, but not the live engine
+  here; a fair test needs the pose engine on the Jetson (TensorRTDetector expects 6 output columns, pose has 57).
+- Cause of the local/Jetson gap: the TensorRT path runs `suppress_overlapping` (class-agnostic NMS 0.4)
+  after the engine, the PyTorch path (redetect, CLI preview) did not — end-to-end YOLO26 ignores `iou=`.
+  Fixed (PersonDetector.detect, test). Earlier PyTorch redetect results (10-17 detector tuning) carried the
+  same bias. TensorRTDetector also accepts pose-engine rows (6 + 17·3 columns, boxes only).
+- Night run 2026-10-22 21:57 local: Jetson ~/hpid_bench/night.sh — redetect (TensorRT, --reid) with the live
+  engine and with yolo26m-pose.engine on the captures 10-22 17:48–18:04, 10-21, 10-19 → out_{live,pose}_<day>.
+- 10-22 17:48–18:04 on the Jetson (TensorRT both, same pipeline + suppression, --reid), ByteTrack replay:
+  ground_floor live births 32 / confirmed 26 / dup 7 / breaks 17 vs pose 31 / 27 / 6 / 18; living_room
+  34 / 24 / 3 / 0 vs 32 / 23 / 2 / 0; anchor switches 1+0 vs 1+2. Live redetect reproduces the live log
+  exactly. As a pure box detector pose ≈ live engine; the PyTorch flicker gain (61 → 21) was the missing
+  suppression. Any gain must come from using the keypoints (face owner, torso Re-ID, head point, posture).
+- Correction: box-level stability on the Jetson outputs (TensorRT both, suppression on), ground_floor
+  17:49:30–17:51:00, 498 frames: person-count flicker live 45 / pose 11, frames without the person 52 / 29,
+  box-height jump p90 0.050 / 0.031. Pose IS steadier per frame; the tracker (Kalman, track_buffer) absorbs
+  most of it, which is why the replay aggregates were equal.
+- 2026-10-22 22:25 local: LIVE detector → models/yolo26m-pose.engine (boxes only, output (1,300,57)),
+  config backup data/config-backups/config.yaml.20261022T202519Z, local copy scratchpad config.before-pose.yaml.
+  First perf report: FPS 20.6–20.8, PersonDetector.infer 24 ms avg (night redetect sharing the GPU).
+  Rollback: push_config.sh --rollback + restart.sh restart. Review in the morning check.
+
+### 2026-10-22 22:37 — living_room box bottom flicker with the pose engine (left as is)
+Seated cross-legged on the sofa, legs partly under a blanket, coffee table in front: one box, top stable 0.34,
+bottom alternating 0.77-0.78 (knees/feet, conf 0.8-0.9) and 0.96-0.97 (down to the table, conf 0.3-0.6).
+Same track global_63228 (Ati) throughout, one revive, no births; both boxes IoU ~0.65 and inside the living_room
+zone -> cosmetic, no identity/zone effect. Not compared with the old engine: the 1-min capture saved nothing
+(frame_capture_max_gb 20 GB full). Decision: leave it.
+
+### 2026-10-22 23:30 — Night run: live engine vs pose engine (TensorRT on the Jetson, all captured frames)
+redetect.py on every captured frame (10-19 14:19-14:25, 10-21 16:20-17:20 in 3 windows, 10-22 17:48-17:58),
+yolo26m-nms-trtexec vs yolo26m-pose, then replay_tracking (live tracking config) + per-frame stability
+(scratchpad frame_stability.py: confident >=0.5 boxes, count flicker / lost box between frames <1 s apart).
+Note: the first 10-19 "live" run used the pose engine (night.sh took the model from config.yaml, switched to pose at
+22:25); rerun with --set detection.model, without --reid (Re-ID engine OOM next to the live app).
+
+| day | conf. boxes live→pose | flicker | lost | births | dup births |
+|---|---|---|---|---|---|
+| 10-19 | 1889 → 2123 | 326 → 192 | 188 → 109 | 66 → 54 | 12 → 5 |
+| 10-21 | 8949 → 11732 | 674 → 1945 | 409 → 1070 | 180 → 190 | 19 → 15 |
+| 10-22 | 9004 → 8886 | 345 → 366 | 130 → 128 | 44 → 40 | 5 → 3 |
+
+- 10-21 extra boxes/flicker: ~1400 frames of a person seated at the desk on the right of ground_floor, back to the
+  camera, half behind the wall — the live engine never saw them, pose does at conf 0.5-0.65 (around track_thresh,
+  hence the flicker). Recall gain, not false positives (data/debug/pose_extra_170547_402.jpg).
+- 10-22 ground_floor bottom |d| p90 0.060 → 0.019, lost 94 → 57; living_room flicker 51 → 118 (the seated-on-sofa
+  case seen live at 22:37).
+- appearance_breaks unusable for this run: 5-8% of the redetect Re-ID samples were zero/non-finite (Jetson GPU memory
+  pressure next to the live app), each counts as a "break" with sim 0.0. Live log, same window: 68 of 71 real.
+Verdict: pose stays live (fewer duplicate births, steadier boxes, better recall on occluded/back-turned people).
+
+### 2026-10-22 23:50 — Face ownership from the pose skeleton (attribution.skeleton_face) — measured, deployed
+Offline: captured frames 10-18/19/21/22 (every 4th multi-person, every 25th single-person frame), pose PyTorch
+re-detect, faces detected per box head region exactly as attempt_face; middle rule (owner_face) vs skeleton rule
+(the face the box's own nose/eyes sit in, 25% margin, kp conf >= 0.5). 5013 boxes with a face:
+
+| | same | only new accepts | only old accepts | different face | no face points |
+|---|---|---|---|---|---|
+| single person (301) | 235 | 61 | 0 | 0 | 5 |
+| multi person (4712) | 3840 | 803 | 4 | 2 | 59 |
+
+- only-old 4: a phone hid the box's face, the middle rule took the child's face above it — wrong, prevented.
+- different 2: the middle rule took the neighbour child's face; skeleton took the box's own — prevented.
+- only-new 864: own faces off the box's middle (leaning, bent over, lying) — 48/48 sampled correct (more chances
+  to name, not new risk).
+- no face points 64 (43 the middle rule accepted): ~20 hair seen from behind, ~4 someone else's face, ~15 own steep
+  profile -> a skeleton without face points now owns no face (ambiguous); box-only engines keep the middle rule.
+Sheets: data/debug/face_owner_{new_only,rare,no_kp}.jpg (local only).
+
+### 2026-10-22 23:45 — Naming latency KPI (metrics/naming/, tools/analyze_naming.py) + capture cap 30 GB
+New stream: one record per ended track from TrackIdentityState (every name goes through confirm_identity):
+seconds to first name / first face, first method, persons named, revocations. Live since 23:44.
+Found on the way: a gallery match at track creation (global_tracker new-track path) names the track without an
+event — 856 of 1401 named tracks in 3 days had no naming event, so DB events alone undercount naming.
+Baseline from the DB (approximate: event-less names counted as 0 s), tracks >= 5 s, 10-16..10-22:
+
+| | tracks | named | t50 | t75 | t90 | <=2s | <=5s | <=10s | <=30s | face |
+|---|---|---|---|---|---|---|---|---|---|---|
+| ALL | 7486 | 31% | 0.0 | 4.6 | 24.7 | 20% | 23% | 26% | 28% | 8% |
+| 10-21 | 894 | 40% | 0.0 | 2.2 | 6.8 | 29% | 35% | 38% | 39% | 8% |
+| 10-22 | 1990 | 46% | 0.0 | 2.8 | 14.6 | 32% | 37% | 40% | 43% | 11% |
+| living_room | 3551 | 35% | 0.0 | 2.9 | 17.2 | 25% | 28% | 31% | 33% | 10% |
+| ground_floor | 2725 | 29% | 1.2 | 6.8 | 39.2 | 17% | 21% | 23% | 25% | 6% |
+| entrance | 453 | 3% | | | | | | | | 0% |
+
+Reading: when a track gets a name it is fast (half at birth via the gallery), the gap is coverage — most >= 5 s
+tracks never get one (fragments, unknown visitors, ghost boxes and genuinely missed people mixed; next: split them).
+Config: metrics.frame_capture_max_gb 20 -> 30 (pushed 23:39, backup config.yaml.20261022T213914Z).
+
+## 2026-10-23 morning check (pose + skeleton_face night)
+- Live since 2026-10-22 23:28, no errors except VLM connection failures (VLM host off) from 06:45.
+- Perf 21:30–05:30 UTC: 19.7–21.4 FPS, loop 42–48 ms, inference queue ≤ 2, detector ~14–15 ms.
+- Face attempts: ambiguous 1/211 after skeleton_face vs 1615/3070 (1600 of them single-face, off the box middle)
+  on 10-22 daytime; 11 accepts (Judit ×9, Ati ×2). Few people at night: re-check on a busy day.
+- find_contradictions since 21:28 UTC: 85 audit samples, 0 findings. Unstable names: 0.
+- Naming KPI, first records 06:21–07:10 local (22 tracks ≥ 5 s, mostly Judit): named 41 %, t50 8.0 s,
+  t90 30.8 s, face 18 % (t50 8.0 s). Living room only 20 % named (8 short 5–47 s unnamed tracks); ground floor
+  192 s unnamed track at 07:07 is the lead to check. Baseline too small, keep collecting.
+- The 192 s unnamed ground-floor track (global_63283, 07:07 local) is a ghost: the sofa back in morning sun
+  (box-only engine did the same on 10-20/21 04 UTC). Pose sees 0–3 confident keypoints on it vs 7+ on real
+  people → candidate filter in `docs/POSE_IDEAS.md` 2b. The two long Judit tracks (global_63273 handover,
+  global_63290 gallery; at the desk) were checked visually: correct.
+
+## 2026-10-23 identity review: living room 07:44–08:13 local (Ati, Judit, Virag on the sofa)
+- 41 audit samples. Correct apart from one case: 08:01:27 Virag climbed onto the sofa next to Ati, ByteTrack moved
+  Ati's face-named global_63330 onto her, and Ati's new box (global_63337) was face-confirmed in its FIRST frame.
+  `_create_global_track` skipped `_enforce_face_exclusivity`, so there were two "Ati"s until 08:08.
+- Damage: 20 of Virag's crops entered Ati's Re-ID gallery from g63330 (ids 6648–6657, 6669–6678; cos Virag
+  0.79–0.85 vs Ati 0.66–0.77). The anchor gate let them through because Virag had no anchors yet (her first face
+  confirmation came at 08:09:41) and Ati's anchors pass at 0.55.
+- Fix (local, not deployed): exclusivity at creation too; test `test_face_at_track_creation_takes_the_name_from_the_other_live_track`.
+  After the revoke g63330 ends unnamed, so its buffered crops would not reach the gallery.
+- Open: the gallery gate only compares against other persons' ANCHORS; a person without anchors (no two face-confirmed
+  tracks since the restart) gives no protection.
+
+## 2026-10-23 identity review: 08:21–08:47 local after the exclusivity fix (3 on the sofa; capture 08:44–08:47)
+- Living room: Ati face, correct throughout. 08:42 Virag sat down next to Judit; ByteTrack moved Judit's
+  gallery-named global_63419 onto Virag ("Judit" on Virag ~2.5 min). 08:44:06 a Virag face on it was refused by the
+  age gate (track median 32.5 y from its Judit past, n=7); 08:44:45 Judit's own new track (63422) was face-confirmed
+  and exclusivity unnamed 63419. Virag stayed unnamed after that (face 0.43 < 0.48).
+- Ground floor: detector gives ONE box for Judit+Ati lying together (global_63429): gallery "Ati" 08:42:54, face
+  "Judit" 08:43:54. Two people in one box = POSE_IDEAS 2. Virag (63423, back to the camera) unnamed throughout.
+- Gallery since the restart: 36 samples, all closest to their own person (63417 last sample borderline: Ati 0.74 /
+  Judit 0.75). No Virag in Ati's or Judit's gallery. Watch 63429 (merged box, face-named Judit) when it ends.
+
+## 2026-10-23 age gate: rolling samples, owned face on overlapped boxes
+- Case: 08:42–08:53 Virag's box (inside Ati's) = Judit's switched track global_63419; its 7 age samples (all Judit,
+  32.5 y) never changed (sampling stopped at max_samples, and none on an overlapped box) → 184 face attempts, 138
+  accepted as Virag (28 strong), all refused by the veto. Same on the ground floor (63423, 27.9 y).
+- Change: newest `max_samples` kept, a new sample every `refresh_interval_sec` (5 s) once full; the box's own fresh
+  face (skeleton_face) samples overlapped boxes too (face only, no body). Test `test_switched_box_follows_the_new_occupant`.
+- Offline, capture 08:44–08:47 (local MiVOLO onnx, owned faces): face-only median Virag 6.9 y (p90 7.8, n=10), Ati
+  35.3 (p10 33.2), Judit 50.2 (p10 45.9) — no adult face below 18 y (Virag 7.3 × 2.5). Face-only ≈ face+body here.
+- Risk: single Virag samples (face-named tracks, 10-19..23) fall outside ×2.5 10 % of the time (49/509), and 2/85
+  tracks already had a first-7 median outside. A rolling window re-tests the median every 5 s, so a long Virag track
+  can lose her name by age more often. Watch `metrics/age` vetoes with action "revoked" on Virag-face tracks.
+
+## 2026-10-23 replay: the 08:41:50 living-room switch (Judit's track onto Virag)
+- Mechanism (replayed exactly with the live config): Virag walked to the sofa and climbed over Judit lying there;
+  for ~2 s (06:41:49.8–06:41:51.9 UTC) the two boxes overlapped, one detection dropped for a few frames, and the two
+  tracks re-associated crosswise by IoU: Judit's track ended on Virag, Virag's on Judit.
+- Existing knobs (05:55–06:50 UTC, all cameras; centre jumps > 0.12 as a switch proxy, many are box-extent flicker):
+  match_thresh 0.3 → 0.5 cuts jumps 32 → 12 but nearly doubles the tracks 126 → 232 (fragmentation);
+  track_buffer 30/60 and track_thresh 0.5/0.6 change nothing material. Knobs cannot separate a full crossing:
+  IoU has no information there — needs appearance (Re-ID, logged per confident det) or pose in the association.
+- Ground floor Judit+Ati merged box: a second detection for the hidden person exists in 315/957 frames but at
+  ~0.17 (< track_thresh 0.5), so no track is born for them.
+
+## 2026-10-23 replay: stage-1 association gates against crossing swaps (offline only, not kept)
+- Tried (byte_tracker `_associate`, pair veto): Re-ID cosine to the track's appearance EMA, pose OKS to the track's
+  last skeleton (COCO sigmas, >= 4 shared keypoints), both. 04:00–07:15 UTC, cases Ati→Virag 08:01 and Judit→Virag 08:41.
+  | variant | tracks | 08:01 | 08:41 |
+  | base | 196 | swap | swap |
+  | appearance 0.3–0.5 | 184–187 | swap | swap |
+  | appearance 0.6 | 190 | lost | swap |
+  | OKS 0.05 / 0.1 / 0.2 | 209 / 251 / 286 | lost | swap |
+  | OKS 0.3 | 349 | ok | lost |
+  | EMA from isolated dets only + appearance 0.5 / 0.7 | 190 / 262 | lost / ok | swap / lost |
+  ("lost" = the track ended, a fresh one took over: no wrong name carried, but no continuity either.)
+- Why: during the 2 s full overlap the dets' Re-ID is a mix of both people and the EMAs absorb it (08:41:51 Judit's
+  EMA 0.85 to Virag's det, Virag's 0.86); the decisive frames are low-confidence dets (no Re-ID) and the skeletons
+  themselves swap. No variant fixes 08:41 without fragmenting (+34 % tracks at best). Gates removed from the code;
+  scratchpad copy kept. Conclusion: a full crossing is not solvable in the tracker with the current signals.
+- Parked (user, 2026-10-23): adult/adult crossing swaps (age gate cannot catch them). Idea on file: a name must
+  survive leaving an overlap (isolated appearance after ≈ before). Revisit at the next real occurrence.
+
+## Health watch
+
+- 2026-10-23 11:04 local: teleport. A new living_room track on a child's legs (hanging chair) was named Ati at
+  birth from one crop (sim 0.72). The recheck path counted 1/3, but the birth path (`_try_gallery_match`) skipped
+  `reid.min_consecutive_matches`. Ati's zone flipped 4x in 2 s; the age veto revoked the name after 3.6 s.
+  Threshold sweep (today's 100 birth names): 0.73 drops 5 bad / 18 good, rejected. Proposal (uncommitted): drop the
+  birth one-shot so the recheck streak is the only gallery naming path. Unit tests pass. Real-data latency cost
+  untested (~1 s expected). Report: `local/health/reports/2026-10-23_1126.md`.
+  DEPLOYED 2026-10-23 11:48 local (user), uncommitted. Baseline before (10-23 00:00-11:19, tracks >= 5 s,
+  `analyze_naming.py --by method`): reid_gallery 81 tracks t50 0.1 s, <=2s 75%, unstable 19.8%;
+  ALL 277 tracks named 53%, t50 1.8 s, <=2s 28%, unstable 6.9%. Watch: reid_gallery t50 (~1.2 s expected),
+  named share, unstable share.
+  RESULT 2026-10-23 14:13 (181 tracks >= 5 s after 09:48 UTC; age pose gate also live from 11:03 UTC):
+  reid_gallery t50 0.1 -> 1.8 s, <=2s 76 % -> 55 %, unstable 19.3 % -> 0.0 % (56 tracks);
+  ALL named 54 -> 56 %, t50 1.8 -> 2.7 s, but t90 38 -> 10 s, <=10s 43 -> 50 %, unstable 6.7 -> 0.6 %.
+  Different time of day and small sample; wrong-name signal clearly down at ~1.7 s cost on gallery names.
+
+- 2026-10-23 11:27 local: false age veto. Virag lying on the sofa (global_63788) was face-named (0.48) and revoked
+  after 7 s. Track median 18.9 y vs 7.3 y (x2.58): MiVOLO gave 9-45 y on the lying, side-turned child. `age.max_ratio`
+  cannot separate it, because true vetoes sit in the same 2.5-3.0 band (60192 x2.62, 63745 x2.6). 8 band face vetoes
+  are not yet reviewed. Idea (untested): no age sample in a lying pose. Report: `local/health/reports/2026-10-23_1219.md`.
+  Reviewed: the 8 band face vetoes split 3 right / 5 wrong; the whole band is 5 right / 6 wrong. The wrong ones are
+  all non-standing poses; the right ones are face-on-the-wrong-box cases. Global x3.0 + min_samples 5 fixes 5/6
+  wrong ones, but releases 70 of the 118 logged vetoes (46 unreviewed reid_gallery->Virag), so it is not proposed.
+  Option: face-named tracks only get x3.0 / 5 samples (11 cases: 5/6 fixed, 1 right veto lost). No unit test yet.
+- 2026-10-23 13:03 local DEPLOYED (user), uncommitted: `age.face_needs_standing` (no face to MiVOLO while the skeleton
+  sits or lies; `attribution.posture`). Offline gain is small (false vetoes 10 -> 8 of 66), so the point is to log
+  `posture` per sample. Re-measure age error per posture on live samples (now body-only when sitting/lying).
+- Checker: `find_contradictions` face_disagrees now counts only top1 >= 0.35 (sweep 10-17..10-23: 29 -> 13 findings,
+  all 7 known-noise ones gone, 3 known-wrong kept). False alarm today: global_63774 was Judit throughout.
+
+- 2026-10-23: skeleton_face let a neighbour's face through (global_63764 09:14 UTC). Virag's skeleton had 2 confident
+  face points next to Ati's face; with 25 % margin and "half the points", 1 point at the edge owned Ati's face (strong
+  0.59 attempt, stopped only by the age veto). Offline on captured frames (10-19 14:20-14:24 + 10-23 06:44-06:47,
+  3765 boxes, live pose kps): margin 0.10 + strict majority refused 6 owners, all wrong (neighbour face, a "face" on
+  a glass bowl), 0 own faces lost. "Best-fitting skeleton wins" refused 38 own faces (two boxes on one person),
+  prevented 0, rejected. Implemented as a proposal (uncommitted, NOT deployed), test in `tests/test_skeleton_face.py`.
+  Caveat: only 7 min of captured frames have pose keypoints.
+  Wider run (pose re-detected on 10-18/21/22 captures, 4901 more boxes): margin+strict refused ~15 own steep
+  profiles for ~2 more wrong owners -> strict majority dropped. FINAL proposal: FACE_BOX_MARGIN 0.10 only
+  (all data ~8700 boxes: 7 refused = 4 wrong owners, 2 own steep profiles, 1 unclear); it alone stops 09:14.
+  DEPLOYED 2026-10-23 15:50 local (user), uncommitted. Watch: face_scores ambiguous share, face naming t50.
+
+- 2026-10-23 18:02 local: false age veto, global_64229 (ground_floor, Judit half-lying alone on the sofa, face 0.48).
+  The face pose gate held (no face sample), but 126 body-only samples, all sitting/lying, gave 7-28 y -> median
+  13.3 vs 34.3 (x2.58) revoked the name; handover renamed it 12 s later. Proposal (DEPLOYED 19:17 local, uncommitted):
+  `age.face_needs_standing` -> `age.needs_standing`, a sitting/lying skeleton gives no sample at all. Since 11:04 UTC:
+  5 vetoes, 4 right (handover/face child<->adult) kept, 64229 avoided; 80 % of samples kept, tracks with >= 3
+  samples 218/234. Earlier sim (66 face tracks): false 10 -> 7, useful 53/61 -> 51/57. Test `test_age_gate.py`.
+- 2026-10-23 18:19 local: gallery_cross_person global_64229: 21 RIGHT Judit samples (white top, half-lying on the
+  ground-floor sofa) score closer to Ati's gallery (0.73-0.76 vs 0.64-0.71): Ati's nearest samples are him in a white
+  T-shirt leaning back on the same sofa. Not contamination (rows kept), but Re-ID gallery matching has no runner-up
+  margin, so either could be gallery-named as the other there. Option (new rule, untested): a Re-ID margin like
+  face min_margin. No wrong gallery name found today.
+- 2026-10-23 evening, user question "is the age veto worth it?": it can only tell the child from the adults
+  (Ati 35.5 / Judit 34.3). All 23 face-method vetoes 10-20..10-23 reviewed (masked audit crops): 6 right, ~14 wrong,
+  3 unclear. Wrong: stale samples before the rolling window (60190, 61912, 61951, 63419, 63423, 63494, ...),
+  sitting/lying (62096, 62406, 62865, 63330, 63363, 63788, 64229). Right: another person's face on the box (60192,
+  62224, 62375, 62965 under owner_face; 63764 under skeleton_face 0.25, now stopped by margin 0.10) and 63986
+  (Virag's track on a merged Virag+Judit box whose skeleton/face was Judit's). Gallery/handover vetoes (70+15) are
+  the useful part: today's handover child->adult names x6.5-8.2. Proposal (uncommitted, NOT deployed): `age.veto_face`
+  false = face names are not vetoed/revoked by age (`AgeGate.vetoes`); appearance names keep it. Test
+  `test_face_name_is_not_vetoed_by_age`. Not tested: merged-box/switch cases like 63986 now keep the face name until
+  exclusivity or a new face corrects it.
+  DEPLOYED 2026-10-23 19:17 local (user), uncommitted, together with `age.needs_standing` (18:02 entry). Watch:
+  face-named tracks carrying a wrong name after a merge/switch (find_contradictions), gallery/handover vetoes kept.
+- 2026-10-23 19:40: Re-ID gallery runner-up margin measured offline (app.log DEBUG per-person scores 10-17..10-23,
+  1662 gallery namings, 179 with truth from accepted faces / child-adult age vetoes): wrong gallery names are confident
+  (top1 0.70-0.86, margin mostly 0.15-0.36). Margin 0.10 loses 13/157 right names and stops 2/22 wrong (Ati<->Judit:
+  1/9). Rejected. Idea left: tie gallery feed/naming to posture (sofa crops are background-dominated), unmeasured.
+- 2026-10-23 20:40: why Ati/Judit look alike on the sofa. Captured frames 10-23 (06:44-06:47, 15:52-16:03 UTC,
+  1879 face-labelled boxes, live dets+kps, OSNet .pth): with the live box crop another family member scores >= 0.70 on
+  96 % of boxes in the same scene (>= 0.75: 50 %) — the sofa dominates the crop. Masking everything outside the
+  skeleton grey: impostor >= 0.75 5 % (own >= 0.75 97.5 % vs 97.8 %); a tight keypoint crop does not help. Across
+  scenes (morning vs evening) nobody reaches 0.70 with any crop. Wrong gallery names at naming time: 3/6 sitting/lying
+  (right ones 3/19). Proposal: `reid.mask_background` (off by default) + wider offline test (standing/walking, other
+  days) before any gallery rebuild. Report local/health/reports/2026-10-23_2040_reid_crop.md.
+- 2026-10-23 20:19: gallery_cross_person global_64378 (ground_floor 19:37-19:46 local): 15 "Virag" samples closer to
+  Ati; her box sat 65 % inside Ati's (he leaned over her, detected at 0.19-0.37). Offline ByteTrack replay: overlapped
+  at 6 of 7 sample moments, so live isolation and replay disagree — unsettled. Added metrics/reid_feed/ (one record per
+  buffered gallery sample with the box's overlap, `attribution.track_overlaps`), DEPLOYED with the user's OK
+  2026-10-23 evening, uncommitted. Rows 7803-7815 DELETED (user OK; backup on the Jetson
+  data/db-backups/reid_embeddings_7803-7815_2026-10-23.json); none were in the in-memory gallery (newest 10).
+- 2026-10-23 ~21:00: gallery policies on all captures (10-18..23, 2564 face-labelled boxes, local pose; only 120
+  standing): gallery >= 1 h earlier, sitting/unknown queries at 0.70 — live 46 % right / 12 % wrong; standing-only
+  gallery 28 % / 0.7 %; grey background mask 48 % / 33 % (mask REJECTED: grey makes people alike over time, the
+  10-23 in-scene gain does not hold); standing-only + mask 29 % / 0.2 %. Handover (other camera <= 2 min): too few
+  standing labelled boxes (n=11-51) to measure. Candidate: feed the gallery only from standing boxes.
+- 2026-10-23 ~21:10: implemented `reid.gallery_needs_standing` (default true; uncommitted, NOT deployed): gallery
+  samples and appearance-anchor samples only from a standing skeleton (`attribution.posture`), box-only detectors not
+  gated; gallery naming itself unchanged. Starvation check (age samples with posture, 82 face confirmations since
+  13:04): a standing sample within the 10 s anchor window for 53 (Ati 23/33, Judit 19/26, Virag 9/20). Test
+  `test_sitting_box_does_not_feed_the_gallery_or_the_anchors`.
+- 2026-10-23 20:46 local DEPLOYED (user): `reid.gallery_needs_standing` (gallery restarts empty: memory only).
+- 2026-10-23 ~21:30: gallery recheck cost (perf 15:50-20:30: 29.9 ms avg, 17/min, 78/min peak, inside the ~42 ms main
+  loop). `match_new_track` now takes the frame's batch Re-ID (`_fresh_reid`: only an embedding that came with this
+  frame's detection, `LocalTrack.last_reid_fresh`) and reads only the winner's gallery crop, only on a match. Stale
+  embeddings are no longer passed as precomputed (gallery samples too). DEPLOYED 20:53 local (user), uncommitted. Test
+  `tests/test_gallery_recheck_cost.py`. Check `ReIDGallery.recheck` avg ms in the perf stream after deploy.
+- 2026-10-24 08:05 local: process_down. The first `reid_feed` record since the 10-23 20:53 restart carried a
+  float32 `Overlap.max`; `json.dumps` raised TypeError in `DailyJsonlWriter.write` inside the main loop and the
+  system stopped (the 10-23 test used Python floats). Fix (uncommitted): `Overlap.as_dict` casts to float; the
+  writer writes numpy values as plain JSON and drops an unserializable record with a warning, never raises (all
+  metric streams). Test: `test_reid_feed_log.py`. Report: `local/health/reports/2026-10-24_0821.md`.
+- 2026-10-24 08:29 local: ByteTrack swap, ground_floor. Virag walked in front of Ati lying on the sofa; ~0.3 s of
+  low-confidence/partial boxes, then IoU re-associated crosswise (replayed exactly) and Ati's face-named global_64535
+  left with Virag (face corrected it at 08:33). The age veto would have caught this one, but face names are no
+  longer age-vetoed (user: not a general fix, adults can swap too). In the decisive frame the dets' Re-ID is mixed
+  (0.66/0.78 vs 0.50/0.63); posture differed here (lying vs sitting) but is unknown for the occluded/close person and
+  same for two standing people. Fix (uncommitted): post-overlap un-swap in `ByteTracker._check_swaps` (clean Re-ID
+  frozen at the overlap, 3 isolated samples after, crosswise beats straight by > 0.15 -> swap local ids back;
+  `tracking.unswap_margin/samples/overlap`). Real tracker replay 10-23..10-24 (1310 tracks, all cameras): exactly 2
+  un-swaps = the 2 known swaps (10-23 08:41 Judit/Virag 0.60 -> 0.84, today 0.64 -> 0.90); tracks unchanged.
+  Not covered: a track taking over a person who has no track (10-23 08:01; per-track self-check too noisy: pose
+  changes alone drop it to 0.45-0.6). Test `tests/test_tracker_unswap.py` (live boxes, synthetic Re-ID).
+- 2026-10-24 (user idea): "uncertain" tracks. A track overlapping (> 0.15) a confirmed track that lost its box in the
+  last 3 frames (merged into one box) is `LocalTrack.uncertain` until it gives 3 isolated Re-ID samples. Measured
+  first: plain overlap is 28.5 % of track-frames (sofa, minutes) -> unusable as a trigger; "low-confidence box" as
+  trigger 22 %; "lost box" with a stale lost box counting until removal kept 9.9 % of isolated frames uncertain
+  (3-frame window: 2.9 %). Survivor decision (partner never returns: give the box a fresh id when it looks like the
+  partner) checked on audit: 3 right / 2 wrong, not shipped; keeping episodes across lost frames made a false
+  unswap (08:55 10-23, revived track) -> episodes still drop on a missed frame. Effect: no appearance evidence and no
+  zone change/handover from uncertain tracks; face naming not blocked. Replay: unswaps unchanged (the 2 known).
+  Shown in preview ("? ", magenta) and audit records (`uncertain`). Test test_tracker_unswap.py, test_zone_entry_handover.py.
+- 2026-10-24: OC-SORT (boxmot 25.0.0, offline only) vs live ByteTrack on the logged tracker input 10-23 00:00 ..
+  10-24 08:30 UTC, all cameras, same thresholds (det 0.5, IoU 0.3, max_age 60, min_hits 3). Swap metric = the
+  validated un-swap rule applied to each tracker's output (crosswise clean Re-ID beats straight by > 0.15).
+  | tracker | tracks | isolated Re-ID samples | swaps |
+  | ByteTrack (no un-swap) | 1507 | 315561 | 3 (10-23 08:41, 10-24 08:29, 10-24 09:22: all known) |
+  | OC-SORT | 1240 | 310250 | 1 (08:29) |
+  | OC-SORT + BYTE stage | 1230 (-18 %) | 312653 (-0.9 %) | 1 (10-23 08:41) |
+  Not measured: takeovers (a track dies, the other keeps its box), latency on the Jetson. boxmot is AGPL-3.0:
+  port from the MIT reference (noahcao/OC_SORT) instead of vendoring.
+- 2026-10-24: OC-SORT ported into ByteTracker from the MIT reference (OCM `velocity_weight`, OCR
+  `recover_last_observation`, ORU `reupdate_after_occlusion`; all off by default, tests test_ocsort_components.py).
+  Replay 10-23 00:00 .. 10-24 08:30 UTC, all cameras, un-swap off, swap metric as above:
+  | variant | tracks | swaps |
+  | ByteTrack | 1507 | 3 |  | +OCM | 1506 | 2 |  | +OCR | 1190 | 4 (+10-23 08:01 now a swap) |  | +ORU | 1502 | 3 |
+  | +OCM+OCR+ORU | 1187 (-21 %) | 2 (08:41 10-23, 08:29 10-24) |  | same, no duplicate guard | 1174 | 1 |
+  The 08:29 swap comes from the duplicate guard (it kept Virag's track from riding a weak box), but dropping
+  the guard raises nested two-tracks-one-person frames 6460 -> 9315 (+44 %): guard kept. With un-swap on,
+  OCM+OCR+ORU + guard: 1187 tracks, both remaining swaps un-swapped -> 0 left; uncertain 2.9 % of isolated
+  frames (unchanged). Not covered: takeovers (11:01 today replays the same with or without OC-SORT).
+  NMS (`detection.nms_iou_threshold` 0.4) is independent of this (the log is post-NMS); tune it after, with
+  OC-SORT on (OCR could revive lost tracks onto duplicate boxes a looser NMS lets through).
+  Replay tool: `--jobs` (max 4, one process per variant x camera; 12 processes exhausted the dev machine).
+- 2026-10-24 ball play 11:54-12:04 local, 10 min captured frames (6313). Live (OC-SORT + un-swap + uncertain):
+  0 contradictions in 48 audit samples; one crossing swap (12:04:09 living_room, Ati walked past Virag) un-swapped
+  live within 1 s, verified on frames. Same input, old ByteTrack 108 tracks vs OC-SORT 57 (-47 %).
+  NMS sweep: redetect once WITHOUT NMS (PyTorch CPU yolo26m-pose, --reid), then the live suppress_overlapping
+  offline at each IoU; OC-SORT replay, un-swap off for the swap count:
+  | nms_iou | tracks | swaps | nested two-tracks-one-person frames (pairs >= 1 s) | frames with 2 confident persons |
+  | 0.40 (live) | 49 | 1 (12:04:09) | 113 (10) | 3477 |
+  | 0.55 | 50 | 0 | 131 (12) | 3513 |
+  | 0.70 | 49 | 0 | 136 (12) | 3519 |
+  | 0.85 | 49 | 0 | 140 (12) | 3518 |
+  One crossing only: 0.55 kept the passing person's box and avoided the swap, at +16 % nested frames. Not enough
+  to change the live value; re-run on the 10-22/10-23 captures (17k frames) — needs the dev GPU (RTX 3050,
+  driver not installed: CPU redetect ~27 min per 6k frames).
+
+## 2026-10-23 open items at session end
+- Health watch started (`/health-watch`, dedicated session); auto capture not built until an investigation needs it.
+- 2026-10-24: re-measure the narrower door zone offline (2026-10-21 "Follow-up").
+- Log noise: "Person left: X" is logged every frame while a REMOVED track is not yet unregistered (main._log_events).

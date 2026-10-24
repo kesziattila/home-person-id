@@ -377,11 +377,17 @@ class TestPersonZoneState(unittest.TestCase):
         # Set on the underlying IdentificationManager
         self.identity_linker._id_manager._reid_gallery_manager = mock_gallery
 
+        # Named after reid.min_consecutive_matches young-track rechecks (0.5 s apart)
         lt = self._make_local_track(with_crop=True)
-        result = self._process("cam1", [lt])
-
-        # The track should be identified via gallery match
+        t0 = 1_000_000.0
+        with patch("src.recognition.identity_linker.time.time", return_value=t0):
+            result = self._process("cam1", [lt])
         global_id = result.new_global_tracks[0]
+        self.identity_linker.get_track_state(global_id).first_seen = t0
+        for age in (0.6, 1.2):
+            with patch("src.recognition.identity_linker.time.time", return_value=t0 + age):
+                self._process("cam1", [lt], new_ids=[])
+        self.assertEqual(self.identity_linker.get_track_state(global_id).person_id, self.person.id)
 
         # Zone should have been set on Person
         person = self.repository.get_person(self.person.id)

@@ -10,6 +10,7 @@ name on all 17 adult tracks. Age only vetoes; it never names anyone.
 """
 
 import json
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -175,11 +176,11 @@ class TestPersonAges:
 
 
 class TestNaming:
-    def _linker(self, tmp_path, age):
+    def _linker(self, tmp_path, age, **config):
         repo = Repository(str(tmp_path / "test.db"))
         for name in ("Ati", "Judit", "Virag", "Rozika"):
             repo.create_person(name)
-        gate = _gate(age, tmp_path, sample_interval_sec=0.0)
+        gate = _gate(age, tmp_path, sample_interval_sec=0.0, refresh_interval_sec=0.0, **config)
         linker = IdentityLinker(FaceRecognitionConfig(enabled=False), ReIDConfig(enabled=False), repo,
                                 enable_debug_images=False, age_gate=gate)
         return linker, repo
@@ -189,14 +190,31 @@ class TestNaming:
         for _ in range(n):
             linker.process_track("global_1", crop, crop, (0, 0, 80, 200), isolated=True, camera_id="hallway")
 
-    def test_vetoed_person_is_not_named_by_any_method(self, tmp_path):
+    def test_vetoed_person_is_not_named_by_appearance(self, tmp_path):
         linker, _ = self._linker(tmp_path, 7.0)
         self._process(linker, 3)
         state = linker.get_track_state("global_1")
-        for method in (IdMethod.HANDOVER, IdMethod.REID_GALLERY, IdMethod.FACE):
+        for method in (IdMethod.HANDOVER, IdMethod.REID_GALLERY):
             assert state.confirm_identity(2, 0.9, method) is False
         assert state.person_id is None
         assert state.confirm_identity(3, 0.9, IdMethod.FACE) is True and state.person_id == 3
+
+    def test_face_name_is_not_vetoed_by_age(self, tmp_path):
+        """Live 2026-10-23 18:02: Judit half-lying alone on the sofa, face-named (0.48), then
+        revoked by body samples of 7-28 y. A face already tells the child from the adults; of the
+        23 face vetoes 10-20..10-23 ~14 were wrong, the right ones were another person's face on
+        the box (attribution's job). age.veto_face=True restores the old behaviour."""
+        linker, _ = self._linker(tmp_path, 7.0)
+        self._process(linker, 3)
+        state = linker.get_track_state("global_1")
+        assert state.confirm_identity(2, 0.6, IdMethod.FACE) is True     # child samples, adult face
+        self._process(linker, 3)
+        assert state.person_id == 2                                       # not revoked either
+        assert _records(tmp_path, "veto") == []
+
+        linker, _ = self._linker(tmp_path / "strict", 7.0, veto_face=True)
+        self._process(linker, 3)
+        assert linker.get_track_state("global_1").confirm_identity(2, 0.6, IdMethod.FACE) is False
 
     def test_name_contradicted_by_later_samples_is_revoked(self, tmp_path):
         """Judit named before any age sample (e.g. at track birth by the gallery), then
@@ -212,16 +230,66 @@ class TestNaming:
         assert "age" in event.extra_data["reason"]
         assert [r["action"] for r in _records(tmp_path, "veto")] == ["revoked"]
 
-    def test_samples_stop_at_max_and_only_on_isolated_tracks(self, tmp_path):
+    def test_samples_roll_and_body_only_on_isolated_tracks(self, tmp_path):
         linker, _ = self._linker(tmp_path, 33.0)
         crop = np.full((200, 80, 3), 120, np.uint8)
         linker.process_track("global_2", crop, crop, (0, 0, 80, 200), isolated=False)
-        assert linker.get_track_state("global_2").age_samples == []
+        assert linker.get_track_state("global_2").age_samples == []   # no face, overlapped body
         self._process(linker, 10)
         assert len(linker.get_track_state("global_1").age_samples) == AgeConfig().max_samples
         samples = _records(tmp_path, "sample")
-        assert len(samples) == AgeConfig().max_samples and samples[0]["camera_id"] == "hallway"
+        assert len(samples) == 10 and samples[0]["camera_id"] == "hallway"
         assert samples[0]["face"] is False and samples[0]["age"] == 33.0
+
+    def test_switched_box_follows_the_new_occupant(self, tmp_path):
+        """Live 2026-10-23 08:42 (living_room): ByteTrack moved Judit's track onto Virag, who
+        sat inside Ati's box. The track's 7 samples (all Judit, 32.5 y) were never replaced:
+        no more samples after max_samples, and none on an overlapped box -> 138 accepted
+        Virag faces refused by the age veto. Now her owned face samples the overlapped box
+        and the window rolls: the Judit name goes, and Virag's face can name it."""
+        linker, repo = self._linker(tmp_path, [33.0] * 7 + [7.0] * 7, veto_face=True)
+        crop = np.full((200, 80, 3), 120, np.uint8)
+        self._process(linker, 7)
+        state = linker.get_track_state("global_1")
+        assert state.confirm_identity(2, 0.8, IdMethod.REID_GALLERY)
+        assert state.confirm_identity(3, 0.6, IdMethod.FACE) is False   # vetoed: 33 y
+        estimator = linker._age_gate.estimator
+        for _ in range(4):
+            state.last_face_crop, state.last_face_crop_time = crop[:60], time.time()
+            linker.process_track("global_1", crop, crop, (0, 0, 80, 200), isolated=False)
+        assert estimator.calls[-1] == (True, False)                        # face only
+        assert state.person_id is None                                     # Judit revoked
+        assert state.confirm_identity(3, 0.6, IdMethod.FACE) is True
+
+    def test_sitting_or_lying_skeleton_gives_no_age_sample(self, tmp_path):
+        """Live 2026-10-23 11:27: Virag lying on the sofa was face-named and revoked after 7 s
+        (sideways faces 9-24 y); 18:02: Judit half-lying alone on the sofa, face-named, then
+        revoked by 126 body-only samples of 7-28 y. Sitting/lying -> no sample at all;
+        standing (or unknown) samples face + body."""
+        linker, _ = self._linker(tmp_path, 7.0)
+        estimator = linker._age_gate.estimator
+        crop = np.full((200, 80, 3), 120, np.uint8)
+        state = linker.register_track("global_1")
+        for kps, isolated, expected in ((_skeleton("lying"), True, None),
+                                        (_skeleton("sitting"), True, None),
+                                        (_skeleton("standing"), True, (True, True)),
+                                        (None, True, (True, True))):
+            n = len(estimator.calls)
+            state.last_face_crop, state.last_face_crop_time = crop[:60], time.time()
+            linker.process_track("global_1", crop, crop, (0, 0, 80, 200), isolated=isolated, keypoints=kps)
+            assert (estimator.calls[-1] if len(estimator.calls) > n else None) == expected
+        assert [r["posture"] for r in _records(tmp_path, "sample")] == ["standing", None]
+
+
+def _skeleton(pose: str) -> np.ndarray:
+    """COCO keypoints (17, 3) of a standing, sitting or lying person."""
+    k = np.zeros((17, 3))
+    pts = {"standing": {5: (40, 50), 6: (60, 50), 11: (42, 110), 12: (58, 110), 13: (42, 150), 14: (58, 150)},
+           "sitting": {5: (40, 50), 6: (60, 50), 11: (42, 110), 12: (58, 110), 13: (90, 112), 14: (95, 115)},
+           "lying": {5: (40, 100), 6: (40, 115), 11: (120, 102), 12: (120, 117), 13: (160, 104), 14: (160, 118)}}[pose]
+    for i, (x, y) in pts.items():
+        k[i] = (x, y, 0.9)
+    return k
 
 
 def test_real_model_tells_the_child_from_the_adults():

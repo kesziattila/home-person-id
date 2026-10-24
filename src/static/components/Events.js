@@ -155,7 +155,7 @@ export default {
             eventTypeOptions: [
                 'track_created', 'track_recovered', 'track_lost', 'track_archived',
                 'face_match', 'reid_match', 'id_upgraded', 'person_zone_change',
-                'cross_camera_propagation', 'unidentified_face_saved',
+                'cross_camera_propagation', 'zone_entry_handover', 'unidentified_face_saved',
                 'reid_gallery_updated', 'vlm_activity', 'camera_scene', 'house_overview',
             ],
             cameraOptions: [],

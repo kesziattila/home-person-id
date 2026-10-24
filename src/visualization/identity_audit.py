@@ -9,7 +9,8 @@ immediately when a track's label changes (new identity, renamed, lost name).
 
 Layout under `metrics.path`:
 - `audit/YYYY-MM-DD.jsonl` — one record per sample (tracks, labels, methods,
-  scores, normalized bboxes, image paths relative to `metrics.path`)
+  scores, `uncertain` (LocalTrack.uncertain: merged with another box, not separated
+  yet), normalized bboxes, image paths relative to `metrics.path`)
 - `audit_frames/YYYY-MM-DD/<HHMMSS_mmm>_<camera>.jpg` (+ `_t<local_id>.jpg` crops)
 
 Pulled by `scripts/remote/fetch_audit.sh`, reviewed with `tools/audit_sheet.py`
@@ -127,10 +128,12 @@ class IdentityAuditSampler:
                 "confidence": round(float(getattr(identity, "confidence", 0.0) or 0.0), 3),
                 "face_info": getattr(identity, "face_info", None),
                 "changed": labels[t.track_id] != previous.get(t.track_id),
+                "uncertain": bool(getattr(t, "uncertain", False)),
                 "bbox": [round(x1 / frame_w, 4), round(y1 / frame_h, 4),
                          round(x2 / frame_w, 4), round(y2 / frame_h, 4)],
             })
-            snap_tracks.append(SimpleNamespace(track_id=t.track_id, bbox=(x1, y1, x2, y2)))
+            snap_tracks.append(SimpleNamespace(track_id=t.track_id, bbox=(x1, y1, x2, y2),
+                                               uncertain=bool(getattr(t, "uncertain", False))))
             if identity is not None:
                 snap_identities[t.track_id] = copy.copy(identity)
 

@@ -10,6 +10,15 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 
+def _plain(o):
+    """numpy scalars/arrays (e.g. a float32 overlap) as plain JSON values."""
+    if hasattr(o, "item") and getattr(o, "ndim", 1) == 0:
+        return o.item()
+    if hasattr(o, "tolist"):
+        return o.tolist()
+    raise TypeError(f"Object of type {o.__class__.__name__} is not JSON serializable")
+
+
 class DailyJsonlWriter:
     """Writes one JSON object per line to `<dir>/YYYY-MM-DD.jsonl` (UTC day).
 
@@ -25,10 +34,18 @@ class DailyJsonlWriter:
         self._pruned_for_day: Optional[str] = None
 
     def write(self, record: dict, ts: datetime) -> bool:
-        """Append `record` (with an ISO `ts` field added first) to the file of `ts`'s UTC day."""
+        """Append `record` (with an ISO `ts` field added first) to the file of `ts`'s UTC day.
+
+        Never raises: a metric is not worth the main loop (live 2026-10-24 08:05: a float32 in a
+        reid_feed record raised TypeError and stopped the whole system)."""
         ts = ts.astimezone(timezone.utc)
         day = ts.strftime("%Y-%m-%d")
-        line = json.dumps({"ts": ts.isoformat(timespec="milliseconds"), **record}, separators=(",", ":"))
+        try:
+            line = json.dumps({"ts": ts.isoformat(timespec="milliseconds"), **record},
+                              separators=(",", ":"), default=_plain)
+        except (TypeError, ValueError) as e:
+            logger.warning(f"Metrics record for {self.dir} not serializable, dropped: {e}")
+            return False
         with self._lock:
             try:
                 with open(self.dir / f"{day}.jsonl", "a") as f:

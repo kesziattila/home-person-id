@@ -13,6 +13,7 @@ class TrackRenderer:
     COLOR_UNIDENTIFIED = (0, 255, 0)         # Green for unidentified
     COLOR_MULTI_CAMERA = (0, 255, 255)       # Yellow for multi-camera
     COLOR_STATIONARY = (0, 200, 255)         # Orange for stationary
+    COLOR_UNCERTAIN = (255, 0, 255)          # Magenta: whose box it is is open (LocalTrack.uncertain)
 
     def __init__(self, zone_manager: Optional[ZoneManager] = None):
         """Initialize track renderer.
@@ -33,6 +34,7 @@ class TrackRenderer:
         stationary_time: Optional[int] = None,
         cameras_seen: Optional[list[str]] = None,
         show_reid_score: bool = True,
+        uncertain: bool = False,
     ) -> tuple[str, tuple[int, int, int]]:
         """Get label and color for a track.
 
@@ -46,6 +48,7 @@ class TrackRenderer:
             stationary_time: Seconds stationary (None if not stationary)
             cameras_seen: List of cameras this track has been seen on
             show_reid_score: Whether to show Re-ID score for unidentified tracks
+            uncertain: The box merged with another one and has not separated yet ("?" + magenta)
 
         Returns:
             Tuple of (label, color)
@@ -109,6 +112,10 @@ class TrackRenderer:
             if not identity.person_name:
                 color = self.COLOR_STATIONARY
 
+        if uncertain:
+            label = f"? {label}"
+            color = self.COLOR_UNCERTAIN
+
         return label, color
 
     def draw_track(
@@ -130,6 +137,21 @@ class TrackRenderer:
         cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
         cv2.putText(frame, label, (x1, y1 - 10),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+    # COCO keypoint pairs: face, arms, torso, legs
+    SKELETON = ((0, 1), (0, 2), (1, 3), (2, 4), (5, 6), (5, 7), (7, 9), (6, 8), (8, 10),
+                (5, 11), (6, 12), (11, 12), (11, 13), (13, 15), (12, 14), (14, 16))
+    KEYPOINT_MIN_CONF = 0.5
+
+    def draw_skeleton(self, frame: np.ndarray, keypoints: np.ndarray, color: tuple[int, int, int]):
+        """Draw a pose detector skeleton ((17, 3) x, y, conf in frame px); weak points are skipped."""
+        ok = keypoints[:, 2] >= self.KEYPOINT_MIN_CONF
+        pts = keypoints[:, :2].astype(int)
+        for a, b in self.SKELETON:
+            if ok[a] and ok[b]:
+                cv2.line(frame, tuple(pts[a]), tuple(pts[b]), color, 2)
+        for i in np.flatnonzero(ok):
+            cv2.circle(frame, tuple(pts[i]), 4 if i < 5 else 3, (0, 255, 255) if i < 5 else color, -1)
 
 
 class ZoneRenderer:
