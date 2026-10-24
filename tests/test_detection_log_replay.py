@@ -192,3 +192,34 @@ def test_overrides_reach_detection_and_reid_sections():
                                         "reid.use_tensorrt_native=False", "detection.confidence_threshold=0.1"])
     assert config.detection.model == "yolo26m.pt" and config.detection.confidence_threshold == 0.1
     assert config.detection.use_tensorrt_native is False and config.reid.use_tensorrt_native is False
+
+
+def test_frame_reader_keeps_record_order_and_yields_none_for_missing(tmp_path):
+    """FrameReader prefetches on a thread in batches; order and gaps must match the records."""
+    import cv2
+    import numpy as np
+    from tools.redetect import FrameReader
+    paths = []
+    for i in range(5):
+        p = tmp_path / f"{i}.jpg"
+        cv2.imwrite(str(p), np.full((40, 60, 3), i * 40, np.uint8))
+        paths.append(p)
+    paths.insert(2, None)
+    paths.append(tmp_path / "missing.jpg")
+    images = list(FrameReader(paths, gpu=False, batch=2))
+    assert [None if im is None else int(im[0, 0, 0] / 40 + 0.5) for im in images] == [0, 1, None, 2, 3, 4, None]
+
+
+def test_gpu_decode_matches_opencv_within_jpeg_rounding(tmp_path):
+    import cv2
+    import numpy as np
+    import pytest
+    torch = pytest.importorskip("torch")
+    if not torch.cuda.is_available():
+        pytest.skip("no CUDA")
+    from tools.redetect import FrameReader
+    rng = np.random.default_rng(0)
+    p = tmp_path / "a.jpg"
+    cv2.imwrite(str(p), cv2.GaussianBlur(rng.integers(0, 255, (120, 200, 3), dtype=np.uint8), (9, 9), 3))
+    gpu, cpu = list(FrameReader([p], gpu=True))[0], cv2.imread(str(p))
+    assert gpu.shape == cpu.shape and np.abs(gpu.astype(int) - cpu.astype(int)).mean() < 2.0

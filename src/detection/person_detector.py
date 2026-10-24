@@ -107,20 +107,21 @@ class DetectionResult:
 
     detections: list[Detection]
     frame_shape: tuple[int, int, int]  # (height, width, channels)
+    # Boxes the class-agnostic NMS removed (suppress_overlapping). Not tracker input; logged
+    # (detection log `nms_dropped`) so NMS variants can be replayed offline on any day
+    suppressed: list[Detection] = field(default_factory=list)
 
     def excluding_zones(self, zones: Optional[list]) -> "DetectionResult":
         """Drop detections an exclusion zone excludes (`ExclusionZone.excludes`, normalized 0-1)."""
         if not zones:
             return self
         h, w = self.frame_shape[:2]
-        kept = [
-            d for d in self.detections
-            if not any(
-                z.excludes(d.bbox[0] / w, d.bbox[1] / h, d.bbox[2] / w, d.bbox[3] / h)
-                for z in zones
-            )
-        ]
-        return DetectionResult(detections=kept, frame_shape=self.frame_shape)
+
+        def outside(dets: list[Detection]) -> list[Detection]:
+            return [d for d in dets if not any(
+                z.excludes(d.bbox[0] / w, d.bbox[1] / h, d.bbox[2] / w, d.bbox[3] / h) for z in zones)]
+        return DetectionResult(detections=outside(self.detections), frame_shape=self.frame_shape,
+                               suppressed=outside(self.suppressed))
 
     @property
     def count(self) -> int:
@@ -278,10 +279,7 @@ class PersonDetector:
 
         # Same class-agnostic NMS as the TensorRT path: end-to-end YOLO26 ignores `iou=` (offline
         # redetect 2026-10-22: without it 311 vs 7 frames with 3 "persons", 24 vs 7 duplicate births)
-        return DetectionResult(
-            detections=suppress_overlapping(detections, self.nms_iou_threshold),
-            frame_shape=frame.shape,
-        )
+        return apply_nms(detections, self.nms_iou_threshold, frame.shape)
 
     def warmup(self, frame_shape: tuple[int, int, int] = (1080, 1920, 3)) -> None:
         """Warm up the model with a dummy inference.
@@ -294,6 +292,14 @@ class PersonDetector:
         dummy_frame = np.zeros(frame_shape, dtype=np.uint8)
         self.detect(dummy_frame)
         logger.info(f"Person detector warmed up with shape {frame_shape}")
+
+
+def apply_nms(detections: list[Detection], iou_threshold: float, frame_shape: tuple) -> DetectionResult:
+    """The detector's result after class-agnostic NMS, keeping what it removed in `suppressed`."""
+    kept = suppress_overlapping(detections, iou_threshold)
+    kept_ids = {id(d) for d in kept}
+    return DetectionResult(detections=kept, frame_shape=frame_shape,
+                           suppressed=[d for d in detections if id(d) not in kept_ids])
 
 
 def suppress_overlapping(detections: list[Detection], iou_threshold: float) -> list[Detection]:
@@ -475,7 +481,7 @@ class _TensorRTPersonDetectorImpl:
         with profiler.measure("PersonDetector.postprocess"):
             detections = self._postprocess(outputs[0], frame.shape[:2])
 
-        return DetectionResult(detections=detections, frame_shape=frame.shape)
+        return apply_nms(detections, self.nms_iou_threshold, frame.shape)
 
     def _postprocess(self, output: np.ndarray, orig_shape: tuple[int, int]) -> list[Detection]:
         """Postprocess YOLO output with baked-in NMS."""
@@ -514,7 +520,7 @@ class _TensorRTPersonDetectorImpl:
                 )
             )
 
-        return suppress_overlapping(detections, self.nms_iou_threshold)
+        return detections
 
     def warmup(self, frame_shape: tuple[int, int, int] = (1080, 1920, 3)) -> None:
         """Warm up the engine."""

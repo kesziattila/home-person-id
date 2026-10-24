@@ -26,6 +26,7 @@ from src.recognition.unidentified_face_manager import UnidentifiedFaceManager
 from src.stream.manager import StreamManager
 from src.tracking.byte_tracker import ByteTrackerManager
 from src.tracking.detection_log import DetectionLog, FrameCapture
+from src.tracking.event_capture import EventCapture, trigger_reasons
 from src.tracking.global_tracker import GlobalTrackManager, GlobalTrackingResult
 from src.tracking.stationary_tracker import StationaryTracker
 from src.tracking.zone_manager import ZoneManager
@@ -136,9 +137,19 @@ class PersonIDSystem:
                          with_reid=metrics.detection_log_reid,
                          capture=FrameCapture(detections_dir, int(metrics.frame_capture_max_gb * 1e9),
                                               metrics.frame_capture_retention_days)
-                         if metrics.frame_capture_max_gb > 0 else None)
+                         if metrics.frame_capture_max_gb > 0 else None,
+                         events=EventCapture(
+                             detections_dir, Path(metrics.path), metrics.retention_days,
+                             metrics.frame_capture_retention_days, scale=metrics.event_capture_scale,
+                             pre_sec=metrics.event_capture_pre_sec, post_sec=metrics.event_capture_post_sec,
+                             max_event_sec=metrics.event_capture_max_event_sec,
+                             cooldown_sec=metrics.event_capture_cooldown_sec,
+                             max_bytes=int(metrics.event_capture_max_gb * 1e9))
+                         if metrics.event_capture_enabled else None)
             if metrics.detection_log_enabled else None
         )
+        # per camera: uncertain local track ids and live track count of the previous update
+        self._event_state: dict[str, tuple[set, int]] = {}
         self.stationary_tracker = StationaryTracker(self.config.tracking.stationary_timeout)
         self.zone_manager = ZoneManager(self.config.zones)
         self._identity_audit = (
@@ -175,6 +186,9 @@ class PersonIDSystem:
                         if self.config.metrics.naming_log_enabled else None),
             reid_feed_log=(DailyJsonlWriter(Path(self.config.metrics.path) / "reid_feed", self.config.metrics.retention_days)
                            if self.config.metrics.reid_feed_log_enabled else None),
+            gallery_scores_log=(DailyJsonlWriter(Path(self.config.metrics.path) / "gallery_scores",
+                                                 self.config.metrics.retention_days)
+                                if self.config.metrics.gallery_scores_log_enabled else None),
         )
 
         # Initialize debug overlay (optional)
@@ -587,6 +601,14 @@ class PersonIDSystem:
             )
         if self._track_event_writer and track_result.association_events:
             self._write_track_events(camera_id, track_result.association_events, result.timestamp)
+        events = self._detection_log.events if self._detection_log else None
+        if events is not None:
+            previous_uncertain, previous_live = self._event_state.get(camera_id, (set(), 0))
+            for reason in trigger_reasons(track_result.tracks, track_result.association_events,
+                                          previous_uncertain, previous_live):
+                events.trigger(camera_id, result.timestamp, reason)
+            self._event_state[camera_id] = ({t.track_id for t in track_result.tracks if t.uncertain},
+                                            sum(1 for t in track_result.tracks if t.time_since_update == 0))
 
         # 3. Update stationary state
         current_time = result.timestamp

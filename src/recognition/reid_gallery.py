@@ -202,6 +202,7 @@ class MatchResult:
     best_person_name: Optional[str] = None  # Best match even if below threshold
     best_score: float = 0.0
     db_id: Optional[int] = None  # Reference to reid_embeddings.id of the matched embedding
+    scores: dict[str, float] = field(default_factory=dict)  # every gallery person's score
 
 
 class ReIDGalleryManager:
@@ -519,6 +520,7 @@ class ReIDGalleryManager:
 
         for person_name, entry in self._gallery.items():
             score, _, db_id = entry.match(embedding, load_crop=False)
+            result.scores[person_name] = float(score)
             logger.debug(
                 f"  gallery '{person_name}': score={score:.3f}, "
                 f"embeddings={len(entry.entries)}"

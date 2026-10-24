@@ -14,6 +14,7 @@ from filterpy.kalman import KalmanFilter
 
 from src.config import TrackingConfig
 from src.detection.person_detector import Detection, DetectionResult
+from src.tracking import body_signature
 from src.tracking.attribution import APPEARANCE_EMA_ALPHA, overlap_of_smaller, update_appearance
 from src.tracking.track import LocalTrack, TrackState
 from src.utils.embedding_utils import l2_normalize
@@ -288,7 +289,7 @@ class AssociationEvent:
     means a duplicate detection.
     """
 
-    kind: str  # "birth" | "revive" | "dup_skip" | "unswap"
+    kind: str  # "birth" | "revive" | "dup_skip" | "unswap" | "body_check" | "body" (a removed track's signature)
     camera_id: str
     track_id: Optional[int]  # local track id (dup_skip: the track that would have revived)
     stage: Optional[int]  # association stage that produced it (1 = high conf, 2 = low conf)
@@ -304,6 +305,15 @@ class _OverlapEpisode:
     pre: dict[int, np.ndarray]                                  # tracker id -> clean appearance at overlap start
     post: dict[int, np.ndarray] = field(default_factory=dict)   # tracker id -> EMA of isolated samples since
     samples: dict[int, int] = field(default_factory=dict)
+
+
+@dataclass
+class _BodyEpisode:
+    """A merge-loss under body-signature watch (shadow): signatures before, when both were live again."""
+
+    pre: dict[int, np.ndarray]          # tracker id -> body signature before the merge
+    merged_at: int                      # frame number
+    back_at: Optional[int] = None       # frame both were live again (post samples count from here)
 
 
 # A partner counts as merged into the other box only right after it lost its own: replay
@@ -354,6 +364,10 @@ class ByteTracker:
         self._episodes: dict[tuple[int, int], _OverlapEpisode] = {}
         # tracker id -> isolated Re-ID samples an uncertain track gave since its last merge
         self._settle: dict[int, int] = {}
+        # (tracker id, tracker id) -> merge-loss awaiting the body-signature check (shadow)
+        self._body_episodes: dict[tuple[int, int], _BodyEpisode] = {}
+        model = config.body_height_model.get(camera_id)
+        self._height_model = body_signature.HeightModel.from_list(model) if model else None
 
     def update(
         self,
@@ -497,6 +511,11 @@ class ByteTracker:
                 if track.time_since_update > self.config.track_buffer:
                     track.state = TrackState.REMOVED
                     removed_track_ids.append(track.track_id)
+                    if self.config.body_check and track.body.count:
+                        signature = track.body.signature(min_samples=1)
+                        events.append(self._track_event("body", track, frame_shape, {
+                            "n": track.body.count,
+                            "signature": [None if np.isnan(v) else round(float(v), 3) for v in signature]}))
                 elif track.state == TrackState.TRACKED:
                     track.state = TrackState.LOST
                     lost_track_ids.append(track.track_id)
@@ -512,6 +531,7 @@ class ByteTracker:
                     break
 
         self._check_swaps(events, frame_shape)
+        self._check_bodies(events, frame_shape)
 
         # Get active tracks
         active_tracks = [
@@ -648,6 +668,79 @@ class ByteTracker:
                     self._swap_ids(self._tracks[a], self._tracks[b], straight, cross, events, frame_shape)
         self._settle = {k: n for k, n in self._settle.items() if k in self._tracks}
 
+    def _check_bodies(self, events: list[AssociationEvent], frame_shape: tuple) -> None:
+        """Collect body-signature samples and judge merge-losses by them, SHADOW only (~0.1 ms):
+        a `body_check` event says whether the two would be swapped back; nothing is changed.
+
+        Sample: a live confirmed track whose box overlaps no other confirmed box (live, or lost
+        <= MERGE_FRAMES ago) > unswap_overlap, standing (body_signature.features). Merge-loss: the same
+        condition as `uncertain` (a confirmed track lost its box <= MERGE_FRAMES ago while overlapping a
+        live one); pre = each track's signature over the body_window_frames before. After both are live
+        again: decided once each has body_post_samples samples (or at the window end with >= 3);
+        would_swap = bodies apart >= body_min_apart and straight - crosswise >= body_margin.
+        """
+        cfg = self.config
+        if not cfg.body_check:
+            return
+        frame = self._frame_count
+        tracks = {k: t for k, t in self._tracks.items() if t.is_confirmed}
+        live = {k for k, t in tracks.items() if t.time_since_update == 0 and t.state == TrackState.TRACKED}
+        isolated = set(live)
+        keys = list(tracks)
+        for i, ka in enumerate(keys):
+            for kb in keys[i + 1:]:
+                a, b = tracks[ka], tracks[kb]
+                if overlap_of_smaller(a.bbox, b.bbox) <= cfg.unswap_overlap:
+                    continue
+                if ka in live and kb in live:
+                    isolated -= {ka, kb}
+                    continue
+                if max(a.time_since_update, b.time_since_update) > MERGE_FRAMES:
+                    continue                  # a stale lost box: says nothing
+                isolated -= {ka, kb}
+                pair = (ka, kb) if ka < kb else (kb, ka)
+                if pair not in self._body_episodes:
+                    since = frame - cfg.body_window_frames
+                    pre = {k: tracks[k].body.signature(since) for k in pair}
+                    if all(s is not None for s in pre.values()):
+                        self._body_episodes[pair] = _BodyEpisode(pre=pre, merged_at=frame)
+        for k in isolated:
+            track = tracks[k]
+            f = body_signature.features(track.last_keypoints, track.bbox, frame_shape, self._height_model)
+            if f is not None:
+                track.body.add(frame, f)
+
+        sd = body_signature.scales(self._height_model)
+        for pair, episode in list(self._body_episodes.items()):
+            a, b = pair
+            if a not in tracks or b not in tracks:
+                del self._body_episodes[pair]
+                continue
+            if episode.back_at is None:
+                if a not in live or b not in live:
+                    continue                  # the lost one is removed after track_buffer
+                episode.back_at = frame       # later short losses do not restart "after" (play: frequent)
+            counts = [sum(1 for n, _ in tracks[k].body.samples if n > episode.back_at) for k in pair]
+            window_over = frame - episode.back_at >= cfg.body_window_frames
+            if min(counts) < cfg.body_post_samples and not (window_over and min(counts) >= 3):
+                if window_over:
+                    del self._body_episodes[pair]
+                continue
+            del self._body_episodes[pair]
+            pre, post = episode.pre, {k: tracks[k].body.signature(episode.back_at) for k in pair}
+            dist = lambda x, y: body_signature.distance(x, y, sd)
+            apart = dist(pre[a], pre[b])
+            straight = (dist(post[a], pre[a]) + dist(post[b], pre[b])) / 2
+            cross = (dist(post[a], pre[b]) + dist(post[b], pre[a])) / 2
+            would_swap = bool(apart >= cfg.body_min_apart and straight - cross >= cfg.body_margin)
+            if would_swap:
+                logger.info(f"[{self.camera_id}] Body check: tracks {tracks[a].track_id} / {tracks[b].track_id} "
+                            f"look swapped (apart {apart:.2f}, straight {straight:.2f}, crosswise {cross:.2f}) — shadow")
+            r = lambda v: None if np.isnan(v) else round(float(v), 3)
+            events.append(self._track_event("body_check", tracks[a], frame_shape, {
+                "track_id": tracks[b].track_id, "apart": r(apart), "straight": r(straight), "cross": r(cross),
+                "would_swap": would_swap, "n": counts, "frames_since_merge": frame - episode.merged_at}))
+
     def _swap_ids(self, a: LocalTrack, b: LocalTrack, straight: float, cross: float,
                   events: list[AssociationEvent], frame_shape: tuple) -> None:
         """Give each box the other's id (identity follows the person; Kalman state stays with the box)."""
@@ -657,6 +750,7 @@ class ByteTracker:
         for track in (a, b):
             # the appearance EMA absorbed the overlap: restart it from the clean one, unsettled
             track.appearance, track.appearance_changed_at = track.clean_appearance, now
+            track.body = body_signature.BodySamples()     # samples of both people: start over
         logger.info(f"[{self.camera_id}] Un-swapped tracks {a.track_id} <-> {b.track_id} after overlap "
                     f"(straight {straight:.2f}, crosswise {cross:.2f})")
         for track, other in ((a, b), (b, a)):

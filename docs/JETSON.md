@@ -329,6 +329,15 @@ Performance Report. Each gallery image is estimated once (~50 ms) and stored in
 
 ---
 
+## Event Capture Memory (2026-10-24)
+
+`metrics.event_capture_enabled` keeps the last `event_capture_pre_sec` (5 s) of every camera in RAM
+at `event_capture_scale` (0.5): at ~20 processed frames/s over all cameras that is ~100 frames x
+~3 MB (1344x760 BGR) ≈ 300 MB of the 7.6 GB unified memory. Measured on the Orin Nano Super: the
+downscale costs ~0.9 ms per frame on the main thread; JPEG (half frame) ~12 ms with cv2 or nvJPEG,
+only for event frames, in a background thread. Turn it off at runtime with
+`touch data/metrics/detections/event_capture_off` (no restart), or in the config.
+
 ## Configuration Differences
 
 ### Key Jetson-Optimized Settings

@@ -8,7 +8,7 @@ detection.nms_iou_threshold entirely. Boxes of two people side by side
 
 import numpy as np
 
-from src.detection.person_detector import Detection, _TensorRTPersonDetectorImpl, suppress_overlapping
+from src.detection.person_detector import Detection, _TensorRTPersonDetectorImpl, apply_nms, suppress_overlapping
 
 
 def _d(box, conf):
@@ -30,7 +30,9 @@ def test_child_inside_adult_box_survives():
     assert suppress_overlapping([adult, child], 0.4) == [adult, child]
 
 
-def test_tensorrt_postprocess_applies_nms():
+def test_tensorrt_output_after_nms_keeps_what_it_removed():
+    """The TensorRT path decodes every engine box, then `apply_nms` (as in detect()) keeps the tracker
+    input and records the removed duplicate in `suppressed` (logged as `nms_dropped`)."""
     impl = _TensorRTPersonDetectorImpl("unused.engine", confidence_threshold=0.15, nms_iou_threshold=0.4)
     impl._scale, impl._pad_w, impl._pad_h = 1.0, 0, 0
     output = np.array([
@@ -38,5 +40,6 @@ def test_tensorrt_postprocess_applies_nms():
         [101, 99, 222, 402, 0.70, 0],    # duplicate of the first
         [500, 100, 620, 400, 0.80, 0],   # another person
     ], dtype=np.float32)
-    kept = impl._postprocess(output, (1000, 1000))
-    assert sorted(round(d.confidence, 2) for d in kept) == [0.8, 0.9]
+    result = apply_nms(impl._postprocess(output, (1000, 1000)), impl.nms_iou_threshold, (1000, 1000, 3))
+    assert sorted(round(d.confidence, 2) for d in result.detections) == [0.8, 0.9]
+    assert [round(d.confidence, 2) for d in result.suppressed] == [0.7]

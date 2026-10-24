@@ -49,6 +49,8 @@ from tools.analyze_track_events import load_events, summarize
 APPEARANCE_BREAK_SIM = 0.45
 # 12 workers each holding a day of records exhausted the dev machine (2026-10-24)
 MAX_JOBS = 4
+CHUNK_FRAMES = 20000    # frames per worker task (independent segments grouped)
+_WORKER_RECORDS: dict[tuple, list[dict]] = {}
 APPEARANCE_WINDOW = 10
 
 
@@ -75,6 +77,18 @@ def variants(sets: list[str], sweeps: list[str]) -> list[dict]:
 
 def replay(records: list[dict], config: TrackingConfig, breaks: Optional[list] = None) -> dict[str, dict]:
     """Run ByteTrack per (session, camera) over the records; per-camera outcome."""
+    stats, events = _replay_core(records, config, breaks)
+    return _report(stats, events)
+
+
+def _report(stats: dict[str, dict], events: list[dict]) -> dict[str, dict]:
+    summary = summarize(events)
+    return {camera: {**s, **summary.get(camera, {})} for camera, s in stats.items()}
+
+
+def _replay_core(records: list[dict], config: TrackingConfig,
+                 breaks: Optional[list] = None) -> tuple[dict[str, dict], list[dict]]:
+    """Additive per-camera counters and the association events of one run over `records`."""
     trackers: dict[tuple[str, str], ByteTracker] = {}
     events: list[dict] = []
     stats: dict[str, dict] = defaultdict(lambda: {
@@ -111,16 +125,65 @@ def replay(records: list[dict], config: TrackingConfig, breaks: Optional[list] =
             history.append(emb)
             del history[:-APPEARANCE_WINDOW]
         events.extend(dataclasses.asdict(e) for e in result.association_events)
-    summary = summarize(events)
-    return {camera: {**s, **summary.get(camera, {})} for camera, s in stats.items()}
+    return dict(stats), events
 
 
-def _replay_camera(metrics: Path, since: Optional[str], until: Optional[str], camera: str,
-                   config: TrackingConfig) -> tuple[dict, list]:
-    """One (variant, camera) replay in a worker process (~6-7 s per logged hour of all cameras)."""
+def segments(records: list[dict], empty_frames: int) -> list[tuple[int, int]]:
+    """Index ranges [start, end) that replay independently: a cut after `empty_frames` consecutive
+    frames without detections (every track has been removed by then: track_buffer + 1) or at a
+    session change (the live tracker restarted). Same result as one run, but parallelizable."""
+    cuts, empty, session = [0], 0, records[0].get("session", "") if records else ""
+    for i, record in enumerate(records):
+        if record.get("session", "") != session and i > cuts[-1]:
+            cuts.append(i)
+            empty = 0
+        session = record.get("session", "")
+        empty = empty + 1 if not record["dets"] else 0
+        if empty == empty_frames and i + 1 > cuts[-1]:
+            cuts.append(i + 1)
+    return [(a, b) for a, b in zip(cuts, cuts[1:] + [len(records)]) if b > a]
+
+
+def _chunks(spans: list[tuple[int, int]], target: int) -> list[list[tuple[int, int]]]:
+    """Group consecutive segments into chunks of about `target` frames (one worker task each)."""
+    out, cur, n = [], [], 0
+    for a, b in spans:
+        cur.append((a, b))
+        n += b - a
+        if n >= target:
+            out.append(cur)
+            cur, n = [], 0
+    return out + ([cur] if cur else [])
+
+
+def _replay_chunk(detections: Path, since: Optional[str], until: Optional[str], camera: str,
+                  spans: list[tuple[int, int]], config: TrackingConfig) -> tuple[dict, list, list]:
+    """Replay some independent segments of one camera in a worker process (~6-7 s per logged hour
+    of all cameras, single-threaded)."""
+    key = (str(detections), camera, since, until)
+    if key not in _WORKER_RECORDS:                  # a worker keeps its last camera's records
+        _WORKER_RECORDS.clear()
+        _WORKER_RECORDS[key] = detection_log.load_camera(detections, camera, since, until)
+    records = _WORKER_RECORDS[key]
+    stats: dict[str, dict] = {}
+    events: list[dict] = []
     breaks: list = []
-    records = list(detection_log.load(metrics / "detections", since, until, camera))
-    return replay(records, config, breaks), breaks
+    for a, b in spans:
+        s, e = _replay_core(records[a:b], config, breaks)
+        for cam, counters in s.items():
+            total = stats.setdefault(cam, dict.fromkeys(counters, 0))
+            for k, v in counters.items():
+                total[k] += v
+        events += e
+    return stats, events, breaks
+
+
+def _cameras(detections: Path, since: Optional[str], until: Optional[str], camera: Optional[str]) -> list[str]:
+    if camera:
+        return [camera]
+    names = {p.name.split(".")[1] for p in (detections / ".cache").glob("*.pkl")
+             if not (since and p.name[:10] < since[:10] or until and p.name[:10] > until[:10])}
+    return sorted(names)
 
 
 def _row(label: str, r: dict) -> str:
@@ -153,15 +216,26 @@ def main():
     if args.config:
         from src.config import load_config
         base = load_config(str(args.config)).tracking
-    # stream once for the window summary; the workers load their own camera's records
-    n_frames, first, last, cameras = 0, None, None, set()
-    for record in detection_log.load(args.metrics / "detections", args.since, args.until, args.camera):
-        n_frames += 1
-        first, last = first or record["ts"], record["ts"]
-        cameras.add(record["camera_id"])
+    detections = args.metrics / "detections"
+    detection_log.build_cache(detections, args.since, args.until)       # once, before the workers
+    all_variants = variants(args.set, args.sweep)
+    # a cut must hold for every variant: the longest track_buffer decides
+    empty_frames = max(dataclasses.replace(base, **o).track_buffer for o in all_variants) + 1
+    plan: dict[str, list[list[tuple[int, int]]]] = {}
+    n_frames, first, last = 0, None, None
+    for camera in _cameras(detections, args.since, args.until, args.camera):
+        records = detection_log.load_camera(detections, camera, args.since, args.until)
+        if not records:
+            continue
+        n_frames += len(records)
+        first = min(first or records[0]["ts"], records[0]["ts"])
+        last = max(last or records[-1]["ts"], records[-1]["ts"])
+        plan[camera] = _chunks(segments(records, empty_frames), CHUNK_FRAMES)
+        del records
     if not n_frames:
         raise SystemExit("no detection log records in the window")
-    print(f"{n_frames} frames {first} .. {last}  base: {dataclasses.asdict(base)}")
+    n_tasks = sum(len(c) for c in plan.values()) * len(all_variants)
+    print(f"{n_frames} frames {first} .. {last}  base: {dataclasses.asdict(base)}  ({n_tasks} tasks)")
 
     live: Optional[dict] = None
     if args.track_events:
@@ -169,20 +243,26 @@ def main():
                        if first <= e["ts"] <= last]
         live = summarize(live_events)
 
-    cameras = sorted(cameras)
-    tasks = [(",".join(f"{k}={v}" for k, v in o.items()) or "base", o, cam)
-             for o in variants(args.set, args.sweep) for cam in cameras]
-    results: dict[str, dict] = {label: {} for label, _, _ in tasks}
+    # camera-major order: consecutive tasks of a worker tend to reuse its loaded camera
+    tasks = [(",".join(f"{k}={v}" for k, v in o.items()) or "base", o, cam, spans)
+             for cam, chunks in plan.items() for spans in chunks for o in all_variants]
+    merged: dict[str, tuple[dict, list]] = {}
     with ProcessPoolExecutor(max_workers=min(max(1, args.jobs), MAX_JOBS)) as pool:
-        futures = [(label, pool.submit(_replay_camera, args.metrics, args.since, args.until, cam,
+        futures = [(label, pool.submit(_replay_chunk, detections, args.since, args.until, cam, spans,
                                        dataclasses.replace(base, **o)))
-                   for label, o, cam in tasks]
+                   for label, o, cam, spans in tasks]
         for label, future in futures:
-            stats, breaks = future.result()
-            results[label].update(stats)
+            stats, events, breaks = future.result()
+            total, all_events = merged.setdefault(label, ({}, []))
+            for cam, counters in stats.items():
+                t = total.setdefault(cam, dict.fromkeys(counters, 0))
+                for k, v in counters.items():
+                    t[k] += v
+            all_events += events
             if args.show_breaks:
                 for ts, camera, track_id, sim, n in breaks:
                     print(f"  break [{label}] {ts} {camera} local track {track_id}: sim {sim} to its last {n} samples")
+    results = {label: _report(stats, events) for label, (stats, events) in merged.items()}
 
     for camera in sorted({c for r in results.values() for c in r}):
         print(f"{camera}:")

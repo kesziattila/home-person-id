@@ -1286,6 +1286,60 @@ Config: metrics.frame_capture_max_gb 20 -> 30 (pushed 23:39, backup config.yaml.
   One crossing only: 0.55 kept the passing person's box and avoided the swap, at +16 % nested frames. Not enough
   to change the live value; re-run on the 10-22/10-23 captures (17k frames) — needs the dev GPU (RTX 3050,
   driver not installed: CPU redetect ~27 min per 6k frames).
+- 2026-10-24: replay speed-up (uncommitted). `detection_log.load_camera` = per-day, per-camera pickle cache
+  (`detections/.cache/`); `replay_tracking.py` cuts each camera into independent segments (track_buffer + 1
+  empty frames or a session change: all tracks gone) and runs chunks of ~20k frames in <= 4 processes.
+  10-24 00:00-10:30 (174k frames), 2 variants: 60 s -> 47 s, output byte-identical. Remaining cost is the
+  tracker + the per-sample appearance-break mean in Python; next: profile `_replay_core`. Redetect is the slow
+  step (CPU ~27 min / 6k frames): needs the dev RTX 3050 driver (not installed yet).
+- 2026-10-24 NMS sweep on all captured windows (GPU re-detect once without NMS, `tools/detfilter.py`,
+  `tools/track_quality.py`, un-swap off):
+  | window | nms 0.4 tracks/swaps/nested | 0.55 | 0.7 |
+  | 10-22 17:48-17:58 | 28/0/21 | 28/0/21 | 28/0/22 |
+  | 10-23 06:44-06:47 | 5/0/969 | 8/0/974 | 7/0/1015 |
+  | 10-23 15:52-16:02 | 56/0/3 | 57/0/3 | 57/0/3 |
+  | 10-24 ball play | 49/1/113 | 50/0/131 | 49/0/136 |
+  0.55 avoided the one crossing swap, otherwise neutral to slightly worse (a few more tracks/nested frames).
+  Not changed. The live detection log now records `nms_dropped` (from the next deploy): decide on a week of
+  live days with detfilter instead of 10-min captures.
+
+- 2026-10-24 15:19 local: two ByteTrack takeovers, both on a stage-3 (OCR, last observation) revive onto another
+  person (living_room t48/global_65280 15:02:45, ground_floor t90/global_65372 15:14:43, ioa 1.0 to Ati's t85).
+  On 65280 this put 3 Virag crops into Ati's gallery (reid_embeddings 8675/8676/8678). The gate passed them
+  because Virag had no anchors yet after the 14:24 restart (anchors are in memory; the 10-23 open item). Naming itself
+  was right for the box each time. Untested hypothesis: OCR causes the takeovers (replay with
+  `recover_last_observation=false`). Event capture missed both (no trigger on a revive into another track). Rows not
+  deleted (user decides). Report: `local/health/reports/2026-10-24_1519.md`.
+  Replay (OCR on/off, 12:24-13:20 UTC): OCR caused both — ground floor = crossing swap through a short loss (OCR off:
+  both tracks just end and restart), living room = the 2nd switch (the gallery contamination). OCR off costs tracks
+  186 -> 338; track_quality cannot see swaps through a loss. Keep OCR; next: un-swap episodes across a short loss.
+  Tried (replay, reverted): keep the overlap episode across a merge-loss. The target swap scored crosswise-straight 0.10
+  (< 0.15) and a likely false un-swap scored 0.21 (13:09, the track stayed Virag by face). Re-ID after a merge cannot
+  separate them when the two look alike (pre cos 0.67). Needs a non-Re-ID cue.
+  Body-proportion signature from the logged pose keypoints (standing, isolated; shoulder/hip/head/leg over torso),
+  30 s before vs after each merge-loss, same hour: true swaps gain +0.26..+0.78, non-swaps -0.05..-0.49 when the two
+  bodies differ (pre >= 0.5); the 13:14 swap +0.36. Adult vs child only; one hour. Script
+  `local/health/body_signature_2026-10-24.py`, details in the 15:19 report.
+  Over 10-22..10-24 (kps logged only from 10-22 20:50; truth = per-day gallery refs Ati/Judit/Virag): 8 swaps / 22 same /
+  28 unknown; pre >= 0.5 & gain >= 0.25 caught 5/8 with 1/22 false (09:54:57 living_room, 10 post samples). No Judit
+  case resolved. Too few swaps for a rule yet: re-run after a week of kps.
+  Relative height without calibration (pixel height / per-camera poly of the foot point, 10-23..24): Ati vs Virag
+  AUC 0.87 / 0.76 (ground_floor / living_room), Ati vs Judit 0.61 / 0.58 - not enough for two adults; fit error
+  (box top, wide lens, sd 0.20) dominates. Scripts `local/health/height_*_2026-10-24.py`.
+  With FACE truth instead (accepted faces -> live local id -> replay, 10-23 replayed with the then-live tracker, births
+  match): ground_floor Ati>Judit AUC 0.81, Ati>Virag 0.99, Judit>Virag 0.94; living_room 0.68 / 0.86 / 0.75. The earlier
+  spread was mostly Re-ID label noise. Keypoint head (eyes/ears) no better than the box top.
+  Combined signature (4 proportions + relative height) at merge-losses, 10-23..24: pre >= 0.5 & gain >= 0.2 caught
+  8/8 swaps with 0/31 false (proportions alone 5/8 + 1 false, height alone 6/8). Small sample, thresholds fitted on it.
+  BUILT (uncommitted, not deployed): `src/tracking/body_signature.py`, `ByteTracker._check_bodies` in SHADOW
+  (`tracking.body_check`, `body_check` / `body` track events), `tools/fit_height_model.py` (10-23..24 fit: ground_floor
+  sd 0.21, living_room 0.135; entrance/hallway too few samples). Replay 10-23..24 with the in-tracker check, each check
+  labelled by Re-ID truth (`local/health/body_shadow_eval_2026-10-24.py`): 2/2 swaps would_swap, 0/22 same, 4 unknown
+  would_swap (incl. the 13:09 / 13:14 swaps). First version restarted the post window at every short loss and decided
+  none of the play swaps; fixed. Cost +0.11 ms per tracker update (dev CPU).
+- 2026-10-24 16:19 local: three more merge / stage-3 revive switches during play (ground_floor t96/t99 swap 15:35,
+  living_room t130 15:35, ground_floor t162 16:17). Naming recovered each within ~20-60 s (age veto, face, revoke,
+  handover); wrong labels on screen ~30-60 s. Report `local/health/reports/2026-10-24_1619.md`.
 
 ## 2026-10-23 open items at session end
 - Health watch started (`/health-watch`, dedicated session); auto capture not built until an investigation needs it.

@@ -185,6 +185,7 @@ class IdentityLinker:
         age_gate: Optional["AgeGate"] = None,
         naming_log: Optional[DailyJsonlWriter] = None,
         reid_feed_log: Optional[DailyJsonlWriter] = None,
+        gallery_scores_log: Optional[DailyJsonlWriter] = None,
     ):
         """Initialize identity linker.
 
@@ -210,6 +211,7 @@ class IdentityLinker:
         self._age_gate = age_gate
         self._naming_log = naming_log
         self._reid_feed_log = reid_feed_log
+        self._gallery_scores_log = gallery_scores_log
         self._person_ages_refreshed_at = 0.0
         self.snapshot_config = snapshot_config.snapshots if snapshot_config else None
 
@@ -614,6 +616,7 @@ class IdentityLinker:
 
         with profiler.measure("ReIDGallery.recheck"):
             match_result = self.reid_gallery_manager.match_new_track(person_crop, *(precomputed_reid or (None, None)))
+        self._log_gallery_scores(state, camera_id, match_result)
 
         if not match_result.matched:
             # A miss breaks the consecutive-match streak
@@ -834,6 +837,25 @@ class IdentityLinker:
             "persons": state.named_persons,
             "revocations": state.revocations,
         }, datetime.fromtimestamp(state.first_seen, tz=timezone.utc))
+
+    def _log_gallery_scores(self, state: TrackIdentityState, camera_id: Optional[str], match) -> None:
+        """One record per gallery recheck: every person's score (~10µs); `streak` is the candidate's
+        consecutive matches BEFORE this check, `person_id` the track's name at that moment."""
+        if self._gallery_scores_log is None or not match.scores:
+            return
+        self._gallery_scores_log.write({
+            "track": state.global_track_id,
+            "camera": camera_id,
+            "person_id": state.person_id,
+            "method": str(state.identified_by) if state.person_id is not None else None,
+            "scores": {name: round(score, 4) for name, score in match.scores.items()},
+            "best": match.best_person_name,
+            "matched": match.matched,
+            "threshold": self.reid_gallery_manager.similarity_threshold,
+            "candidate_person_id": state.gallery_candidate_person_id,
+            "streak": state.gallery_consecutive_matches,
+            "age_sec": round(time.time() - state.first_seen, 1),
+        }, datetime.now(timezone.utc))
 
     def _log_reid_feed(self, state: TrackIdentityState, path: str) -> None:
         """One record per buffered gallery sample: whose track, and how much other boxes (live or

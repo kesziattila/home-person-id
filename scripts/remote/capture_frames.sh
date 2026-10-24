@@ -57,15 +57,23 @@ REMOTE
         if [[ -n "$WINDOW" ]]; then
             need_kb=$(ssh_jetson "cd '$DET/frames/$DAY' && xargs -d '\\n' du -ck | tail -1 | cut -f1" < "$DEST/.fetch_list")
         else
-            need_kb=$(ssh_jetson "du -sk '$DET/frames/$DAY' | cut -f1")
+            need_kb=$(ssh_jetson "du -sck '$DET/frames/$DAY' '$DET/event_frames/$DAY' 2>/dev/null | tail -1 | cut -f1")
         fi
         free_kb=$(df -Pk "$DEST" | awk 'NR == 2 { print $4 }')
         if (( need_kb + 1048576 > free_kb )); then
             echo "Not enough local disk: need ~$((need_kb / 1024)) MB + 1 GB headroom, $((free_kb / 1024)) MB free" >&2; exit 1
         fi
         rsync -az -e "ssh ${SSH_OPTS[*]}" "$JETSON_HOST:$DET/$DAY.jsonl" "$DEST/"
-        rsync -az -e "ssh ${SSH_OPTS[*]}" "${filter[@]}" "$JETSON_HOST:$DET/frames/$DAY/" "$DEST/frames/$DAY/"
+        if ssh_jetson "test -d '$DET/frames/$DAY'"; then
+            rsync -az -e "ssh ${SSH_OPTS[*]}" "${filter[@]}" "$JETSON_HOST:$DET/frames/$DAY/" "$DEST/frames/$DAY/"
+        fi
         echo "Pulled frames $DAY -> $DEST/frames/$DAY ($(find "$DEST/frames/$DAY" -name '*.jpg' | wc -l) frames)"
+        # event-triggered half-size frames (src/tracking/event_capture.py), all of the day
+        if ssh_jetson "test -d '$DET/event_frames/$DAY'"; then
+            mkdir -p "$DEST/event_frames/$DAY"
+            rsync -az -e "ssh ${SSH_OPTS[*]}" "$JETSON_HOST:$DET/event_frames/$DAY/" "$DEST/event_frames/$DAY/"
+            echo "Pulled event frames $DAY -> $DEST/event_frames/$DAY ($(find "$DEST/event_frames/$DAY" -name '*.jpg' | wc -l) frames)"
+        fi
         ;;
     *)
         sed -n '2,11p' "$0"; exit 2 ;;

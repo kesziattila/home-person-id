@@ -30,15 +30,18 @@ Usage:
 import argparse
 import dataclasses
 import json
+import queue
+import threading
 from collections import Counter, defaultdict
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 import cv2
 
 from src.config import Config, load_config
 from src.detection.person_detector import create_person_detector, detect_for_tracking
 from src.tracking import detection_log
+from src.tracking.event_capture import frame_rel_path  # event_frames/<day>/<camera>/<HHMMSS_mmm>.jpg
 from tools.replay_tracking import _parse_value
 
 LIVE_COLOR = (0, 0, 255)
@@ -55,6 +58,69 @@ def apply_overrides(config: Config, sets: list[str]) -> Config:
             raise SystemExit(f"--set {key}: only detection.* and reid.* can be overridden")
         sections[section] = dataclasses.replace(sections[section], **{field: _parse_value(value)})
     return dataclasses.replace(config, detection=sections["detection"], reid=sections["reid"])
+
+
+class FrameReader:
+    """Decoded BGR frames in record order, prefetched on a background thread so decoding overlaps
+    detection. `gpu`: nvJPEG on CUDA in batches (dev RTX 3050: ~8 ms/img batched vs ~24 ms cv2;
+    pixels differ from libjpeg by ~0.5 on average, so compare variants decoded the same way);
+    otherwise cv2. A missing or undecodable file yields None."""
+
+    def __init__(self, paths: list[Optional[Path]], gpu: bool, batch: int = 16, ahead: int = 2):
+        self.paths, self.gpu, self.batch = paths, gpu, batch
+        self._queue: queue.Queue = queue.Queue(maxsize=ahead)
+        threading.Thread(target=self._fill, daemon=True).start()
+
+    def __iter__(self) -> Iterator:
+        for _ in range(0, len(self.paths), self.batch):
+            chunk = self._queue.get()
+            if isinstance(chunk, BaseException):
+                raise chunk
+            yield from chunk
+
+    def _fill(self) -> None:
+        try:
+            for i in range(0, len(self.paths), self.batch):
+                chunk = self.paths[i:i + self.batch]
+                self._queue.put(self._decode_gpu(chunk) if self.gpu else [_imread(p) for p in chunk])
+        except BaseException as e:            # surfaces in the consumer
+            self._queue.put(e)
+
+    @staticmethod
+    def _decode_gpu(paths: list[Optional[Path]]) -> list:
+        import torch
+        from torchvision.io import decode_jpeg
+        images: list = [None] * len(paths)
+        data, where = [], []
+        for i, path in enumerate(paths):
+            if path is not None and path.exists():
+                data.append(torch.frombuffer(bytearray(path.read_bytes()), dtype=torch.uint8))
+                where.append(i)
+        if data:
+            try:
+                decoded = decode_jpeg(data, device="cuda")
+            except RuntimeError:              # a corrupt file fails the whole batch: per file on CPU
+                decoded = None
+            for k, i in enumerate(where):
+                if decoded is None:
+                    images[i] = _imread(paths[i])
+                else:                         # CHW RGB on the GPU -> HWC BGR numpy (what the live path gets)
+                    images[i] = decoded[k].permute(1, 2, 0).flip(-1).contiguous().cpu().numpy()
+        return images
+
+
+def frame_path(record: dict, log_dir: Path) -> Optional[Path]:
+    """The record's saved frame: `frame` (manual capture), else an event-capture frame named by the
+    record's timestamp (its pre-roll records were written before the frames were saved)."""
+    if record.get("frame"):
+        return log_dir / record["frame"]
+    from datetime import datetime
+    path = log_dir / frame_rel_path(record["camera_id"], datetime.fromisoformat(record["ts"]).timestamp())
+    return path if path.exists() else None
+
+
+def _imread(path: Optional[Path]):
+    return cv2.imread(str(path)) if path is not None else None
 
 
 def confident(dets: list, threshold: float) -> int:
@@ -75,7 +141,8 @@ def draw(image, live: list, variant: list, threshold: float):
 
 
 def redetect(records: list[dict], log_dir: Path, config: Config, out_dir: Path, with_reid: bool,
-             draw_dir: Optional[Path] = None, detector=None, reid_extractor=None) -> dict[str, dict]:
+             draw_dir: Optional[Path] = None, detector=None, reid_extractor=None,
+             gpu_decode: bool = False) -> dict[str, dict]:
     """Write the re-detected log to `out_dir/detections/`; per-camera comparison stats."""
     detector = detector or create_person_detector(config.detection)
     if with_reid and reid_extractor is None:
@@ -88,20 +155,24 @@ def redetect(records: list[dict], log_dir: Path, config: Config, out_dir: Path, 
         "live_hist": Counter(), "variant_hist": Counter()})
     files: dict[str, object] = {}
     (out_dir / "detections").mkdir(parents=True, exist_ok=True)
+    paths = [frame_path(r, log_dir) for r in records]
+    frames = FrameReader(paths, gpu_decode)
     try:
-        for record in records:
+        for record, image, path in zip(records, frames, paths):
             cam = stats[record["camera_id"]]
             cam["frames"] += 1
             out = dict(record)
-            image = cv2.imread(str(log_dir / record["frame"])) if record.get("frame") else None
             if image is None:
-                cam["missing_image"] += bool(record.get("frame"))
+                cam["missing_image"] += path is not None
             else:
+                h, w = record["shape"]
+                if image.shape[:2] != (h, w):         # event capture saves downscaled frames
+                    image = cv2.resize(image, (w, h), interpolation=cv2.INTER_LINEAR)
                 detections, reid = detect_for_tracking(image, detector, zones.get(record["camera_id"]),
                                                        reid_extractor, threshold)
                 out.pop("reid", None)
                 out.update(detection_log.tracker_input(detections, reid))
-                out["frame"] = str((log_dir / record["frame"]).resolve())
+                out["frame"] = str(path.resolve())
                 cam["redetected"] += 1
                 live_n, variant_n = confident(record["dets"], threshold), confident(out["dets"], threshold)
                 cam["live_hist"][live_n] += 1
@@ -134,17 +205,18 @@ def main():
     p.add_argument("--set", action="append", default=[], help="detection.<field>=v or reid.<field>=v")
     p.add_argument("--reid", action="store_true", help="also extract Re-ID (replay appearance_breaks)")
     p.add_argument("--draw", type=Path, help="save frames where the confident person count differs")
+    p.add_argument("--gpu-decode", action="store_true", help="decode the JPEG frames on CUDA (nvJPEG, batched)")
     args = p.parse_args()
 
     config = apply_overrides(load_config(str(args.config)), args.set)
     log_dir = args.metrics / "detections"
     records = list(detection_log.load(log_dir, args.since, args.until, args.camera))
-    if not any(r.get("frame") for r in records):
+    if not any(frame_path(r, log_dir) for r in records):
         raise SystemExit("no captured frames in the window (scripts/remote/capture_frames.sh fetch)")
     print(f"{len(records)} records {records[0]['ts']} .. {records[-1]['ts']}  detection: "
           f"{dataclasses.asdict(config.detection)}")
 
-    stats = redetect(records, log_dir, config, args.out, args.reid, args.draw)
+    stats = redetect(records, log_dir, config, args.out, args.reid, args.draw, gpu_decode=args.gpu_decode)
     for camera, s in sorted(stats.items()):
         print(f"{camera}: redetected {s['redetected']}/{s['frames']} frames "
               f"(missing images {s['missing_image']}); confident persons per frame "

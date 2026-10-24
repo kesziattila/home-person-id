@@ -585,6 +585,7 @@ class IdentificationManager:
                 num_faces=len(faces),
                 ambiguous=ambiguous,
                 embedding_norm=face.embedding_norm,
+                embedding=embedding,
             )
         if not accepted and not ambiguous:
             self._submit_unidentified(attempt, track_id, camera_id)

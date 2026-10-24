@@ -26,6 +26,7 @@ of the same format, so tools/replay_tracking.py replays it unchanged.
 import base64
 import json
 import logging
+import pickle
 import queue
 import shutil
 import threading
@@ -47,21 +48,35 @@ FRAMES_DIR = "frames"
 
 def tracker_input(detections: DetectionResult,
                   reid_embeddings: Optional[dict[int, tuple[np.ndarray, float]]] = None) -> dict:
-    """The record fields describing one tracker input (shape, dets, optional reid)."""
-    fields = {
-        "shape": list(detections.frame_shape[:2]),
-        "dets": [[*(round(float(v), 2) for v in d.bbox), round(float(d.confidence), 4)]
-                 for d in detections.detections],
-    }
-    if any(d.keypoints is not None for d in detections.detections):
-        fields["kps"] = [[round(float(v), 1 if j % 3 < 2 else 2) for j, v in enumerate(d.keypoints.ravel())]
-                         if d.keypoints is not None else None for d in detections.detections]
+    """The record fields describing one tracker input (shape, dets, optional kps / reid), plus the
+    boxes the detector's NMS removed (`nms_dropped`, `nms_dropped_kps`: not tracker input, but with
+    them `tools/detfilter.py` can replay any looser NMS on any logged day, ~10 % more log)."""
+    fields = {"shape": list(detections.frame_shape[:2]), "dets": _boxes(detections.detections)}
+    kps = _keypoints(detections.detections)
+    if kps is not None:
+        fields["kps"] = kps
     if reid_embeddings:
         fields["reid"] = {
             str(i): [base64.b64encode(np.asarray(emb, dtype=np.float16).tobytes()).decode(), round(float(q), 3)]
             for i, (emb, q) in reid_embeddings.items()
         }
+    if detections.suppressed:
+        fields["nms_dropped"] = _boxes(detections.suppressed)
+        dropped_kps = _keypoints(detections.suppressed)
+        if dropped_kps is not None:
+            fields["nms_dropped_kps"] = dropped_kps
     return fields
+
+
+def _boxes(dets: list) -> list:
+    return [[*(round(float(v), 2) for v in d.bbox), round(float(d.confidence), 4)] for d in dets]
+
+
+def _keypoints(dets: list) -> Optional[list]:
+    if not any(d.keypoints is not None for d in dets):
+        return None
+    return [[round(float(v), 1 if j % 3 < 2 else 2) for j, v in enumerate(d.keypoints.ravel())]
+            if d.keypoints is not None else None for d in dets]
 
 
 class FrameCapture:
@@ -146,11 +161,12 @@ class DetectionLog:
     """Writes tracker inputs to `<metrics.path>/detections/YYYY-MM-DD.jsonl`."""
 
     def __init__(self, directory: Path, retention_days: int, with_reid: bool = True,
-                 capture: Optional[FrameCapture] = None):
+                 capture: Optional[FrameCapture] = None, events=None):
         self._writer = DailyJsonlWriter(directory, retention_days)
         self._with_reid = with_reid
         self._session = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.capture = capture
+        self.events = events          # EventCapture: ring buffer for event-triggered frames
 
     def write(
         self,
@@ -167,6 +183,8 @@ class DetectionLog:
             rel = self.capture.offer(camera_id, timestamp, frame)
             if rel:
                 record["frame"] = rel
+        if self.events is not None and frame is not None and "frame" not in record:
+            self.events.push(camera_id, timestamp, frame)   # full frame already saved: no event copy
         self._writer.write(record, datetime.fromtimestamp(timestamp, tz=timezone.utc))
 
 
@@ -187,6 +205,48 @@ def load(path: Path, since: Optional[str] = None, until: Optional[str] = None,
                     continue
                 if camera is None or record["camera_id"] == camera:
                     yield record
+
+
+def load_camera(path: Path, camera: str, since: Optional[str] = None, until: Optional[str] = None) -> list[dict]:
+    """One camera's records in processing order, through a per-day, per-camera pickle cache in
+    `<path>/.cache/` (rebuilt when the day's log is newer). Offline replays read the same days
+    many times; parsing a day's JSONL is ~4 s, one camera's pickle ~0.4 s."""
+    files = sorted(path.glob("*.jsonl")) if path.is_dir() else [path]
+    records: list[dict] = []
+    for f in files:
+        if since and f.stem < since[:10] or until and f.stem > until[:10]:
+            continue
+        for record in _cached_day(f, camera):
+            if since and record["ts"] < since or until and record["ts"] >= until:
+                continue
+            records.append(record)
+    return records
+
+
+def build_cache(path: Path, since: Optional[str] = None, until: Optional[str] = None) -> None:
+    """Make sure the per-camera caches of the window's days exist (call once before parallel readers)."""
+    for f in sorted(path.glob("*.jsonl")) if path.is_dir() else [path]:
+        if not (since and f.stem < since[:10] or until and f.stem > until[:10]):
+            _cached_day(f)
+
+
+def _cached_day(f: Path, camera: Optional[str] = None) -> list[dict]:
+    """The day's records of `camera` from the cache (built for all cameras first if stale)."""
+    cache_dir = f.parent / ".cache"
+    marker = cache_dir / f"{f.stem}.done"
+    if not (marker.exists() and marker.stat().st_mtime >= f.stat().st_mtime):
+        by_camera: dict[str, list[dict]] = {}
+        for record in load(f):
+            by_camera.setdefault(record["camera_id"], []).append(record)
+        cache_dir.mkdir(exist_ok=True)
+        for cam, records in by_camera.items():
+            (cache_dir / f"{f.stem}.{cam}.pkl").write_bytes(pickle.dumps(records, protocol=pickle.HIGHEST_PROTOCOL))
+        marker.touch()
+        return by_camera.get(camera, []) if camera else []
+    if camera is None:
+        return []
+    cached = cache_dir / f"{f.stem}.{camera}.pkl"
+    return pickle.loads(cached.read_bytes()) if cached.exists() else []
 
 
 def to_detection_result(record: dict) -> DetectionResult:

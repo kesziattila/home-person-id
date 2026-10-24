@@ -253,3 +253,15 @@ def test_load_attempts_skips_partial_lines_and_old_days(tmp_path):
         + "\n{\"ts\": \"2026-10-16T00:0")
     attempts = load_attempts(tmp_path, since="2026-10-16")
     assert [a.track_id for a in attempts] == ["y"]
+
+
+def test_attempt_record_carries_the_face_embedding_for_offline_rescoring(tmp_path):
+    """The embedding (float16) lets a gallery change be re-scored on past attempts offline."""
+    from src.recognition.face_score_logger import decode_embedding
+    linker, score_logger = _linker(tmp_path, [0.50, 0.48, 0.45, 0.0])
+    _attempt(linker)
+    (record,) = _records(score_logger)[:1]
+    emb = decode_embedding(record)
+    assert emb is not None and emb.shape == np.asarray(EMB).shape
+    assert np.allclose(emb, np.asarray(EMB, dtype=np.float16).astype(np.float32))
+    assert decode_embedding({"emb": None}) is None

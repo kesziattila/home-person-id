@@ -5,17 +5,22 @@ per-person similarities, so `tools/analyze_face_scores.py` can replay any
 (threshold, min_margin) policy against live data. Tracks that are later
 confirmed by a strong face match act as pseudo-labels for their weaker
 attempts, which gives live genuine/impostor distributions without manual
-labelling.
+labelling. Each record also carries the face embedding (`emb`, float16 base64, ~1.4 kB;
+`decode_embedding`), so a gallery change (new or removed images, another threshold rule) can be
+re-scored offline on past attempts before it goes live.
 
 Files: `<metrics.path>/face_scores/YYYY-MM-DD.jsonl` (UTC day), pruned after
 `metrics.retention_days`. Appending one line is ~10µs, so it runs inline.
 """
 
+import base64
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
+
+import numpy as np
 
 from src.config import MetricsConfig
 from src.utils.jsonl_writer import DailyJsonlWriter
@@ -49,6 +54,7 @@ class FaceScoreLogger:
         num_faces: int = 1,
         ambiguous: bool = False,
         embedding_norm: Optional[float] = None,
+        embedding: Optional[np.ndarray] = None,
         strong: bool = False,
         appearance_settled: bool = True,
         now: Optional[float] = None,
@@ -86,9 +92,18 @@ class FaceScoreLogger:
             "num_faces": num_faces,
             "ambiguous": ambiguous,
             "emb_norm": round(float(embedding_norm), 2) if embedding_norm is not None else None,
+            "emb": (base64.b64encode(np.asarray(embedding, dtype=np.float16).tobytes()).decode()
+                    if embedding is not None else None),
         }, datetime.fromtimestamp(now, tz=timezone.utc))
 
     def forget_track(self, track_id: str) -> None:
         """Drop rate-limit state of a finished track."""
         with self._lock:
             self._last_logged.pop(track_id, None)
+
+
+def decode_embedding(record: dict) -> Optional[np.ndarray]:
+    """The attempt's face embedding (float32) from a face_scores record, None for older records."""
+    if not record.get("emb"):
+        return None
+    return np.frombuffer(base64.b64decode(record["emb"]), dtype=np.float16).astype(np.float32)

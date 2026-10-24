@@ -178,6 +178,20 @@ class TrackingConfig:
     recover_last_observation: bool = True
     # ORU: after missed frames, re-run the Kalman filter along a straight path to the new box
     reupdate_after_occlusion: bool = True
+    # Body signature (src/tracking/body_signature.py: proportions + relative height from pose keypoints)
+    # after a merge-loss (a track lost its box while overlapping another, both back later): SHADOW ONLY,
+    # logged as `body_check` track events with `would_swap`, never swaps. Pre = median of each track's
+    # standing isolated samples in the body_window_frames before the merge, post = after both are back
+    # (decided at body_post_samples each, or at the window end with >= 3). would_swap: bodies apart
+    # >= body_min_apart and straight - crosswise >= body_margin (10-23..24 offline: 8/8 swaps, 0/31 false).
+    body_check: bool = True
+    body_window_frames: int = 170          # ~30 s at ~5.7 tracker updates/s per camera
+    body_post_samples: int = 10
+    body_min_apart: float = 0.5
+    body_margin: float = 0.2
+    # camera -> 7 numbers: expected standing pixel height at a foot point (tools/fit_height_model.py);
+    # a camera without one gets no relative-height feature
+    body_height_model: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -451,6 +465,17 @@ class MetricsConfig:
     frame_capture_max_gb: float = 20.0
     # ~0.5 MB per frame, ~10 frames/s with two busy cameras: keep only a few days
     frame_capture_retention_days: int = 3
+    # Event capture (src/tracking/event_capture.py): downscaled frames of the last
+    # event_capture_pre_sec in RAM per camera; an un-swap, a merge (track turns uncertain) or
+    # 3+ live tracks saves the pre-roll + event_capture_post_sec as JPEGs (same layout as the
+    # manual capture, for tools/redetect.py). Runtime off: file detections/event_capture_off
+    event_capture_enabled: bool = True
+    event_capture_scale: float = 0.5
+    event_capture_pre_sec: float = 5.0
+    event_capture_post_sec: float = 10.0
+    event_capture_max_event_sec: float = 30.0
+    event_capture_cooldown_sec: float = 60.0
+    event_capture_max_gb: float = 5.0
     # Delete daily metric files older than this
     retention_days: int = 30
     # Identity audit samples (annotated frame + full-res track crops) for offline
@@ -477,6 +502,9 @@ class MetricsConfig:
     # One record per Re-ID gallery sample a track buffers: the box's overlap with live / recently
     # lost neighbours at that moment (<path>/reid_feed/; why a cross-person sample got in)
     reid_feed_log_enabled: bool = True
+    # One record per gallery recheck: every person's Re-ID gallery score, the best, matched, the
+    # track's current name and streak (<path>/gallery_scores/; gallery threshold / margin tuning)
+    gallery_scores_log_enabled: bool = True
 
 
 @dataclass

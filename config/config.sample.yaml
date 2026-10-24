@@ -252,6 +252,23 @@ tracking:
   recover_last_observation: true
   reupdate_after_occlusion: true
 
+  # Body signature (src/tracking/body_signature.py): build from the pose keypoints (shoulder, hip,
+  # head and leg length over the torso, plus height relative to the camera's household average)
+  # judges each merge-loss (a track lost its box inside another, both back later). SHADOW ONLY:
+  # logged as `body_check` track events (would_swap, apart, straight, cross), never swaps; a removed
+  # track logs its signature (`body` event). Pre = each track's standing isolated samples in the
+  # body_window_frames before the merge; decided after body_post_samples samples each.
+  # would_swap: bodies apart >= body_min_apart and straight - crosswise >= body_margin.
+  body_check: true
+  body_window_frames: 170       # ~30 s at ~5.7 tracker updates/s per camera
+  body_post_samples: 10
+  body_min_apart: 0.5
+  body_margin: 0.2
+  # Per camera: 6 polynomial coefficients of the expected standing pixel height at a foot point +
+  # the fit sd. Print with tools/fit_height_model.py; refit when a camera moves. Missing camera:
+  # no height feature (proportions only).
+  body_height_model: {}
+
 # =============================================================================
 # CROSS-CAMERA RE-IDENTIFICATION
 # =============================================================================
@@ -554,6 +571,21 @@ metrics:
   # Hard cap of the frames directory (GB, 0 disables) and retention (days)
   frame_capture_max_gb: 20.0
   frame_capture_retention_days: 3
+  # Event capture: the last event_capture_pre_sec seconds of every camera are kept downscaled
+  # (event_capture_scale) in RAM; an un-swap, a merge (a track turns uncertain) or 3+ live
+  # tracks saves that pre-roll + event_capture_post_sec as JPEGs next to the manual capture
+  # (tools/redetect.py reads both). One event lasts at most event_capture_max_event_sec, then
+  # event_capture_cooldown_sec per camera; event_capture_max_gb caps the disk. ~1 ms per frame on
+  # the main thread (EventCapture.buffer in the perf stream), JPEG only for event frames in a
+  # background thread (EventCapture.encode); per event: <path>/event_capture/.
+  # Runtime off switch without restart: touch <path>/detections/event_capture_off
+  event_capture_enabled: true
+  event_capture_scale: 0.5
+  event_capture_pre_sec: 5.0
+  event_capture_post_sec: 10.0
+  event_capture_max_event_sec: 30.0
+  event_capture_cooldown_sec: 60.0
+  event_capture_max_gb: 5.0
   # Delete daily files older than this many days
   retention_days: 30
   # Identity audit samples for offline review (skill review-identities): an annotated
@@ -581,6 +613,9 @@ metrics:
   # One record per Re-ID gallery sample a track buffers: the box's overlap with live / recently
   # lost neighbours at that moment (<path>/reid_feed/; why a cross-person sample got in)
   reid_feed_log_enabled: true
+  # One record per gallery recheck: every person's Re-ID gallery score, the best, matched, the
+  # track's current name and streak (<path>/gallery_scores/; gallery threshold / margin tuning)
+  gallery_scores_log_enabled: true
 
 # =============================================================================
 # APPARENT AGE VETO (MiVOLO)

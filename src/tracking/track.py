@@ -7,6 +7,8 @@ from typing import Optional
 
 import numpy as np
 
+from src.tracking.body_signature import BodySamples
+
 
 class TrackState(Enum):
     """State of a track."""
@@ -63,6 +65,8 @@ class LocalTrack:
     # Who this box is is open: it overlaps a track that lost its box (merged / hidden), so ByteTrack
     # may hand them over crosswise; cleared after isolated Re-ID samples (ByteTracker._check_swaps)
     uncertain: bool = False
+    # Body-signature samples (standing, isolated; ByteTracker._check_bodies, body_signature.py)
+    body: BodySamples = field(default_factory=BodySamples)
 
     @property
     def is_confirmed(self) -> bool:

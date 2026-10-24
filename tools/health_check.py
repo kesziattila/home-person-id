@@ -104,6 +104,11 @@ def perf(metrics: Path, since: datetime, until: datetime) -> tuple[dict, list[di
          "fps_min": round(min(r["fps"] for r in rows), 1),
          "loop_ms": round(float(np.mean([r["loop_ms"] for r in rows])), 1),
          "queue_max": max(r.get("inference_queue", 0) for r in rows)}
+    buffer = [r.get("modules", {}).get("EventCapture.buffer") for r in rows]
+    buffer = [b for b in buffer if b and b.get("calls")]
+    if buffer:  # event capture ring buffer cost on the main thread (src/tracking/event_capture.py)
+        m["capture_buffer_ms"] = round(sum(b["calls"] * b["avg_ms"] for b in buffer)
+                                       / sum(b["calls"] for b in buffer), 2)
     findings = []
     slow = [r for r in rows if r["fps"] < FPS_MIN]
     if slow:
@@ -114,6 +119,15 @@ def perf(metrics: Path, since: datetime, until: datetime) -> tuple[dict, list[di
     if m["queue_max"] > QUEUE_MAX:
         findings.append({"kind": "queue_backlog", "key": f"queue:{rows[0]['ts'][:13]}", "max": m["queue_max"]})
     return m, findings
+
+
+def event_capture(metrics: Path, since: datetime, until: datetime) -> dict:
+    """Events saved in the window (metrics/event_capture/): count, frames, disk use."""
+    rows = _stream(metrics, "event_capture", since, until)
+    if not rows:
+        return {}
+    return {"events": len(rows), "frames": sum(r["frames"] for r in rows),
+            "dropped": sum(r["dropped"] for r in rows), "disk_gb": rows[-1]["disk_gb"]}
 
 
 def naming(metrics: Path, since: datetime, until: datetime) -> tuple[dict, list[dict]]:
@@ -253,6 +267,11 @@ def summary_line(until: datetime, m: dict, prev: dict, ok: bool, n_new: int, inf
              f"{_delta(round(100 * n.get('named', 0)), round(100 * pn['named']) if 'named' in pn else None)}, "
              f"t50 {fmt(n.get('t50'), ' s')}{_delta(n.get('t50'), pn.get('t50'))}",
              f"24h: {round(100 * (t.get('named_24h') or 0))}%, t50 {fmt(t.get('t50_24h'), ' s')}"]
+    e = m.get("capture", {})
+    if e or p.get("capture_buffer_ms") is not None:
+        parts.append(f"felvétel: {e.get('events', 0)} esemény, {e.get('frames', 0)} kép"
+                     f"{', ' + str(e['dropped']) + ' eldobva' if e.get('dropped') else ''}, "
+                     f"{fmt(e.get('disk_gb'), ' GB')}, puffer {fmt(p.get('capture_buffer_ms'), ' ms')}")
     if info:
         parts.append("infó: " + ", ".join(f"{n} {INFO_KINDS[k]}" for k, n in info.items()))
     return " | ".join(parts)
@@ -280,6 +299,7 @@ def main():
     metrics["perf"], f = perf(args.metrics, since, until); findings += f
     metrics["naming"], f = naming(args.metrics, since, until); findings += f
     metrics["trend"], f = naming_trend(args.metrics, until); findings += f
+    metrics["capture"] = event_capture(args.metrics, since, until)
     findings += contradictions(args.metrics, since, until, args.config)
     findings += age_revocations(args.metrics, since, until)
     if args.db.exists():
